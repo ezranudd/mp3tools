@@ -9,6 +9,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+if sys.version_info < (3, 10):
+    print(f"Error: Python 3.10 or newer is required (found {sys.version})", file=sys.stderr)
+    sys.exit(1)
+
 BOLD    = "\033[1m"
 RESET   = "\033[0m"
 RED     = "\033[91m"
@@ -76,8 +80,8 @@ def print_menu(directory: str, dry_run: bool):
     print()
 
 
-def select_directory() -> str | None:
-    cwd = Path.cwd()
+def select_directory(start: str | None = None) -> str | None:
+    cwd = Path(start) if start and Path(start).is_dir() else Path.cwd()
     page = 0
 
     while True:
@@ -309,7 +313,9 @@ def run_script(script: str, args: list[str]):
     print("=" * 50)
     print()
     try:
-        subprocess.run([sys.executable, str(path)] + args, cwd=SCRIPT_DIR)
+        result = subprocess.run([sys.executable, str(path)] + args, cwd=SCRIPT_DIR)
+        if result.returncode != 0:
+            print(f"\n{RED}ERROR: {script} exited with code {result.returncode}{RESET}")
     except Exception as e:
         print(f"ERROR: {e}")
 
@@ -329,7 +335,7 @@ def main():
             break
 
         elif choice == "d":
-            selected = select_directory()
+            selected = select_directory(start=directory)
             if selected:
                 directory = selected
 
@@ -372,11 +378,13 @@ def main():
                 continue
             print(f"\n{CYAN}Select the source directory to import from:{RESET}\n")
             get_input("Press Enter to choose source directory...")
-            source = select_directory()
+            source = select_directory(start=directory)
             if not source:
                 continue
-            if source == directory:
-                print(f"\n{RED}ERROR: Source and library cannot be the same directory{RESET}")
+            src_path = Path(source)
+            lib_path = Path(directory)
+            if source == directory or lib_path in src_path.parents:
+                print(f"\n{RED}ERROR: Source cannot be the same as or inside the library{RESET}")
                 get_input("\nPress Enter to continue...")
                 continue
             args = [source, directory]

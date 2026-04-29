@@ -293,6 +293,11 @@ def fill_album_tags(group: list[tuple[Path, dict]], label: str, dry_run: bool) -
                 td["ALBUMARTIST"] = td["TPE1"]
         return
 
+    if needs_year:
+        print(f"  Auto-fill Year: '{year_default}'  [{label}]")
+    if needs_genre:
+        print(f"  Auto-fill Genre: 'Unknown'  [{label}]")
+
     for _, td in group:
         if not td.get("YEAR"):
             td["YEAR"] = year_default
@@ -566,19 +571,22 @@ def import_tracks(source: Path, library: Path, dry_run: bool) -> None:
                 stats["copied"] += 1
                 continue
 
+            tmp_path = dest_path.with_suffix(dest_path.suffix + ".part")
             try:
                 if is_lossless:
                     cue_start = td.get("_CUE_START")
                     cue_end   = td.get("_CUE_END")
-                    if not convert_to_mp3_progress(src, dest_path, lossless_bitrate,
+                    if not convert_to_mp3_progress(src, tmp_path, lossless_bitrate,
                                                    cue_start, cue_end):
                         stats["errors"] += 1
+                        if tmp_path.exists():
+                            tmp_path.unlink()
                         continue
                 else:
-                    shutil.copy2(src, dest_path)
+                    shutil.copy2(src, tmp_path)
 
                 try:
-                    dtags = load_id3(dest_path)
+                    dtags = load_id3(tmp_path)
                 except ID3NoHeaderError:
                     dtags = ID3()
 
@@ -600,14 +608,18 @@ def import_tracks(source: Path, library: Path, dry_run: bool) -> None:
                 if td.get("TCON"):
                     dtags["TCON"] = TCON(encoding=3, text=td["TCON"])
 
-                dtags.save(dest_path, v2_version=3, v1=0)
+                dtags.save(tmp_path, v2_version=3, v1=0)
+                tmp_path.rename(dest_path)
                 stats["copied"] += 1
 
-            except Exception as e:
-                print(f"    ERROR: {e}")
-                if dest_path.exists():
-                    dest_path.unlink()
-                stats["errors"] += 1
+            except BaseException as e:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+                if isinstance(e, Exception):
+                    print(f"    ERROR: {e}")
+                    stats["errors"] += 1
+                else:
+                    raise
 
         # ── Cover image ────────────────────────────────────────────────────────
         src_folders = {src.parent for src, _ in group}
@@ -695,8 +707,10 @@ Examples:
             print(f"Error: not a directory: {path} ({name})", file=sys.stderr)
             sys.exit(1)
 
-    if args.source.resolve() == args.library.resolve():
-        print("Error: source and library cannot be the same directory", file=sys.stderr)
+    src_resolved = args.source.resolve()
+    lib_resolved = args.library.resolve()
+    if src_resolved == lib_resolved or lib_resolved in src_resolved.parents:
+        print("Error: source cannot be the same as or a subdirectory of the library", file=sys.stderr)
         sys.exit(1)
 
     import_tracks(args.source.resolve(), args.library.resolve(), args.dry_run)

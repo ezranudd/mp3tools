@@ -75,14 +75,18 @@ def file_matches(src: Path, dst: Path) -> bool:
         s2 = dst.stat()
     except OSError:
         return False
-    return s1.st_size == s2.st_size
+    return s1.st_size == s2.st_size and int(s1.st_mtime) == int(s2.st_mtime)
 
 
 def artist_dirs(library: Path) -> list[Path]:
-    return sorted(
-        d for d in library.iterdir()
-        if d.is_dir() and not d.name.startswith(".") and any(d.rglob("*.mp3"))
-    )
+    seen: set[Path] = set()
+    for mp3 in library.rglob("*.mp3"):
+        rel = mp3.relative_to(library)
+        if rel.parts:
+            candidate = library / rel.parts[0]
+            if candidate.is_dir() and not candidate.name.startswith("."):
+                seen.add(candidate)
+    return sorted(seen)
 
 
 def synced_albums(device_artist: Path) -> list[str]:

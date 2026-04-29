@@ -645,7 +645,7 @@ def step_strip_tags(root: Path, dry_run: bool) -> dict:
     return stats
 
 
-# ── Step 4: Normalize characters ──────────────────────────────────────────────
+# ── Step 5: Normalize characters ──────────────────────────────────────────────
 
 def step_normalize_chars(root: Path, dry_run: bool) -> dict:
     _header(5, "Normalize special characters")
@@ -692,7 +692,9 @@ def step_normalize_chars(root: Path, dry_run: bool) -> dict:
                 mp3.rename(new_path)
 
     # Normalize folder names too (artist and album folders)
-    for folder in sorted(root.rglob("*")):
+    # Sort deepest-first so children are renamed before parents; otherwise
+    # renaming a parent invalidates the child's path and the child is skipped.
+    for folder in sorted(root.rglob("*"), key=lambda p: len(p.parts), reverse=True):
         if folder.is_dir() and folder != root and has_special_chars(folder.name):
             new_name = normalize_string(folder.name)
             new_path = folder.parent / new_name
@@ -967,6 +969,13 @@ def step_deduplicate_albums(root: Path, dry_run: bool) -> dict:
                     stats["renamed"] += 1
                     continue
 
+                # Check for folder collision before retagging — avoids leaving
+                # files with an updated TALB in a folder that couldn't be renamed.
+                if new_folder_path.exists() and new_folder_path != folder:
+                    print(f"    ERROR: target folder already exists")
+                    stats["errors"] += 1
+                    continue
+
                 for mp3 in mp3_list:
                     try:
                         tags = load_id3(mp3)
@@ -977,10 +986,6 @@ def step_deduplicate_albums(root: Path, dry_run: bool) -> dict:
                         print(f"    ERROR retagging {mp3.name}: {e}")
                         stats["errors"] += 1
 
-                if new_folder_path.exists() and new_folder_path != folder:
-                    print(f"    ERROR: target folder already exists")
-                    stats["errors"] += 1
-                    continue
                 try:
                     folder.rename(new_folder_path)
                     stats["renamed"] += 1

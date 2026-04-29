@@ -17,11 +17,25 @@ def _has_ffmpeg() -> bool:
     return shutil.which("ffmpeg") is not None
 
 
+def is_alac(path: Path) -> bool:
+    """Return True if the M4A file contains ALAC (lossless) audio, not AAC."""
+    try:
+        from mutagen.mp4 import MP4
+        audio = MP4(str(path))
+        return bool(audio.info and audio.info.codec and audio.info.codec.startswith("alac"))
+    except Exception:
+        return True  # assume lossless on read error (conservative)
+
+
 def find_lossless(root: Path) -> list[Path]:
-    """Return sorted list of all lossless files under root."""
+    """Return sorted list of all lossless files under root, skipping AAC .m4a files."""
     files = []
     for ext in LOSSLESS_EXTENSIONS:
-        files.extend(root.rglob(f"*{ext}"))
+        for path in root.rglob(f"*{ext}"):
+            if ext == ".m4a" and not is_alac(path):
+                print(f"  SKIP {path.name} (AAC inside .m4a container — not lossless)")
+                continue
+            files.append(path)
     return sorted(files)
 
 

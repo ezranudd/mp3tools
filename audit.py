@@ -54,6 +54,14 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
 CD_PATTERN = re.compile(r"^CD(\d+)$")
 YEAR_RE = re.compile(r"\b(19\d{2}|20\d{2})\b")
 ALBUM_ARTIST_DESC = "album artist"
+ALBUM_ARTIST_KEYS = (
+    f"TXXX:{ALBUM_ARTIST_DESC}",
+    "TXXX:ALBUMARTIST",
+    "TXXX:ALBUM ARTIST",
+    "TXXX:AlbumArtist",
+    "TXXX:Album Artist",
+    "TPE2",
+)
 
 CATEGORY_LABELS: dict[str, str] = {
     "READ_ERROR":    "Tag read error",
@@ -127,9 +135,10 @@ def load_id3(path: Path) -> ID3:
 
 
 def album_artist_value(tags: ID3) -> str | None:
-    frame = tags.get(f"TXXX:{ALBUM_ARTIST_DESC}")
-    if frame and hasattr(frame, "text") and frame.text:
-        return str(frame.text[0])
+    for key in ALBUM_ARTIST_KEYS:
+        frame = tags.get(key)
+        if frame and hasattr(frame, "text") and frame.text:
+            return str(frame.text[0])
     return None
 
 
