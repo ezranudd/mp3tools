@@ -8,7 +8,8 @@ should comply with the style requirements in standard.md.
 Steps
   1.  Merge disc subfolders into parent album folders
   2.  Prompt for any missing required ID3 tags
-  3.  Enforce ID3v2.3: strip ID3v1 tags, downgrade ID3v2.4 to ID3v2.3
+  3.  Enforce ID3v2.3: strip ID3v1 tags, downgrade ID3v2.4 to ID3v2.3, convert TDRC→TYER,
+      fill TYER from album folder name when absent
   4.  Strip extraneous ID3 tags (keep only the 6 required)
   5.  Normalize special characters in tags and filenames
   6.  Normalize year tags to 4-digit format
@@ -37,13 +38,13 @@ from convert_lossless import step_convert_lossless
 
 from mutagen.id3 import (
     ID3, ID3NoHeaderError,
-    TPE1, TIT2, TALB, TYER, TDRC, TCON, TRCK,
+    TPE1, TIT2, TALB, TYER, TCON, TRCK,
 )
 
 
 # ── Shared constants ──────────────────────────────────────────────────────────
 
-KEEP_TAGS = {"TPE1", "TIT2", "TALB", "TYER", "TDRC", "TCON", "TRCK"}
+KEEP_TAGS = {"TPE1", "TIT2", "TALB", "TYER", "TCON", "TRCK"}
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
 
@@ -75,7 +76,7 @@ REQUIRED_TAG_NAMES = {
     "TPE1": "Artist",
     "TIT2": "Title",
     "TALB": "Album",
-    "YEAR": "Year",   # virtual: TYER or TDRC
+    "YEAR": "Year",   # virtual: TYER (step 3 converts any TDRC before this matters)
     "TCON": "Genre",
     "TRCK": "Track",
 }
@@ -145,6 +146,11 @@ def _header(n: int, title: str) -> None:
     print("=" * 60)
 
 
+def load_id3(path: Path) -> ID3:
+    """Load raw ID3 frames without mutagen's v2.4 translation layer."""
+    return ID3(path, translate=False)
+
+
 # ── Step 1: Merge disc subfolders ─────────────────────────────────────────────
 
 def _subfolder_sort_key(p: Path) -> tuple:
@@ -171,7 +177,7 @@ def _merge_one(album: Path, subfolders: list[Path], dry_run: bool) -> dict:
         for mp3 in sf.glob("*.mp3"):
             sort_key = 9999
             try:
-                tags = ID3(mp3)
+                tags = load_id3(mp3)
                 trck = tags.get("TRCK")
                 if trck:
                     n, _ = parse_track(str(trck.text[0]))
@@ -192,7 +198,7 @@ def _merge_one(album: Path, subfolders: list[Path], dry_run: bool) -> dict:
     album_titles: list[str] = []
     for mp3, _ in all_mp3s:
         try:
-            tags = ID3(mp3)
+            tags = load_id3(mp3)
             talb = tags.get("TALB")
             if talb:
                 album_titles.append(str(talb.text[0]))
@@ -218,7 +224,7 @@ def _merge_one(album: Path, subfolders: list[Path], dry_run: bool) -> dict:
 
         if not dry_run:
             try:
-                tags = ID3(mp3)
+                tags = load_id3(mp3)
                 tags["TRCK"] = TRCK(encoding=3, text=f"{new_num}/{total}")
                 if album_title:
                     tags["TALB"] = TALB(encoding=3, text=album_title)
@@ -290,7 +296,7 @@ def step_merge_subfolders(root: Path, dry_run: bool) -> dict:
 def _read_required_tags(mp3: Path) -> dict | None:
     """Return dict with keys TPE1 TIT2 TALB YEAR TCON TRCK (value or None)."""
     try:
-        tags = ID3(mp3)
+        tags = load_id3(mp3)
     except ID3NoHeaderError:
         return {k: None for k in REQUIRED_TAG_NAMES}
     except Exception as e:
@@ -313,7 +319,7 @@ def _read_required_tags(mp3: Path) -> dict | None:
 def _save_tag(mp3: Path, key: str, value: str) -> bool:
     try:
         try:
-            tags = ID3(mp3)
+            tags = load_id3(mp3)
         except ID3NoHeaderError:
             tags = ID3()
         cls_map = {
@@ -357,9 +363,19 @@ def step_fix_missing_tags(root: Path, dry_run: bool) -> dict:
 
         # Collect album-level values once
         album_values: dict[str, str] = {}
-        if album_missing and not dry_run:
+
+        # Auto-fill YEAR from folder name or fall back to 1900
+        if "YEAR" in album_missing:
+            year_from_folder = extract_year(folder.name)
+            auto_year = year_from_folder or "1900"
+            source = f"from folder name '{folder.name}'" if year_from_folder else "default"
+            album_values["YEAR"] = auto_year
+            print(f"  -- Auto-fill Year: {auto_year} ({source})")
+
+        prompt_album = album_missing - {"YEAR"}
+        if prompt_album and not dry_run:
             print(f"  -- Album-level tags (applies to all {len(entries)} files) --")
-            for key in sorted(album_missing):
+            for key in sorted(prompt_album):
                 name = REQUIRED_TAG_NAMES[key]
                 # Suggest existing value from first file that has it
                 suggestion = ""
@@ -379,9 +395,9 @@ def step_fix_missing_tags(root: Path, dry_run: bool) -> dict:
                 if val:
                     album_values[key] = val
                     print(f"      -> Set {name} = '{val}'")
-        elif album_missing and dry_run:
+        elif prompt_album and dry_run:
             print(f"  -- Missing album tags (dry run): "
-                  f"{', '.join(REQUIRED_TAG_NAMES[k] for k in sorted(album_missing))} --")
+                  f"{', '.join(REQUIRED_TAG_NAMES[k] for k in sorted(prompt_album))} --")
 
         # Process each file
         for mp3, tag_dict, missing in entries:
@@ -429,12 +445,10 @@ def step_fix_missing_tags(root: Path, dry_run: bool) -> dict:
 # ── Step 3: Enforce ID3v2.3 / strip ID3v1 ────────────────────────────────────
 
 def step_enforce_id3v23(root: Path, dry_run: bool) -> dict:
-    _header(3, "Enforce ID3v2.3 (strip ID3v1, downgrade ID3v2.4)")
+    _header(3, "Enforce ID3v2.3 (strip ID3v1, downgrade ID3v2.4, convert TDRC→TYER)")
     stats = {"fixed": 0}
 
     for mp3 in sorted(root.rglob("*.mp3")):
-        needs_fix = False
-
         # Check for ID3v1 (last 128 bytes start with b'TAG')
         try:
             with open(mp3, "rb") as f:
@@ -443,31 +457,59 @@ def step_enforce_id3v23(root: Path, dry_run: bool) -> dict:
         except OSError:
             has_v1 = False
 
-        # Check ID3v2 version
+        # Check ID3v2 version and presence of TDRC (ID3v2.4 relic)
         try:
-            tags = ID3(mp3)
+            tags = load_id3(mp3)
             wrong_version = tags.version[1] != 3
+            has_tdrc = "TDRC" in tags
+            has_tyer = bool(tags.get("TYER"))
         except ID3NoHeaderError:
             tags = ID3()
             wrong_version = False
+            has_tdrc = False
+            has_tyer = False
         except Exception:
             continue
 
-        needs_fix = has_v1 or wrong_version
+        # If TYER is absent, pre-compute a year from the folder name as a fallback.
+        folder_year = extract_year(mp3.parent.name) if not has_tyer else None
 
-        if needs_fix:
-            desc = []
+        needs_fix = has_v1 or wrong_version or has_tdrc or bool(folder_year)
+        if not needs_fix:
+            continue
+
+        desc = []
+        if wrong_version:
+            desc.append(f"ID3v2.{tags.version[1]}")
+        if has_v1:
+            desc.append("ID3v1")
+        if has_tdrc:
+            desc.append("TDRC")
+        if folder_year and not has_tdrc:
+            desc.append(f"TYER missing → {folder_year} from folder")
+        print(f"  {mp3.name}: {' + '.join(desc)} -> ID3v2.3")
+        stats["fixed"] += 1
+
+        if not dry_run:
             if wrong_version:
-                desc.append(f"ID3v2.{tags.version[1]}")
-            if has_v1:
-                desc.append("ID3v1")
-            print(f"  {mp3.name}: {' + '.join(desc)} -> ID3v2.3")
-            stats["fixed"] += 1
-            if not dry_run:
-                tags.save(mp3, v2_version=3, v1=0)
+                tags.update_to_v23()
+            # Convert any remaining TDRC to TYER, then remove it.
+            # update_to_v23() handles true v2.4 files; this catches files whose
+            # version byte was already 2.3 but still contained a TDRC frame.
+            tdrc = tags.get("TDRC")
+            if tdrc:
+                year = extract_year(str(tdrc.text[0]))
+                if year and not tags.get("TYER"):
+                    tags["TYER"] = TYER(encoding=3, text=year)
+                del tags["TDRC"]
+            # Final fallback: if TYER is still absent, use the folder name year.
+            # Covers TDRC-with-unparseable-value and files with no year tag at all.
+            if not tags.get("TYER") and folder_year:
+                tags["TYER"] = TYER(encoding=3, text=folder_year)
+            tags.save(mp3, v2_version=3, v1=0)
 
     if stats["fixed"] == 0:
-        print("  All files already ID3v2.3, no ID3v1 tags.")
+        print("  All files already ID3v2.3 with no ID3v1 or TDRC frames and TYER present.")
     else:
         print(f"\n  Files fixed: {stats['fixed']}")
     return stats
@@ -481,7 +523,7 @@ def step_strip_tags(root: Path, dry_run: bool) -> dict:
 
     for mp3 in sorted(root.rglob("*.mp3")):
         try:
-            tags = ID3(mp3)
+            tags = load_id3(mp3)
         except Exception:
             continue
 
@@ -520,7 +562,7 @@ def step_normalize_chars(root: Path, dry_run: bool) -> dict:
 
     for mp3 in sorted(root.rglob("*.mp3")):
         try:
-            tags = ID3(mp3)
+            tags = load_id3(mp3)
         except Exception:
             continue
 
@@ -583,12 +625,12 @@ def step_normalize_year(root: Path, dry_run: bool) -> dict:
 
     for mp3 in sorted(root.rglob("*.mp3")):
         try:
-            tags = ID3(mp3)
+            tags = load_id3(mp3)
         except Exception:
             continue
 
         changed = False
-        for frame_id, cls in (("TYER", TYER), ("TDRC", TDRC)):
+        for frame_id, cls in (("TYER", TYER),):
             frame = tags.get(frame_id)
             if not frame:
                 continue
@@ -627,7 +669,7 @@ def step_pad_tracks(root: Path, dry_run: bool) -> dict:
 
     for mp3 in sorted(root.rglob("*.mp3")):
         try:
-            tags = ID3(mp3)
+            tags = load_id3(mp3)
         except Exception:
             continue
 
@@ -642,7 +684,7 @@ def step_pad_tracks(root: Path, dry_run: bool) -> dict:
 
         width   = folder_width.get(mp3.parent, 2)
         padded  = str(num).zfill(width)
-        padded_total = str(total).zfill(width) if total is not None else None
+        padded_total = str(total) if total is not None else None
         new_val = f"{padded}/{padded_total}" if padded_total else padded
 
         if original != new_val:
@@ -672,7 +714,7 @@ def step_set_total_tracks(root: Path, dry_run: bool) -> dict:
 
         for mp3 in mp3s:
             try:
-                tags = ID3(mp3)
+                tags = load_id3(mp3)
             except Exception:
                 continue
             trck = tags.get("TRCK")
@@ -682,7 +724,7 @@ def step_set_total_tracks(root: Path, dry_run: bool) -> dict:
             num, cur_total = parse_track(original)
             if num is None:
                 continue
-            new_val = f"{str(num).zfill(width)}/{str(total).zfill(width)}"
+            new_val = f"{str(num).zfill(width)}/{total}"
             if original != new_val:
                 print(f"  {mp3.name}  TRCK: {original}  ->  {new_val}")
                 stats["fixed"] += 1
@@ -704,7 +746,7 @@ def _album_folder_name(folder: Path) -> str | None:
     years, albums = [], []
     for mp3 in folder.glob("*.mp3"):
         try:
-            tags = ID3(mp3)
+            tags = load_id3(mp3)
             for fid in ("TYER", "TDRC"):
                 frame = tags.get(fid)
                 if frame:
@@ -782,7 +824,7 @@ def step_deduplicate_albums(root: Path, dry_run: bool) -> dict:
             titles = []
             for mp3 in album_folder.glob("*.mp3"):
                 try:
-                    tags = ID3(mp3)
+                    tags = load_id3(mp3)
                     talb = tags.get("TALB")
                     if talb:
                         titles.append(str(talb.text[0]))
@@ -808,7 +850,7 @@ def step_deduplicate_albums(root: Path, dry_run: bool) -> dict:
                 year = None
                 for mp3 in mp3_list:
                     try:
-                        tags = ID3(mp3)
+                        tags = load_id3(mp3)
                         for fid in ("TYER", "TDRC"):
                             frame = tags.get(fid)
                             if frame:
@@ -836,7 +878,7 @@ def step_deduplicate_albums(root: Path, dry_run: bool) -> dict:
 
                 for mp3 in mp3_list:
                     try:
-                        tags = ID3(mp3)
+                        tags = load_id3(mp3)
                         tags["TALB"] = TALB(encoding=3, text=new_title)
                         tags.save(mp3, v2_version=3, v1=0)
                         stats["retagged"] += 1
@@ -888,7 +930,7 @@ def step_rename_artist_folders(root: Path, dry_run: bool) -> dict:
         mp3_list = sorted(artist_folder.rglob("*.mp3"))
         for mp3 in mp3_list:
             try:
-                tags = ID3(mp3)
+                tags = load_id3(mp3)
                 tpe1 = tags.get("TPE1")
                 if tpe1:
                     names.append(normalize_string(str(tpe1.text[0])))
@@ -930,7 +972,7 @@ def step_rename_artist_folders(root: Path, dry_run: bool) -> dict:
                     retagged = 0
                     for mp3 in mp3_list:
                         try:
-                            tags = ID3(mp3)
+                            tags = load_id3(mp3)
                             tags["TPE1"] = TPE1(encoding=3, text=folder_artist)
                             tags.save(mp3, v2_version=3, v1=0)
                             retagged += 1
@@ -969,7 +1011,7 @@ def step_rename_artist_folders(root: Path, dry_run: bool) -> dict:
             album_artists: list[str] = []
             for mp3 in album_subfolder.glob("*.mp3"):
                 try:
-                    tags = ID3(mp3)
+                    tags = load_id3(mp3)
                     tpe1 = tags.get("TPE1")
                     if tpe1:
                         album_artists.append(normalize_string(str(tpe1.text[0])))
@@ -1009,7 +1051,7 @@ def step_rename_artist_folders(root: Path, dry_run: bool) -> dict:
                 retagged = 0
                 for mp3 in sorted(album_subfolder.glob("*.mp3")):
                     try:
-                        tags = ID3(mp3)
+                        tags = load_id3(mp3)
                         tags["TPE1"] = TPE1(encoding=3, text=effective_name)
                         tags.save(mp3, v2_version=3, v1=0)
                         retagged += 1
@@ -1056,7 +1098,7 @@ def step_rename_files(root: Path, dry_run: bool) -> dict:
 
     for mp3 in sorted(root.rglob("*.mp3")):
         try:
-            tags = ID3(mp3)
+            tags = load_id3(mp3)
         except Exception:
             continue
 

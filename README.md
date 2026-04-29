@@ -9,6 +9,12 @@ A set of Python scripts for managing and standardizing a local MP3 music library
 - `Pillow` — placeholder cover generation (`pip install Pillow`)
 - `ffmpeg` — lossless audio conversion (system package: `sudo apt install ffmpeg`)
 
+## ID3 Handling
+
+- The application writes MP3 tags as `ID3v2.3` only with `v2_version=3, v1=0`.
+- All ID3 reads must use `translate=False` so mutagen does not auto-translate `TYER` into `TDRC` in memory.
+- `TYER` is the only supported year frame in compliant library files. `TDRC` is treated as a source/input relic to be converted and removed.
+
 ## Usage
 
 Launch the interactive menu:

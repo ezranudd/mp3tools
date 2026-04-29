@@ -13,13 +13,14 @@ Checks performed:
   1.  Required tags present (Artist, Title, Album, Year, Genre, Track)
   2.  No non-standard characters in tag values or filenames
   3.  Year tags normalized to 4-digit year only
-  4.  Track numbers zero-padded (01/10 not 1/10)
-  5.  Only MP3 files + one "cover.*" image per album folder; no other files
-  6.  Filename matches "XX. Artist - Title.mp3" derived from tags
-  7.  Album folder name matches "YEAR - Album Title" derived from tags
-  8.  Artist (parent) folder name matches Artist tag
-  9.  No CD subfolders (CD1, CD2, …) — flag for merge_cds
- 10.  No other subfolders containing music
+  4.  TDRC frame absent (ID3v2.4 timestamp must not appear in ID3v2.3 files)
+  5.  Track numbers zero-padded (01/9 not 1/9)
+  6.  Only MP3 files + one "cover.*" image per album folder; no other files
+  7.  Filename matches "XX. Artist - Title.mp3" derived from tags
+  8.  Album folder name matches "YEAR - Album Title" derived from tags
+  9.  Artist (parent) folder name matches Artist tag
+ 10.  No CD subfolders (CD1, CD2, …) — flag for merge_cds
+ 11.  No other subfolders containing music
 """
 
 import argparse
@@ -58,6 +59,7 @@ CATEGORY_LABELS: dict[str, str] = {
     "MISSING_TAG":   "Missing required tag",
     "ID3_VERSION":   "Wrong ID3 version (must be ID3v2.3)",
     "ID3_V1":        "ID3v1 tag present (must be removed)",
+    "RELIC_TAG":     "ID3v2.4 frame in ID3v2.3 file (TDRC must be converted to TYER)",
     "CHAR_NORM":     "Characters need normalization",
     "DATE_NORM":     "Date needs normalization",
     "TRACK_PAD":     "Track number not padded",
@@ -117,6 +119,11 @@ def _has_id3v1(path: Path) -> bool:
         return False
 
 
+def load_id3(path: Path) -> ID3:
+    """Load raw ID3 frames without mutagen's v2.4 translation layer."""
+    return ID3(path, translate=False)
+
+
 def read_tags(path: Path) -> dict | None:
     """
     Read ID3 tags from file.
@@ -125,7 +132,7 @@ def read_tags(path: Path) -> dict | None:
     """
     keys = ("TPE1", "TIT2", "TALB", "TYER", "TDRC", "TCON", "TRCK")
     try:
-        tags = ID3(path)
+        tags = load_id3(path)
         result = {
             k: (str(tags[k].text[0]) if k in tags and hasattr(tags[k], "text") else None)
             for k in keys
@@ -206,14 +213,20 @@ def audit_file(path: Path, width: int) -> tuple[dict | None, list[Issue]]:
     if _has_id3v1(path):
         issues.append(Issue("ID3_V1", "ID3v1 tag present — run standardize to remove"))
 
+    # TDRC is an ID3v2.4 frame that must not appear in ID3v2.3 files
+    if tags.get("TDRC"):
+        issues.append(Issue("RELIC_TAG",
+            f"TDRC frame present ({tags['TDRC']!r}) — ID3v2.4 timestamp in a v2.3 file; "
+            "run standardize to convert to TYER"))
+
     # 1. Missing required tags
     missing = []
-    if not tags.get("TPE1"):                         missing.append("Artist")
-    if not tags.get("TIT2"):                         missing.append("Title")
-    if not tags.get("TALB"):                         missing.append("Album")
-    if not tags.get("TYER") and not tags.get("TDRC"): missing.append("Year")
-    if not tags.get("TCON"):                         missing.append("Genre")
-    if not tags.get("TRCK"):                         missing.append("Track")
+    if not tags.get("TPE1"): missing.append("Artist")
+    if not tags.get("TIT2"): missing.append("Title")
+    if not tags.get("TALB"): missing.append("Album")
+    if not tags.get("TYER"): missing.append("Year")
+    if not tags.get("TCON"): missing.append("Genre")
+    if not tags.get("TRCK"): missing.append("Track")
     if missing:
         issues.append(Issue("MISSING_TAG", "Missing: " + ", ".join(missing)))
 
@@ -227,15 +240,14 @@ def audit_file(path: Path, width: int) -> tuple[dict | None, list[Issue]]:
     if has_nonstandard_chars(path.name):
         issues.append(Issue("CHAR_NORM", f"Filename: {path.name!r} → {normalize(path.name)!r}"))
 
-    # 3. Date normalization
-    for key in ("TYER", "TDRC"):
-        val = tags.get(key)
-        if val:
-            year = extract_year(val)
-            if not year:
-                issues.append(Issue("DATE_NORM", f"{key}: unrecognizable value {val!r}"))
-            elif val != year:
-                issues.append(Issue("DATE_NORM", f"{key}: {val!r} → {year!r}"))
+    # 3. Date normalization (TYER only — TDRC must not be present, caught above)
+    val = tags.get("TYER")
+    if val:
+        year = extract_year(val)
+        if not year:
+            issues.append(Issue("DATE_NORM", f"TYER: unrecognizable value {val!r}"))
+        elif val != year:
+            issues.append(Issue("DATE_NORM", f"TYER: {val!r} → {year!r}"))
 
     # 4. Track number padding
     trck = tags.get("TRCK")
@@ -243,7 +255,7 @@ def audit_file(path: Path, width: int) -> tuple[dict | None, list[Issue]]:
         num, total = parse_track(trck)
         if num is not None:
             pn = str(num).zfill(width)
-            pt = str(total).zfill(width) if total is not None else None
+            pt = str(total) if total is not None else None
             expected = f"{pn}/{pt}" if pt else pn
             if trck != expected:
                 issues.append(Issue("TRACK_PAD", f"TRCK: {trck!r} → {expected!r}"))

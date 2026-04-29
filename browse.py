@@ -82,6 +82,11 @@ def _extract_year(s: str) -> str | None:
     return m.group(1) if m else None
 
 
+def _load_id3(path: Path) -> ID3:
+    """Load raw ID3 frames without mutagen's v2.4 translation layer."""
+    return ID3(path, translate=False)
+
+
 # ── Node model ────────────────────────────────────────────────────────────────
 
 ARTIST = "artist"
@@ -167,11 +172,9 @@ def build_tree(root: Path) -> list[Node]:
 
 def _read_tags(path: Path) -> dict[str, str]:
     try:
-        audio = MP3(path)
-        t = audio.tags
+        audio = MP3(path, ID3=lambda *a, **kw: ID3(*a, translate=False, **kw))
+        t = _load_id3(path)
         def g(k: str) -> str:
-            if t is None:
-                return ""
             f = t.get(k)
             return str(f.text[0]) if f and hasattr(f, "text") else ""
         result = {
@@ -213,7 +216,7 @@ def _write_tags(path: Path, updates: dict[str, str]) -> None:
         "TYER": _TYER, "TDRC": _TDRC, "TCON": _TCON, "TRCK": _TRCK,
     }
     try:
-        tags = ID3(path)
+        tags = _load_id3(path)
     except ID3NoHeaderError:
         tags = ID3()
     for frame_id, value in updates.items():

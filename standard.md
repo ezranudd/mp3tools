@@ -60,6 +60,7 @@ Format: `TT. Artist Name - Track Title.mp3`
 - ID3v2.4 tags are not permitted (incompatible with many players and hardware).
 - ID3v1 tags must not be present (legacy format; causes "ID3v1 | ID3v2.3" display in players).
 - When writing tags, always save with `v2_version=3, v1=0`.
+- When reading tags through mutagen, loads must use `translate=False` so `TYER` is not auto-translated to `TDRC` in memory.
 
 ---
 
@@ -74,20 +75,21 @@ All six tags must be present on every MP3 file:
 | TALB | Album  | Some Album Title     |
 | TYER | Year   | 1994                 |
 | TCON | Genre  | Rock                 |
-| TRCK | Track  | 01/10                |
+| TRCK | Track  | 01/9                 |
 
-- Year is stored in `TYER` (ID3v2.3). `TDRC` (ID3v2.4) is also accepted if present, but must contain the same normalized value.
-- If both `TYER` and `TDRC` are present, both must be normalized.
+- Year is stored in `TYER` (ID3v2.3 only). `TDRC` (ID3v2.4 timestamp frame) must not be present.
+- If a source file contains `TDRC` but no `TYER`, standardize converts the year value to `TYER` and removes `TDRC`.
+- If `TYER` is absent and cannot be recovered from `TDRC`, standardize extracts the year from the album folder name (e.g. `1994 - Album Title` → `TYER: 1994`).
 
 ---
 
 ## Track Numbers
 
-- Format: `NN/TT` where `NN` is the track number and `TT` is the total track count.
-- Both are zero-padded to the same width:
-  - **2 digits** when the album has fewer than 100 tracks (e.g. `01/10`, `09/10`, `10/10`)
-  - **3 digits** when the album has 100 or more tracks (e.g. `001/120`)
-- The total track count (`/TT`) is required.
+- Format: `NN/T` where `NN` is the zero-padded track number and `T` is the total track count.
+- The track number is zero-padded; the total is **not** padded:
+  - **2 digits** for the track number when the album has fewer than 100 tracks (e.g. `01/9`, `09/9`, `10/10`)
+  - **3 digits** for the track number when the album has 100 or more tracks (e.g. `001/120`)
+- The total track count (`/T`) is required.
 
 ---
 
@@ -95,7 +97,8 @@ All six tags must be present on every MP3 file:
 
 - Must contain **only a 4-digit year** (`1900`–`2099`).
 - Extended formats are not allowed: `1999-01-01` → `1999`, `1999-05` → `1999`.
-- Applies to both `TYER` and `TDRC` if either is present.
+- Only `TYER` is permitted. `TDRC` is an ID3v2.4 frame and must not be present in a compliant file.
+- When `TYER` is absent, standardize attempts to recover it in order: (1) from `TDRC` if present, (2) from the album folder name.
 
 ---
 

@@ -26,13 +26,13 @@ from import_preview import run_preview
 from mutagen.mp3 import MP3 as _MP3Info
 from mutagen.id3 import (
     ID3, ID3NoHeaderError,
-    TPE1, TIT2, TALB, TYER, TDRC, TCON, TRCK,
+    TPE1, TIT2, TALB, TYER, TCON, TRCK,
 )
 
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-KEEP_TAGS = {"TPE1", "TIT2", "TALB", "TYER", "TDRC", "TCON", "TRCK"}
+KEEP_TAGS = {"TPE1", "TIT2", "TALB", "TYER", "TCON", "TRCK"}
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
 
 CHAR_REPLACEMENTS: dict[str, str] = {
@@ -101,17 +101,25 @@ def get_input(prompt: str) -> str:
         sys.exit(0)
 
 
+def load_id3(path: Path) -> ID3:
+    """Load raw ID3 frames without mutagen's v2.4 translation layer."""
+    return ID3(path, translate=False)
+
+
 # ── Tag reading ────────────────────────────────────────────────────────────────
 
 def read_tags(mp3: Path) -> dict | None:
     """Return a flat tag dict {TPE1, TIT2, TALB, YEAR, TCON, TRCK, _MP3_BITRATE} or None on error."""
     try:
-        audio = _MP3Info(mp3)
+        audio = _MP3Info(mp3, ID3=lambda *a, **kw: ID3(*a, translate=False, **kw))
     except Exception as e:
         print(f"  ERROR reading {mp3.name}: {e}")
         return None
 
-    tags = audio.tags  # None when no ID3 header
+    try:
+        tags = load_id3(mp3)
+    except ID3NoHeaderError:
+        tags = None
 
     def g(k: str) -> str | None:
         if tags is None:
@@ -388,13 +396,13 @@ def import_tracks(source: Path, library: Path, dry_run: bool) -> None:
         if offset > 0 and not dry_run:
             for ex in existing_mp3s:
                 try:
-                    etags = ID3(ex)
+                    etags = load_id3(ex)
                     trck  = etags.get("TRCK")
                     if trck:
                         n, _ = parse_track(str(trck.text[0]))
                         if n is not None:
                             etags["TRCK"] = TRCK(encoding=3,
-                                text=f"{str(n).zfill(width)}/{str(total).zfill(width)}")
+                                text=f"{str(n).zfill(width)}/{total}")
                             etags.save(ex, v2_version=3, v1=0)
                 except Exception as e:
                     print(f"  ERROR updating existing TRCK ({ex.name}): {e}")
@@ -433,7 +441,7 @@ def import_tracks(source: Path, library: Path, dry_run: bool) -> None:
                     shutil.copy2(src, dest_path)
 
                 try:
-                    dtags = ID3(dest_path)
+                    dtags = load_id3(dest_path)
                 except ID3NoHeaderError:
                     dtags = ID3()
 
@@ -445,9 +453,8 @@ def import_tracks(source: Path, library: Path, dry_run: bool) -> None:
                 dtags["TIT2"] = TIT2(encoding=3, text=td.get("TIT2") or src.stem)
                 dtags["TALB"] = TALB(encoding=3, text=album_tag)
                 dtags["TYER"] = TYER(encoding=3, text=year_tag)
-                dtags["TDRC"] = TDRC(encoding=3, text=year_tag)
                 dtags["TRCK"] = TRCK(encoding=3,
-                    text=f"{str(i).zfill(width)}/{str(total).zfill(width)}")
+                    text=f"{str(i).zfill(width)}/{total}")
                 if td.get("TCON"):
                     dtags["TCON"] = TCON(encoding=3, text=td["TCON"])
 
