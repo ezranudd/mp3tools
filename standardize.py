@@ -290,8 +290,16 @@ def _merge_one(album: Path, subfolders: list[Path], dry_run: bool) -> dict:
                         shutil.copy2(cover_src, cover_dst)
                 break
 
-    # Delete subfolders
+    # Delete subfolders — skip any that still contain unexpected non-image files
     for sf in subfolders:
+        unexpected = sorted(
+            f for f in sf.rglob("*")
+            if f.is_file() and f.suffix.lower() not in IMAGE_EXTENSIONS
+        )
+        if unexpected:
+            names = ", ".join(f.name for f in unexpected)
+            print(f"  WARNING: keeping {sf.name}/ — unexpected files present: {names}")
+            continue
         print(f"  Delete: {sf.name}/")
         if not dry_run:
             try:
@@ -1303,24 +1311,9 @@ def _is_image(name: str) -> bool:
     return Path(name).suffix.lower() in IMAGE_EXTENSIONS
 
 
-def _create_placeholder_cover(path: Path) -> bool:
-    """Write a 600x600 solid dark-grey JPEG. Returns True on success."""
-    try:
-        from PIL import Image
-        img = Image.new("RGB", (600, 600), color=(30, 30, 30))
-        img.save(path, "JPEG", quality=85)
-        return True
-    except ImportError:
-        print("    (Pillow not installed — run: pip install Pillow)")
-        return False
-    except Exception as e:
-        print(f"    ERROR creating placeholder: {e}")
-        return False
-
-
 def step_clean_files(root: Path, dry_run: bool) -> dict:
     _header(13, "Clean non-MP3 files and cover images")
-    stats = {"deleted": 0, "renamed_covers": 0, "placeholders": 0, "errors": 0}
+    stats = {"deleted": 0, "renamed_covers": 0, "missing_covers": 0, "errors": 0}
 
     for folder in sorted(album_folders(root)):
         all_files = [f for f in folder.iterdir() if f.is_file()]
@@ -1335,18 +1328,17 @@ def step_clean_files(root: Path, dry_run: bool) -> dict:
 
         # ── Determine which cover to keep ────────────────────────────────────
         keep_cover: Path | None = None
-        to_delete: list[Path]   = list(others)  # non-MP3 non-image files always go
+        auto_delete: list[Path]    = []          # image files, no prompt needed
+        confirm_delete: list[Path] = list(others)  # non-MP3 non-image files, ask first
 
         if cover_images:
-            keep_cover  = cover_images[0]
-            to_delete  += cover_images[1:]  # extra cover.* files
-            to_delete  += other_images      # other images go
+            keep_cover    = cover_images[0]
+            auto_delete  += cover_images[1:]
+            auto_delete  += other_images
         elif other_images:
-            # No cover.* exists — pick best candidate, rename it
             keep_cover    = other_images[0]
-            to_delete    += other_images[1:]
-            new_stem      = "cover"
-            new_cover_name = new_stem + keep_cover.suffix.lower()
+            auto_delete  += other_images[1:]
+            new_cover_name = "cover" + keep_cover.suffix.lower()
             new_cover_path = keep_cover.parent / new_cover_name
             print(f"  [{rel}] rename cover: {keep_cover.name}  ->  {new_cover_name}")
             if not dry_run:
@@ -1360,7 +1352,8 @@ def step_clean_files(root: Path, dry_run: bool) -> dict:
             else:
                 stats["renamed_covers"] += 1
 
-        for f in to_delete:
+        # ── Auto-delete image files ───────────────────────────────────────────
+        for f in auto_delete:
             print(f"  [{rel}] delete: {f.name}")
             if not dry_run:
                 try:
@@ -1372,24 +1365,50 @@ def step_clean_files(root: Path, dry_run: bool) -> dict:
             else:
                 stats["deleted"] += 1
 
-        if keep_cover is None:
-            placeholder = folder / "cover.jpg"
-            print(f"  [{rel}] create placeholder cover.jpg")
-            if not dry_run:
-                if _create_placeholder_cover(placeholder):
-                    stats["placeholders"] += 1
-                else:
-                    stats["errors"] += 1
+        # ── Confirm before deleting non-MP3 non-image files ──────────────────
+        if confirm_delete:
+            print(f"  [{rel}] non-standard files:")
+            for f in sorted(confirm_delete):
+                print(f"    {f.name}")
+            if dry_run:
+                print(f"    (dry run) {len(confirm_delete)} file(s) would be deleted after confirmation")
+                stats["deleted"] += len(confirm_delete)
             else:
-                stats["placeholders"] += 1
+                choice = ""
+                while choice not in ("d", "k"):
+                    choice = get_input(
+                        f"    [D]elete {len(confirm_delete)} file(s)  [K]eep: "
+                    ).lower()
+                if choice == "d":
+                    for f in sorted(confirm_delete):
+                        try:
+                            f.unlink()
+                            stats["deleted"] += 1
+                        except Exception as e:
+                            print(f"    ERROR deleting {f.name}: {e}")
+                            stats["errors"] += 1
+                else:
+                    print(f"    Kept.")
 
-    if stats["deleted"] == 0 and stats["renamed_covers"] == 0 and stats["placeholders"] == 0:
+        # ── Report missing cover (no longer auto-created) ─────────────────────
+        if keep_cover is None:
+            print(f"  [{rel}] no cover found — add cover.jpg manually")
+            stats["missing_covers"] += 1
+
+    if (stats["deleted"] == 0 and stats["renamed_covers"] == 0
+            and stats["missing_covers"] == 0 and stats["errors"] == 0):
         print("  All folders already clean.")
     else:
-        print(f"\n  Files deleted: {stats['deleted']}  "
-              f"Covers renamed: {stats['renamed_covers']}  "
-              f"Placeholders created: {stats['placeholders']}  "
-              f"Errors: {stats['errors']}")
+        parts = []
+        if stats["deleted"]:
+            parts.append(f"Files deleted: {stats['deleted']}")
+        if stats["renamed_covers"]:
+            parts.append(f"Covers renamed: {stats['renamed_covers']}")
+        if stats["missing_covers"]:
+            parts.append(f"Albums needing cover art: {stats['missing_covers']}")
+        if stats["errors"]:
+            parts.append(f"Errors: {stats['errors']}")
+        print("\n  " + "  ".join(parts))
     return stats
 
 

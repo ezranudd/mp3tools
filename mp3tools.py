@@ -3,6 +3,8 @@
 Interactive menu for MP3 library tools.
 """
 
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -20,7 +22,8 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 
 
 def clear_screen():
-    sys.stdout.write("\033c")
+    # \033[2J clears visible screen, \033[3J clears scrollback, \033[H homes cursor
+    sys.stdout.write("\033[2J\033[3J\033[H")
     sys.stdout.flush()
 
 
@@ -75,9 +78,31 @@ def print_menu(directory: str, dry_run: bool):
 
 def select_directory() -> str | None:
     cwd = Path.cwd()
+    page = 0
 
     while True:
         clear_screen()
+
+        try:
+            term_w, term_h = os.get_terminal_size()
+        except OSError:
+            term_w, term_h = 80, 24
+
+        subdirs = sorted(d for d in cwd.iterdir() if d.is_dir() and not d.name.startswith("."))
+        num_dirs = len(subdirs)
+        num_w = len(str(num_dirs)) if num_dirs else 1
+
+        # 8 header lines + 3 current-dir block + 9 footer lines (incl. prompt)
+        avail_rows = max(4, term_h - 20)
+
+        max_name = max((len(d.name) for d in subdirs), default=10)
+        col_w = num_w + 3 + max_name + 1 + 2   # "[NNN] name/" + 2-char gap
+        num_cols = max(1, (term_w - 2) // col_w)
+
+        per_page = num_cols * avail_rows
+        total_pages = max(1, (num_dirs + per_page - 1) // per_page) if num_dirs else 1
+        page = max(0, min(page, total_pages - 1))
+
         print(f"{CYAN}{'=' * 50}{RESET}")
         print(f"{BOLD}{CYAN}  SELECT DIRECTORY{RESET}")
         print(f"{CYAN}{'=' * 50}{RESET}")
@@ -87,30 +112,48 @@ def select_directory() -> str | None:
         print("-" * 50)
         print()
 
-        subdirs = sorted([d for d in cwd.iterdir() if d.is_dir() and not d.name.startswith(".")])
-
         print(f"  [{BOLD}{GREEN}.{RESET}] {BOLD}Use current directory{RESET}")
         print(f"      {DIM}{cwd}{RESET}")
         print()
 
-        for i, subdir in enumerate(subdirs, 1):
-            print(f"  [{BOLD}{GREEN}{i}{RESET}] {subdir.name}/")
+        start = page * per_page
+        page_dirs = subdirs[start : start + per_page]
+
+        if page_dirs:
+            num_rows = (len(page_dirs) + num_cols - 1) // num_cols
+            for r in range(num_rows):
+                line = ""
+                for c in range(num_cols):
+                    i = c * num_rows + r
+                    if i >= len(page_dirs):
+                        break
+                    num = start + i + 1
+                    name = page_dirs[i].name
+                    plain = f"[{num:{num_w}}] {name}/"
+                    colored = f"[{BOLD}{GREEN}{num:{num_w}}{RESET}] {name}/"
+                    line += colored + " " * (col_w - len(plain))
+                print("  " + line)
+        else:
+            print(f"  {DIM}(no subdirectories){RESET}")
 
         print()
         print("-" * 50)
         print()
+        if total_pages > 1:
+            print(f"  Page {page + 1}/{total_pages}  "
+                  f"[{BOLD}{BLUE}>{RESET}] Next  [{BOLD}{BLUE}<{RESET}] Prev")
         print(f"  [{BOLD}{BLUE}p{RESET}] Type absolute path")
         print(f"  [{BOLD}{BLUE}u{RESET}] Go up one level")
         print(f"  [{BOLD}{RED}c{RESET}] Cancel")
         print()
 
-        choice = get_input("Select option: ").lower()
+        choice = get_input("Select option: ").strip()
 
-        if choice == "c":
+        if choice.lower() == "c":
             return None
         elif choice == ".":
             return str(cwd)
-        elif choice == "p":
+        elif choice.lower() == "p":
             print()
             path_input = get_input("Enter absolute path: ")
             if path_input:
@@ -119,17 +162,138 @@ def select_directory() -> str | None:
                     return str(path)
                 print(f"\n{RED}ERROR: Not a valid directory: {path_input}{RESET}")
                 get_input("\nPress Enter to continue...")
-        elif choice == "u":
+        elif choice.lower() == "u":
             parent = cwd.parent
             if parent != cwd:
                 cwd = parent
+            page = 0
+        elif choice == ">" and total_pages > 1:
+            page = min(total_pages - 1, page + 1)
+        elif choice == "<" and total_pages > 1:
+            page = max(0, page - 1)
         elif choice.isdigit():
             idx = int(choice) - 1
             if 0 <= idx < len(subdirs):
                 cwd = subdirs[idx]
+                page = 0
             else:
                 print(f"\n{RED}Invalid selection{RESET}")
                 get_input("\nPress Enter to continue...")
+        else:
+            print(f"\n{RED}Unknown option: {choice}{RESET}")
+            get_input("\nPress Enter to continue...")
+
+
+def _fmt_size(size: int | None) -> str:
+    if size is None:
+        return "?"
+    units = ("B", "KB", "MB", "GB", "TB")
+    value = float(size)
+    for unit in units:
+        if value < 1024 or unit == units[-1]:
+            return f"{int(value)} {unit}" if unit == "B" else f"{value:.1f} {unit}"
+        value /= 1024
+    return str(size)
+
+
+def get_mounted_devices() -> list[dict]:
+    skip_fs = {
+        "sysfs", "proc", "devtmpfs", "devpts", "tmpfs", "cgroup", "cgroup2",
+        "pstore", "bpf", "autofs", "mqueue", "hugetlbfs", "debugfs", "tracefs",
+        "fusectl", "configfs", "securityfs", "efivarfs", "overlay", "nsfs",
+        "ramfs", "squashfs",
+    }
+    skip_prefixes = ("/sys", "/proc", "/dev", "/run")
+
+    seen: set[Path] = set()
+
+    try:
+        with open("/proc/mounts") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) < 3:
+                    continue
+                mount = Path(parts[1])
+                fs_type = parts[2]
+                if (
+                    fs_type not in skip_fs
+                    and mount != Path("/")
+                    and not any(str(mount).startswith(p) for p in skip_prefixes)
+                    and mount.is_dir()
+                    and mount not in seen
+                ):
+                    seen.add(mount)
+    except OSError:
+        pass
+
+    for base in (Path("/media"), Path("/mnt")):
+        if not base.is_dir():
+            continue
+        for item in sorted(base.iterdir()):
+            if not item.is_dir() or item.name.startswith("."):
+                continue
+            subs = [s for s in item.iterdir() if s.is_dir() and not s.name.startswith(".")]
+            if subs:
+                for sub in sorted(subs):
+                    seen.add(sub)
+            else:
+                seen.add(item)
+
+    devices = []
+    for path in sorted(seen):
+        try:
+            usage = shutil.disk_usage(path)
+            devices.append({"path": path, "free": usage.free, "total": usage.total})
+        except OSError:
+            devices.append({"path": path, "free": None, "total": None})
+    return devices
+
+
+def select_device() -> str | None:
+    while True:
+        clear_screen()
+        print(f"{CYAN}{'=' * 50}{RESET}")
+        print(f"{BOLD}{CYAN}  SELECT DEVICE{RESET}")
+        print(f"{CYAN}{'=' * 50}{RESET}")
+        print()
+
+        devices = get_mounted_devices()
+
+        if devices:
+            print(f"  {BOLD}Mounted devices:{RESET}")
+            print()
+            for i, dev in enumerate(devices, 1):
+                path = dev["path"]
+                label = path.name or str(path)
+                if dev["free"] is not None:
+                    size_info = f"{_fmt_size(dev['free'])} free / {_fmt_size(dev['total'])} total"
+                else:
+                    size_info = "size unknown"
+                print(f"  [{BOLD}{GREEN}{i}{RESET}] {BOLD}{label}{RESET}  {DIM}{path}{RESET}")
+                print(f"      {DIM}{size_info}{RESET}")
+                print()
+        else:
+            print(f"  {DIM}No mounted devices found.{RESET}")
+            print()
+
+        print("-" * 50)
+        print()
+        print(f"  [{BOLD}{BLUE}b{RESET}] Browse for a directory")
+        print(f"  [{BOLD}{RED}c{RESET}] Cancel")
+        print()
+
+        choice = get_input("Select option: ").lower()
+
+        if choice == "c":
+            return None
+        elif choice == "b":
+            return select_directory()
+        elif choice.isdigit():
+            idx = int(choice) - 1
+            if 0 <= idx < len(devices):
+                return str(devices[idx]["path"])
+            print(f"\n{RED}Invalid selection{RESET}")
+            get_input("\nPress Enter to continue...")
         else:
             print(f"\n{RED}Unknown option: {choice}{RESET}")
             get_input("\nPress Enter to continue...")
@@ -226,9 +390,7 @@ def main():
                 print(f"\n{RED}ERROR: Please set a library directory first (press 'd'){RESET}")
                 get_input("\nPress Enter to continue...")
                 continue
-            print(f"\n{CYAN}Select the device directory to sync to:{RESET}\n")
-            get_input("Press Enter to choose device directory...")
-            device = select_directory()
+            device = select_device()
             if not device:
                 continue
             if device == directory:
@@ -239,7 +401,6 @@ def main():
             if dry_run:
                 args.append("--dry-run")
             run_script("sync_library.py", args)
-            get_input("\nPress Enter to continue...")
 
         else:
             print(f"\n{RED}Unknown option: {choice}{RESET}")

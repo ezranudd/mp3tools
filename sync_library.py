@@ -297,13 +297,14 @@ def draw_artist_menu(
         idx = scroll + i
         y = 4 + i
         mark = "x" if artist.selected else " "
-        name_w = max(12, list_w - 42)
+        name_w = max(12, list_w - 55)
+        status_w = max(0, list_w - 33 - name_w)
         row = (
             f"[{mark}] {idx + 1:>3}. {_clip(artist.path.name, name_w):<{name_w}} "
-            f"{format_size(artist.size):>9} {artist.files:>5} files  {artist.device_status}"
+            f"{format_size(artist.size):>9} {artist.files:>5} files  {_clip(artist.device_status, status_w)}"
         )
         attr = curses.color_pair(C_SEL) if idx == sel else 0
-        _put(stdscr, y, 1, _clip(row, list_w).ljust(list_w), attr)
+        _put(stdscr, y, 1, row.ljust(list_w), attr)
 
     right_h = max(0, h - 6)
     for i, line in enumerate(_existing_lines(existing, right_h)):
@@ -387,15 +388,22 @@ def draw_progress(
 def copy_with_progress(src: Path, dst: Path, progress) -> int:
     copied = 0
     dst.parent.mkdir(parents=True, exist_ok=True)
-    with open(src, "rb") as fin, open(dst, "wb") as fout:
-        while True:
-            chunk = fin.read(1024 * 1024)
-            if not chunk:
-                break
-            fout.write(chunk)
-            copied += len(chunk)
-            progress(len(chunk))
-    shutil.copystat(src, dst)
+    tmp = dst.with_suffix(dst.suffix + ".part")
+    try:
+        with open(src, "rb") as fin, open(tmp, "wb") as fout:
+            while True:
+                chunk = fin.read(1024 * 1024)
+                if not chunk:
+                    break
+                fout.write(chunk)
+                copied += len(chunk)
+                progress(len(chunk))
+        shutil.copystat(src, tmp)
+        tmp.rename(dst)
+    except BaseException:
+        if tmp.exists():
+            tmp.unlink()
+        raise
     return copied
 
 
