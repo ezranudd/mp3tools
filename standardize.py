@@ -38,7 +38,7 @@ from convert_lossless import step_convert_lossless
 
 from mutagen.id3 import (
     ID3, ID3NoHeaderError,
-    TPE1, TIT2, TALB, TYER, TCON, TRCK, TXXX,
+    TPE1, TIT2, TALB, TYER, TCON, TRCK,
     TPE2,
 )
 
@@ -46,14 +46,15 @@ from mutagen.id3 import (
 # ── Shared constants ──────────────────────────────────────────────────────────
 
 KEEP_TAGS = {"TPE1", "TPE2", "TIT2", "TALB", "TYER", "TCON", "TRCK"}
-ALBUM_ARTIST_DESC = "album artist"
+# TPE2 is the canonical album artist frame. The TXXX variants are legacy —
+# read them for migration but never write them.
 ALBUM_ARTIST_KEYS = (
+    "TPE2",
     "TXXX:album artist",
     "TXXX:ALBUMARTIST",
     "TXXX:ALBUM ARTIST",
     "TXXX:AlbumArtist",
     "TXXX:Album Artist",
-    "TPE2",
 )
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
@@ -170,28 +171,11 @@ def album_artist_value(tags: ID3) -> str | None:
     return None
 
 
-def has_canonical_album_artist(tags: ID3) -> bool:
-    return bool(tags.get(f"TXXX:{ALBUM_ARTIST_DESC}"))
-
-
-def album_artist_mirror_needs_fix(tags: ID3, value: str) -> bool:
-    tpe2 = tags.get("TPE2")
-    if not tpe2 or not hasattr(tpe2, "text") or not tpe2.text:
-        return True
-    return str(tpe2.text[0]) != value
-
-
 def set_album_artist(tags: ID3, value: str) -> None:
-    canonical_key = f"TXXX:{ALBUM_ARTIST_DESC}"
     for key in ALBUM_ARTIST_KEYS:
-        if key not in (canonical_key, "TPE2") and key in tags:
+        if key != "TPE2" and key in tags:
             del tags[key]
-    tags["TPE2"] = TPE2(encoding=3, text=value)
-    tags[canonical_key] = TXXX(
-        encoding=3,
-        desc=ALBUM_ARTIST_DESC,
-        text=value,
-    )
+    tags["TPE2"] = TPE2(encoding=1, text=value)
 
 
 # ── Step 1: Merge disc subfolders ─────────────────────────────────────────────
@@ -268,9 +252,9 @@ def _merge_one(album: Path, subfolders: list[Path], dry_run: bool) -> dict:
         if not dry_run:
             try:
                 tags = load_id3(mp3)
-                tags["TRCK"] = TRCK(encoding=3, text=f"{new_num}/{total}")
+                tags["TRCK"] = TRCK(encoding=1, text=f"{new_num}/{total}")
                 if album_title:
-                    tags["TALB"] = TALB(encoding=3, text=album_title)
+                    tags["TALB"] = TALB(encoding=1, text=album_title)
                 tags.save(mp3, v2_version=3, v1=0)
                 mp3.rename(new_path)
                 stats["moved"] += 1
@@ -384,7 +368,7 @@ def _save_tag(mp3: Path, key: str, value: str) -> bool:
             tags.save(mp3, v2_version=3, v1=0)
             return True
         actual = "TYER" if key == "YEAR" else key
-        tags[actual] = cls_map[key](encoding=3, text=value)
+        tags[actual] = cls_map[key](encoding=1, text=value)
         tags.save(mp3, v2_version=3, v1=0)
         return True
     except Exception as e:
@@ -570,12 +554,12 @@ def step_enforce_id3v23(root: Path, dry_run: bool) -> dict:
             if tdrc:
                 year = extract_year(str(tdrc.text[0]))
                 if year and not tags.get("TYER"):
-                    tags["TYER"] = TYER(encoding=3, text=year)
+                    tags["TYER"] = TYER(encoding=1, text=year)
                 del tags["TDRC"]
             # Final fallback: if TYER is still absent, use the folder name year.
             # Covers TDRC-with-unparseable-value and files with no year tag at all.
             if not tags.get("TYER") and folder_year:
-                tags["TYER"] = TYER(encoding=3, text=folder_year)
+                tags["TYER"] = TYER(encoding=1, text=folder_year)
             tags.save(mp3, v2_version=3, v1=0)
 
     if stats["fixed"] == 0:
@@ -598,28 +582,20 @@ def step_strip_tags(root: Path, dry_run: bool) -> dict:
             continue
 
         album_artist = album_artist_value(tags)
-        needs_albumartist = (
-            bool(album_artist)
-            and (
-                not has_canonical_album_artist(tags)
-                or album_artist_mirror_needs_fix(tags, album_artist)
-            )
+        tpe2 = tags.get("TPE2")
+        needs_albumartist = bool(album_artist) and (
+            not tpe2
+            or not hasattr(tpe2, "text")
+            or not tpe2.text
+            or str(tpe2.text[0]) != album_artist
         )
 
-        to_remove = []
-        for key in tags.keys():
-            base = key[:4]
-            if base == "TXXX":
-                desc = key[5:] if len(key) > 5 else ""
-                if desc.lower() == "numtracks" or desc == ALBUM_ARTIST_DESC:
-                    continue
-            if base not in KEEP_TAGS:
-                to_remove.append(key)
+        to_remove = [key for key in tags.keys() if key[:4] not in KEEP_TAGS]
 
         if to_remove or needs_albumartist:
             actions = []
             if needs_albumartist:
-                actions.append(f"write TXXX:{ALBUM_ARTIST_DESC} + TPE2")
+                actions.append("write TPE2")
             if to_remove:
                 actions.append(f"remove {', '.join(sorted(to_remove))}")
             print(f"  {mp3.name}: {'; '.join(actions)}")
@@ -732,7 +708,7 @@ def step_normalize_year(root: Path, dry_run: bool) -> dict:
             if year and current != year:
                 print(f"  {mp3.name}  {frame_id}: {current!r}  ->  {year!r}")
                 if not dry_run:
-                    tags[frame_id] = cls(encoding=3, text=year)
+                    tags[frame_id] = cls(encoding=1, text=year)
                 changed = True
 
         if changed:
@@ -784,7 +760,7 @@ def step_pad_tracks(root: Path, dry_run: bool) -> dict:
             print(f"  {mp3.name}  TRCK: {original}  ->  {new_val}")
             stats["fixed"] += 1
             if not dry_run:
-                tags["TRCK"] = TRCK(encoding=3, text=new_val)
+                tags["TRCK"] = TRCK(encoding=1, text=new_val)
                 tags.save(mp3, v2_version=3, v1=0)
 
     if stats["fixed"] == 0:
@@ -822,7 +798,7 @@ def step_set_total_tracks(root: Path, dry_run: bool) -> dict:
                 print(f"  {mp3.name}  TRCK: {original}  ->  {new_val}")
                 stats["fixed"] += 1
                 if not dry_run:
-                    tags["TRCK"] = TRCK(encoding=3, text=new_val)
+                    tags["TRCK"] = TRCK(encoding=1, text=new_val)
                     tags.save(mp3, v2_version=3, v1=0)
 
     if stats["fixed"] == 0:
@@ -979,7 +955,7 @@ def step_deduplicate_albums(root: Path, dry_run: bool) -> dict:
                 for mp3 in mp3_list:
                     try:
                         tags = load_id3(mp3)
-                        tags["TALB"] = TALB(encoding=3, text=new_title)
+                        tags["TALB"] = TALB(encoding=1, text=new_title)
                         tags.save(mp3, v2_version=3, v1=0)
                         stats["retagged"] += 1
                     except Exception as e:

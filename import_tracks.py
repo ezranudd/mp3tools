@@ -28,7 +28,7 @@ from import_preview import run_preview
 from mutagen.mp3 import MP3 as _MP3Info
 from mutagen.id3 import (
     ID3, ID3NoHeaderError,
-    TPE1, TIT2, TALB, TYER, TCON, TRCK, TXXX,
+    TPE1, TIT2, TALB, TYER, TCON, TRCK,
     TPE2,
 )
 
@@ -36,14 +36,15 @@ from mutagen.id3 import (
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 KEEP_TAGS = {"TPE1", "TPE2", "TIT2", "TALB", "TYER", "TCON", "TRCK"}
-ALBUM_ARTIST_DESC = "album artist"
+# TPE2 is the canonical album artist frame. The TXXX variants are legacy —
+# read them for migration but never write them.
 ALBUM_ARTIST_KEYS = (
+    "TPE2",
     "TXXX:album artist",
     "TXXX:ALBUMARTIST",
     "TXXX:ALBUM ARTIST",
     "TXXX:AlbumArtist",
     "TXXX:Album Artist",
-    "TPE2",
 )
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
 
@@ -219,16 +220,10 @@ def album_artist_value(tags: ID3 | None) -> str | None:
 
 
 def set_album_artist(tags: ID3, value: str) -> None:
-    canonical_key = f"TXXX:{ALBUM_ARTIST_DESC}"
     for key in ALBUM_ARTIST_KEYS:
-        if key not in (canonical_key, "TPE2") and key in tags:
+        if key != "TPE2" and key in tags:
             del tags[key]
-    tags["TPE2"] = TPE2(encoding=3, text=value)
-    tags[canonical_key] = TXXX(
-        encoding=3,
-        desc=ALBUM_ARTIST_DESC,
-        text=value,
-    )
+    tags["TPE2"] = TPE2(encoding=1, text=value)
 
 
 # ── Tag reading ────────────────────────────────────────────────────────────────
@@ -542,7 +537,7 @@ def import_tracks(source: Path, library: Path, dry_run: bool) -> None:
                     if trck:
                         n, _ = parse_track(str(trck.text[0]))
                         if n is not None:
-                            etags["TRCK"] = TRCK(encoding=3,
+                            etags["TRCK"] = TRCK(encoding=1,
                                 text=f"{str(n).zfill(width)}/{total}")
                             etags.save(ex, v2_version=3, v1=0)
                 except Exception as e:
@@ -591,22 +586,18 @@ def import_tracks(source: Path, library: Path, dry_run: bool) -> None:
                     dtags = ID3()
 
                 for key in list(dtags.keys()):
-                    if key[:4] == "TXXX":
-                        desc = key[5:] if len(key) > 5 else ""
-                        if desc.lower() == "numtracks" or desc == ALBUM_ARTIST_DESC:
-                            continue
                     if key[:4] not in KEEP_TAGS:
                         del dtags[key]
 
-                dtags["TPE1"] = TPE1(encoding=3, text=td.get("TPE1") or artist_tag)
+                dtags["TPE1"] = TPE1(encoding=1, text=td.get("TPE1") or artist_tag)
                 set_album_artist(dtags, td.get("ALBUMARTIST") or album_artist_tag)
-                dtags["TIT2"] = TIT2(encoding=3, text=td.get("TIT2") or src.stem)
-                dtags["TALB"] = TALB(encoding=3, text=album_tag)
-                dtags["TYER"] = TYER(encoding=3, text=year_tag)
-                dtags["TRCK"] = TRCK(encoding=3,
+                dtags["TIT2"] = TIT2(encoding=1, text=td.get("TIT2") or src.stem)
+                dtags["TALB"] = TALB(encoding=1, text=album_tag)
+                dtags["TYER"] = TYER(encoding=1, text=year_tag)
+                dtags["TRCK"] = TRCK(encoding=1,
                     text=f"{str(i).zfill(width)}/{total}")
                 if td.get("TCON"):
-                    dtags["TCON"] = TCON(encoding=3, text=td["TCON"])
+                    dtags["TCON"] = TCON(encoding=1, text=td["TCON"])
 
                 dtags.save(tmp_path, v2_version=3, v1=0)
                 tmp_path.rename(dest_path)

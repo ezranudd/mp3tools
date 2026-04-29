@@ -53,14 +53,13 @@ CHAR_REPLACEMENTS: dict[str, str] = {
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
 CD_PATTERN = re.compile(r"^CD(\d+)$")
 YEAR_RE = re.compile(r"\b(19\d{2}|20\d{2})\b")
-ALBUM_ARTIST_DESC = "album artist"
 ALBUM_ARTIST_KEYS = (
-    f"TXXX:{ALBUM_ARTIST_DESC}",
+    "TPE2",
+    "TXXX:album artist",
     "TXXX:ALBUMARTIST",
     "TXXX:ALBUM ARTIST",
     "TXXX:AlbumArtist",
     "TXXX:Album Artist",
-    "TPE2",
 )
 
 CATEGORY_LABELS: dict[str, str] = {
