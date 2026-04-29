@@ -14,12 +14,14 @@ each copy so that running audit.py on the library reports no issues.
 import argparse
 import re
 import shutil
+import subprocess
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
+from mutagen import File as _AudioFile
 
 from convert_lossless import (
-    LOSSLESS_EXTENSIONS, find_lossless, read_lossless_tags, convert_to_mp3,
+    LOSSLESS_EXTENSIONS, find_lossless, read_lossless_tags,
     read_cue_tracks,
 )
 from import_preview import run_preview
@@ -114,6 +116,96 @@ def get_input(prompt: str) -> str:
 def load_id3(path: Path) -> ID3:
     """Load raw ID3 frames without mutagen's v2.4 translation layer."""
     return ID3(path, translate=False)
+
+
+def _audio_duration(path: Path) -> float | None:
+    try:
+        audio = _AudioFile(path)
+        if audio and audio.info and audio.info.length:
+            return float(audio.info.length)
+    except Exception:
+        pass
+    return None
+
+
+def _progress_bar(done: float, total: float, width: int = 28) -> str:
+    if total <= 0:
+        filled = 0
+    else:
+        filled = min(width, int(width * done / total))
+    return "[" + "#" * filled + "-" * (width - filled) + "]"
+
+
+def _conversion_duration(src: Path, start_time: float | None, end_time: float | None) -> float | None:
+    total = _audio_duration(src)
+    if start_time is not None and end_time is not None:
+        return max(0.01, end_time - start_time)
+    if start_time is not None and total is not None:
+        return max(0.01, total - start_time)
+    return total
+
+
+def convert_to_mp3_progress(src: Path, dst: Path, bitrate: int,
+                            start_time: float | None = None,
+                            end_time: float | None = None) -> bool:
+    """Convert src to MP3 and print an in-place progress bar."""
+    duration = _conversion_duration(src, start_time, end_time)
+    try:
+        cmd = ["ffmpeg", "-hide_banner", "-nostats", "-i", str(src)]
+        if start_time is not None:
+            cmd += ["-ss", f"{start_time:.6f}"]
+        if end_time is not None:
+            cmd += ["-to", f"{end_time:.6f}"]
+        cmd += [
+            "-acodec", "libmp3lame",
+            "-b:a", f"{bitrate}k",
+            "-map_metadata", "0",
+            "-progress", "pipe:1",
+            "-y", str(dst),
+        ]
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+
+        last_secs = 0.0
+        ffmpeg_output: list[str] = []
+        if not duration:
+            print(f"\r    Converting {_progress_bar(0, 1)}", end="", flush=True)
+        if proc.stdout:
+            for line in proc.stdout:
+                line = line.strip()
+                if line.startswith("out_time_ms="):
+                    try:
+                        last_secs = int(line.split("=", 1)[1]) / 1_000_000
+                    except ValueError:
+                        continue
+                    if duration:
+                        pct = min(100, int((last_secs / duration) * 100))
+                        bar = _progress_bar(last_secs, duration)
+                        print(f"\r    Converting {bar} {pct:3d}%", end="", flush=True)
+                elif line == "progress=end":
+                    suffix = " 100%" if duration else ""
+                    print(f"\r    Converting {_progress_bar(1, 1)}{suffix}", end="", flush=True)
+                elif line:
+                    ffmpeg_output.append(line)
+                    ffmpeg_output = ffmpeg_output[-20:]
+
+        rc = proc.wait()
+        print()
+        if rc != 0:
+            print(f"    ffmpeg error: {' '.join(ffmpeg_output)[-300:].strip()}")
+            return False
+        return True
+    except FileNotFoundError:
+        print("    ERROR: ffmpeg not found. Install it: sudo apt install ffmpeg")
+        return False
+    except Exception as e:
+        print(f"    ERROR: {e}")
+        return False
 
 
 def album_artist_value(tags: ID3 | None) -> str | None:
@@ -366,15 +458,16 @@ def import_tracks(source: Path, library: Path, dry_run: bool) -> None:
     _normalize_entries(entries)
 
     # ── Import preview ─────────────────────────────────────────────────────────
-    proceed, lossless_bitrate = run_preview(entries, bool(all_lossless))
+    proceed = run_preview(entries, bool(all_lossless))
     if not proceed:
         print("\nImport aborted.")
         return
 
-    # Drop lossless entries if the user chose to skip them in the preview
-    if all_lossless and lossless_bitrate is None:
+    # Drop lossless entries the user chose to skip in the preview
+    if all_lossless:
         entries = [(src, td) for src, td in entries
-                   if src.suffix.lower() not in LOSSLESS_EXTENSIONS]
+                   if src.suffix.lower() not in LOSSLESS_EXTENSIONS
+                   or td.get("_LOSSLESS_BITRATE") is not None]
 
     # Re-normalize in case the user edited tags in the preview
     _normalize_entries(entries)
@@ -463,6 +556,7 @@ def import_tracks(source: Path, library: Path, dry_run: bool) -> None:
                 stats["skipped"] += 1
                 continue
 
+            lossless_bitrate = td.get("_LOSSLESS_BITRATE")
             lossless_label = (f" [{lossless_bitrate} kbps]" if is_lossless and lossless_bitrate
                               else (" [lossless → MP3]" if is_lossless else ""))
             print(f"  {src.parent.name}/{src.name}{lossless_label}")
@@ -476,8 +570,8 @@ def import_tracks(source: Path, library: Path, dry_run: bool) -> None:
                 if is_lossless:
                     cue_start = td.get("_CUE_START")
                     cue_end   = td.get("_CUE_END")
-                    if not convert_to_mp3(src, dest_path, lossless_bitrate,
-                                          cue_start, cue_end):
+                    if not convert_to_mp3_progress(src, dest_path, lossless_bitrate,
+                                                   cue_start, cue_end):
                         stats["errors"] += 1
                         continue
                 else:

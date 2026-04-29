@@ -5,7 +5,7 @@ Curses import preview for import_tracks.py.
 Shows a navigable artist/album/track tree built from in-memory tag dicts.
 Lets the user edit any tag before import. Lossless bitrate is chosen here.
 
-Returns (proceed: bool, lossless_bitrate: int | None).
+Returns proceed: bool.
 Edits are applied to the entries list in-place.
 """
 
@@ -179,10 +179,88 @@ def _artist_entries(entries, artist_name):
     return [(s, t) for s, t in entries if _artist_key(t) == artist_name]
 
 
+def _is_lossless_entry(src: Path) -> bool:
+    return src.suffix.lower() in LOSSLESS_EXTENSIONS
+
+
+def _lossless_bitrate(td: dict) -> int | None:
+    return td.get("_LOSSLESS_BITRATE")
+
+
+def _cycle_bitrate(value: int | None) -> int | None:
+    if value is None:
+        return BITRATES[0]
+    idx = BITRATES.index(value) if value in BITRATES else len(BITRATES) - 1
+    nxt = idx + 1
+    return BITRATES[nxt] if nxt < len(BITRATES) else None
+
+
+def _bitrate_label(value: int | None) -> str:
+    return f"{value} kbps" if value else "skip"
+
+
+def _album_bitrate(entries: list[tuple[Path, dict]], node: Node) -> int | None | str:
+    if node.kind != ALBUM or not node.parent:
+        return ""
+    vals = {
+        _lossless_bitrate(td)
+        for src, td in _album_entries(entries, node.parent.label, node.label)
+        if _is_lossless_entry(src)
+    }
+    if not vals:
+        return ""
+    if len(vals) == 1:
+        return next(iter(vals))
+    return "mixed"
+
+
+def _cycle_node_bitrate(node: Node, entries: list[tuple[Path, dict]]) -> bool:
+    if node.kind == TRACK:
+        node_trck = node.tags.get("track", "").split("/")[0]
+        for src, td in entries:
+            if src != node.path or not _is_lossless_entry(src):
+                continue
+            if td.get("_CUE_START") is not None and td.get("TRCK", "").split("/")[0] != node_trck:
+                continue
+            td["_LOSSLESS_BITRATE"] = _cycle_bitrate(_lossless_bitrate(td))
+            return True
+        return False
+
+    if node.kind == ALBUM and node.parent:
+        aentries = [
+            (src, td) for src, td in _album_entries(entries, node.parent.label, node.label)
+            if _is_lossless_entry(src)
+        ]
+        if not aentries:
+            return False
+        vals = {_lossless_bitrate(td) for _, td in aentries}
+        current = next(iter(vals)) if len(vals) == 1 else _DEFAULT_RATE
+        new_value = _cycle_bitrate(current)
+        for _, td in aentries:
+            td["_LOSSLESS_BITRATE"] = new_value
+        return True
+
+    if node.kind == ARTIST:
+        aentries = [
+            (src, td) for src, td in _artist_entries(entries, node.label)
+            if _is_lossless_entry(src)
+        ]
+        if not aentries:
+            return False
+        vals = {_lossless_bitrate(td) for _, td in aentries}
+        current = next(iter(vals)) if len(vals) == 1 else _DEFAULT_RATE
+        new_value = _cycle_bitrate(current)
+        for _, td in aentries:
+            td["_LOSSLESS_BITRATE"] = new_value
+        return True
+
+    return False
+
+
 # ── Drawing ───────────────────────────────────────────────────────────────────
 
 def _draw(stdscr, items: list[Node], sel: int, scroll: int,
-          has_lossless: bool, lossless_bitrate: int | None,
+          entries: list[tuple[Path, dict]], has_lossless: bool,
           total_files: int, flash: str = "") -> None:
     h, w = stdscr.getmaxyx()
     stdscr.erase()
@@ -190,8 +268,7 @@ def _draw(stdscr, items: list[Node], sel: int, scroll: int,
 
     # ── Header ────────────────────────────────────────────────────────────────
     if has_lossless:
-        br = f"{lossless_bitrate} kbps" if lossless_bitrate else "skip lossless"
-        br_part = f"  Lossless:[b] {br}"
+        br_part = f"  [b] Lossless bitrate per album"
     else:
         br_part = ""
     hdr = (f" IMPORT PREVIEW  {total_files} file(s){br_part}"
@@ -222,15 +299,18 @@ def _draw(stdscr, items: list[Node], sel: int, scroll: int,
             arrow = "▼ " if node.expanded else "▶ "
             label = "  " + arrow + node.label
             nt    = len(node.children)
-            aside = f"  {nt:>4} track{'s' if nt != 1 else ' '}"
+            br = _album_bitrate(entries, node)
+            br_part = f"  [{_bitrate_label(br)}]" if isinstance(br, (int, type(None))) else ("  [mixed]" if br else "")
+            aside = f"{br_part}  {nt:>4} track{'s' if nt != 1 else ' '}"
             base  = curses.color_pair(C_ALBUM)
         else:
             ext       = node.path.suffix.lower()
             fmt_color = 0
             if ext in LOSSLESS_EXTENSIONS:
                 ext_label = ext.upper().lstrip(".")
-                br        = str(lossless_bitrate) if lossless_bitrate else "skip"
-                fmt_tag   = f" [{ext_label}->{br}]"
+                br_value = next((td.get("_LOSSLESS_BITRATE") for src, td in entries if src == node.path), _DEFAULT_RATE)
+                br       = str(br_value) if br_value else "skip"
+                fmt_tag  = f" [{ext_label}->{br}]"
                 fmt_color = curses.color_pair(C_FMT) | curses.A_BOLD
             elif ext == ".mp3" and node.tags.get("bitrate"):
                 fmt_tag   = f" [MP3 {node.tags['bitrate']}]"
@@ -408,7 +488,7 @@ def _edit(stdscr, node: Node, entries: list[tuple[Path, dict]]) -> bool:
 # ── Main loop ─────────────────────────────────────────────────────────────────
 
 def _run(stdscr, entries: list[tuple[Path, dict]],
-         has_lossless: bool) -> tuple[bool, int | None]:
+         has_lossless: bool) -> bool:
     _init_colors()
     try:
         curses.init_pair(C_FMT, curses.COLOR_GREEN, -1)
@@ -417,7 +497,11 @@ def _run(stdscr, entries: list[tuple[Path, dict]],
     curses.curs_set(0)
     stdscr.keypad(True)
 
-    lossless_bitrate: int | None = _DEFAULT_RATE if has_lossless else None
+    if has_lossless:
+        for src, td in entries:
+            if _is_lossless_entry(src) and "_LOSSLESS_BITRATE" not in td:
+                td["_LOSSLESS_BITRATE"] = _DEFAULT_RATE
+
     artists  = _build_tree(entries)
     sel      = 0
     scroll   = 0
@@ -438,25 +522,22 @@ def _run(stdscr, entries: list[tuple[Path, dict]],
         scroll = max(0, scroll)
 
         _draw(stdscr, items, sel, scroll,
-              has_lossless, lossless_bitrate, total, flash)
+              entries, has_lossless, total, flash)
         flash = ""
 
         key = stdscr.getch()
 
         if key in (ord("q"), ord("Q"), 27):
-            return False, None
+            return False
 
         elif key in (ord("p"), ord("P")):
-            return True, lossless_bitrate
+            return True
 
         elif key == ord("b") and has_lossless:
-            # cycle 192 → 256 → 320 → skip → 192 …
-            if lossless_bitrate is None:
-                lossless_bitrate = BITRATES[0]
+            if _cycle_node_bitrate(items[sel], entries):
+                flash = "Lossless bitrate updated."
             else:
-                idx = BITRATES.index(lossless_bitrate)
-                nxt = idx + 1
-                lossless_bitrate = BITRATES[nxt] if nxt < len(BITRATES) else None
+                flash = "No lossless tracks in selection."
 
         elif key in (curses.KEY_UP, ord("k")):
             sel = max(0, sel - 1)
@@ -557,7 +638,7 @@ def _run(stdscr, entries: list[tuple[Path, dict]],
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def run_preview(entries: list[tuple[Path, dict]],
-                has_lossless: bool) -> tuple[bool, int | None]:
+                has_lossless: bool) -> bool:
     """
     Show the import preview UI.
 
@@ -568,11 +649,9 @@ def run_preview(entries: list[tuple[Path, dict]],
 
     Returns
     -------
-    (proceed, lossless_bitrate)
-      proceed          — False means the user aborted
-      lossless_bitrate — kbps int (192/256/320) or None (skip lossless)
+    proceed — False means the user aborted
     """
     try:
         return curses.wrapper(_run, entries, has_lossless)
     except KeyboardInterrupt:
-        return False, None
+        return False
