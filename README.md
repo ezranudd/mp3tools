@@ -40,6 +40,7 @@ python standardize.py -n ~/Music   # dry run
 | `browse.py`        | Browse and edit tags in an interactive terminal UI   |
 | `standardize.py`   | Run all fixes in sequence                            |
 | `import_tracks.py` | Copy and standardize tracks from another directory   |
+| `sync_library.py`  | Sync selected artist folders to a device             |
 
 ## Library Standard
 

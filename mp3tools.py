@@ -62,6 +62,9 @@ def print_menu(directory: str, dry_run: bool):
     print(f"  [{BOLD}{GREEN}4{RESET}] Import")
     print(f"      {DIM}Copy and standardize tracks from another directory into the library{RESET}")
     print()
+    print(f"  [{BOLD}{GREEN}5{RESET}] Sync")
+    print(f"      {DIM}Sync selected artists to a device such as an SD card{RESET}")
+    print()
     print("-" * 50)
     print()
     print(f"  [{BOLD}{BLUE}d{RESET}] Change directory")
@@ -216,6 +219,26 @@ def main():
             if dry_run:
                 args.append("--dry-run")
             run_script("import_tracks.py", args)
+            get_input("\nPress Enter to continue...")
+
+        elif choice == "5":
+            if not directory:
+                print(f"\n{RED}ERROR: Please set a library directory first (press 'd'){RESET}")
+                get_input("\nPress Enter to continue...")
+                continue
+            print(f"\n{CYAN}Select the device directory to sync to:{RESET}\n")
+            get_input("Press Enter to choose device directory...")
+            device = select_directory()
+            if not device:
+                continue
+            if device == directory:
+                print(f"\n{RED}ERROR: Device and library cannot be the same directory{RESET}")
+                get_input("\nPress Enter to continue...")
+                continue
+            args = [directory, device]
+            if dry_run:
+                args.append("--dry-run")
+            run_script("sync_library.py", args)
             get_input("\nPress Enter to continue...")
 
         else:
