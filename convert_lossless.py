@@ -27,7 +27,7 @@ def find_lossless(root: Path) -> list[Path]:
 
 def read_lossless_tags(path: Path) -> dict:
     """Read tags from a FLAC or M4A/ALAC file into the standard tag dict."""
-    empty = {"TPE1": None, "TIT2": None, "TALB": None,
+    empty = {"TPE1": None, "ALBUMARTIST": None, "TIT2": None, "TALB": None,
              "YEAR": None, "TCON": None, "TRCK": None}
 
     def _year(raw: str | None) -> str | None:
@@ -55,6 +55,7 @@ def read_lossless_tags(path: Path) -> dict:
 
             return {
                 "TPE1": g("artist"),
+                "ALBUMARTIST": g("albumartist") or g("album artist") or g("album_artist"),
                 "TIT2": g("title"),
                 "TALB": g("album"),
                 "YEAR": _year(g("date") or g("year")),
@@ -93,6 +94,7 @@ def read_lossless_tags(path: Path) -> dict:
 
             return {
                 "TPE1": g("\xa9ART"),
+                "ALBUMARTIST": g("aART"),
                 "TIT2": g("\xa9nam"),
                 "TALB": g("\xa9alb"),
                 "YEAR": _year(g("\xa9day")),
@@ -255,6 +257,7 @@ def read_cue_tracks(flac_path: Path) -> list[tuple[Path, dict]] | None:
     for t in tracks:
         td = {
             "TPE1": t["artist"],
+            "ALBUMARTIST": t["album_artist"],
             "TIT2": t["title"] or f"Track {t['track_num']}",
             "TALB": t["album_title"],
             "YEAR": t["album_year"],

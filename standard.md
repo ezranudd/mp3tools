@@ -4,24 +4,26 @@
 
 ```
 root/
-└── Artist Name/
+└── Album Artist Name/
     └── YEAR - Album Title/
         ├── 01. Artist Name - Track Title.mp3
         ├── 02. Artist Name - Track Title.mp3
         └── cover.jpg
 ```
 
-- The root may contain multiple artist folders.
-- Each artist folder contains one or more album folders.
+- The root may contain multiple album artist folders.
+- Each album artist folder contains one or more album folders.
 - Each album folder contains only MP3 files and one cover image.
 - No other nesting is allowed.
 
 ---
 
-## Artist Folder
+## Album Artist Folder
 
-- The folder name must **exactly match** the `Artist` (TPE1) tag value in its files, after character normalization and filesystem sanitization (see below).
-- Example: files with `Artist = Some Artist` → folder named `Some Artist`
+- The folder name must **exactly match** the `Album Artist` (`TXXX:album artist`) tag value in its files, after character normalization and filesystem sanitization (see below).
+- If `Album Artist` (`TXXX:album artist`) is missing, standardize sets it to the same value as `Artist` (TPE1).
+- Album Artist must be constant across every MP3 in the album folder.
+- Example: files with `Album Artist = Some Artist` → folder named `Some Artist`
 
 ---
 
@@ -50,6 +52,7 @@ Format: `TT. Artist Name - Track Title.mp3`
 - Separator between number and name is `. ` (period, space).
 - Separator between artist and title is ` - ` (space, hyphen, space).
 - Artist and title are taken from tags, after normalization and sanitization.
+- The filename artist is the per-track `Artist` (TPE1), not the album-level Album Artist.
 - Example: `01. Some Artist - Some Track Title.mp3`
 
 ---
@@ -66,20 +69,23 @@ Format: `TT. Artist Name - Track Title.mp3`
 
 ## Required ID3 Tags
 
-All six tags must be present on every MP3 file:
+All eight tags must be present on every MP3 file:
 
-| Tag  | Field  | Example              |
-|------|--------|----------------------|
-| TPE1 | Artist | Some Artist          |
-| TIT2 | Title  | Some Track Title     |
-| TALB | Album  | Some Album Title     |
-| TYER | Year   | 1994                 |
-| TCON | Genre  | Rock                 |
-| TRCK | Track  | 01/9                 |
+| Tag  | Field        | Example              |
+|------|--------------|----------------------|
+| TPE1 | Artist       | Some Artist          |
+| TXXX:album artist | Album Artist | Some Artist          |
+| TPE2 | Band / Album Artist compatibility | Some Artist |
+| TIT2 | Title        | Some Track Title     |
+| TALB | Album        | Some Album Title     |
+| TYER | Year         | 1994                 |
+| TCON | Genre        | Rock                 |
+| TRCK | Track        | 01/9                 |
 
 - Year is stored in `TYER` (ID3v2.3 only). `TDRC` (ID3v2.4 timestamp frame) must not be present.
 - If a source file contains `TDRC` but no `TYER`, standardize converts the year value to `TYER` and removes `TDRC`.
 - If `TYER` is absent and cannot be recovered from `TDRC`, standardize extracts the year from the album folder name (e.g. `1994 - Album Title` → `TYER: 1994`).
+- Album Artist is stored as `TXXX:album artist` for DeaDBeeF and mirrored to `TPE2` for compatibility with players that use the de facto MP3 Album Artist field. Audit requires both fields to be present with the same value. Older `TXXX` spellings may be read as legacy fallbacks during standardization and are rewritten to the canonical form.
 
 ---
 

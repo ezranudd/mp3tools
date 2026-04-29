@@ -5,9 +5,9 @@ Import MP3s from a source directory into a music library.
 Reads each source MP3's ID3 tags, prompts for any that are missing,
 normalizes all tags, then copies each file into LIBRARY under:
 
-  LIBRARY/Artist/YEAR - Album/XX. Artist - Title.mp3
+  LIBRARY/Album Artist/YEAR - Album/XX. Artist - Title.mp3
 
-Source files are never modified. All six required tags are written to
+Source files are never modified. All required tags are written to
 each copy so that running audit.py on the library reports no issues.
 """
 
@@ -26,13 +26,23 @@ from import_preview import run_preview
 from mutagen.mp3 import MP3 as _MP3Info
 from mutagen.id3 import (
     ID3, ID3NoHeaderError,
-    TPE1, TIT2, TALB, TYER, TCON, TRCK,
+    TPE1, TIT2, TALB, TYER, TCON, TRCK, TXXX,
+    TPE2,
 )
 
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-KEEP_TAGS = {"TPE1", "TIT2", "TALB", "TYER", "TCON", "TRCK"}
+KEEP_TAGS = {"TPE1", "TPE2", "TIT2", "TALB", "TYER", "TCON", "TRCK"}
+ALBUM_ARTIST_DESC = "album artist"
+ALBUM_ARTIST_KEYS = (
+    "TXXX:album artist",
+    "TXXX:ALBUMARTIST",
+    "TXXX:ALBUM ARTIST",
+    "TXXX:AlbumArtist",
+    "TXXX:Album Artist",
+    "TPE2",
+)
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
 
 CHAR_REPLACEMENTS: dict[str, str] = {
@@ -55,10 +65,10 @@ CHAR_REPLACEMENTS: dict[str, str] = {
 }
 
 TAG_NAMES = {
-    "TPE1": "Artist", "TIT2": "Title", "TALB": "Album",
+    "TPE1": "Artist", "ALBUMARTIST": "Album Artist", "TIT2": "Title", "TALB": "Album",
     "YEAR": "Year",   "TCON": "Genre", "TRCK": "Track",
 }
-ALBUM_TAGS = ("TPE1", "TALB", "YEAR", "TCON")
+ALBUM_TAGS = ("TPE1", "ALBUMARTIST", "TALB", "YEAR", "TCON")
 TRACK_TAGS = ("TIT2",)   # TRCK is computed, not prompted
 
 
@@ -106,10 +116,33 @@ def load_id3(path: Path) -> ID3:
     return ID3(path, translate=False)
 
 
+def album_artist_value(tags: ID3 | None) -> str | None:
+    if tags is None:
+        return None
+    for key in ALBUM_ARTIST_KEYS:
+        frame = tags.get(key)
+        if frame and hasattr(frame, "text") and frame.text:
+            return str(frame.text[0])
+    return None
+
+
+def set_album_artist(tags: ID3, value: str) -> None:
+    canonical_key = f"TXXX:{ALBUM_ARTIST_DESC}"
+    for key in ALBUM_ARTIST_KEYS:
+        if key not in (canonical_key, "TPE2") and key in tags:
+            del tags[key]
+    tags["TPE2"] = TPE2(encoding=3, text=value)
+    tags[canonical_key] = TXXX(
+        encoding=3,
+        desc=ALBUM_ARTIST_DESC,
+        text=value,
+    )
+
+
 # ── Tag reading ────────────────────────────────────────────────────────────────
 
 def read_tags(mp3: Path) -> dict | None:
-    """Return a flat tag dict {TPE1, TIT2, TALB, YEAR, TCON, TRCK, _MP3_BITRATE} or None on error."""
+    """Return a flat tag dict for import, or None on error."""
     try:
         audio = _MP3Info(mp3, ID3=lambda *a, **kw: ID3(*a, translate=False, **kw))
     except Exception as e:
@@ -131,6 +164,7 @@ def read_tags(mp3: Path) -> dict | None:
     bitrate  = int(audio.info.bitrate / 1000) if audio.info else None
     return {
         "TPE1": g("TPE1"),
+        "ALBUMARTIST": album_artist_value(tags),
         "TIT2": g("TIT2"),
         "TALB": g("TALB"),
         "YEAR": extract_year(year_raw) if year_raw else None,
@@ -144,7 +178,7 @@ def read_tags(mp3: Path) -> dict | None:
 # ── Prompting ──────────────────────────────────────────────────────────────────
 
 def fill_album_tags(group: list[tuple[Path, dict]], label: str, dry_run: bool) -> None:
-    """Auto-fill YEAR/TCON; prompt for artist/album title if still missing."""
+    """Auto-fill YEAR/TCON/ALBUMARTIST; prompt for artist/album title if still missing."""
     # Year: try folder name for a 4-digit year, fall back to 1900.
     year_default  = extract_year(label) or "1900"
     needs_year    = any(not td.get("YEAR") for _, td in group)
@@ -157,9 +191,14 @@ def fill_album_tags(group: list[tuple[Path, dict]], label: str, dry_run: bool) -
             print(f"  (dry run) Would set Year to '{year_default}'  [{label}]")
         if needs_genre:
             print(f"  (dry run) Would set Genre to 'Unknown'  [{label}]")
+        if any(not td.get("ALBUMARTIST") and td.get("TPE1") for _, td in group):
+            print(f"  (dry run) Would set Album Artist from Artist  [{label}]")
         if missing_prompt:
             print(f"  (dry run) Would prompt for: "
                   f"{', '.join(TAG_NAMES.get(k, k) for k in missing_prompt)}  [{label}]")
+        for _, td in group:
+            if not td.get("ALBUMARTIST") and td.get("TPE1"):
+                td["ALBUMARTIST"] = td["TPE1"]
         return
 
     for _, td in group:
@@ -168,24 +207,27 @@ def fill_album_tags(group: list[tuple[Path, dict]], label: str, dry_run: bool) -
         if not td.get("TCON"):
             td["TCON"] = "Unknown"
 
-    if not missing_prompt:
-        return
-    print(f"\n  ── {label} ──")
-    for key in ("TPE1", "TALB"):
-        if key not in missing_prompt:
-            continue
-        suggestion = next((td[key] for _, td in group if td.get(key)), "")
-        prompt = f"    {TAG_NAMES.get(key, key)}"
-        if suggestion:
-            prompt += f" [{suggestion}]"
-        prompt += ": "
-        val = get_input(prompt)
-        if not val and suggestion:
-            val = suggestion
-        if val:
-            for _, td in group:
-                if not td.get(key):
-                    td[key] = val
+    if missing_prompt:
+        print(f"\n  ── {label} ──")
+        for key in ("TPE1", "TALB"):
+            if key not in missing_prompt:
+                continue
+            suggestion = next((td[key] for _, td in group if td.get(key)), "")
+            prompt = f"    {TAG_NAMES.get(key, key)}"
+            if suggestion:
+                prompt += f" [{suggestion}]"
+            prompt += ": "
+            val = get_input(prompt)
+            if not val and suggestion:
+                val = suggestion
+            if val:
+                for _, td in group:
+                    if not td.get(key):
+                        td[key] = val
+
+    for _, td in group:
+        if not td.get("ALBUMARTIST") and td.get("TPE1"):
+            td["ALBUMARTIST"] = td["TPE1"]
 
 
 def fill_track_tags(mp3: Path, td: dict, dry_run: bool) -> None:
@@ -315,7 +357,7 @@ def import_tracks(source: Path, library: Path, dry_run: bool) -> None:
     # ── Normalize tags in memory ───────────────────────────────────────────────
     def _normalize_entries(elist):
         for _, td in elist:
-            for key in ("TPE1", "TIT2", "TALB", "TCON"):
+            for key in ("TPE1", "ALBUMARTIST", "TIT2", "TALB", "TCON"):
                 if td.get(key):
                     td[key] = normalize_string(td[key])
             if td.get("YEAR"):
@@ -341,11 +383,11 @@ def import_tracks(source: Path, library: Path, dry_run: bool) -> None:
     by_dest: dict[tuple[str, str], list[tuple[Path, dict]]] = defaultdict(list)
     skipped = 0
     for mp3, td in entries:
-        if not td.get("TPE1") or not td.get("TALB") or not td.get("YEAR"):
-            print(f"  SKIP (missing Artist/Album/Year after prompts): {mp3.name}")
+        if not td.get("TPE1") or not td.get("ALBUMARTIST") or not td.get("TALB") or not td.get("YEAR"):
+            print(f"  SKIP (missing Artist/Album Artist/Album/Year after prompts): {mp3.name}")
             skipped += 1
             continue
-        artist_dir = sanitize_name(td["TPE1"])
+        artist_dir = sanitize_name(td["ALBUMARTIST"])
         album_dir  = sanitize_name(f"{td['YEAR']} - {td['TALB']}")
         by_dest[(artist_dir, album_dir)].append((mp3, td))
 
@@ -355,9 +397,10 @@ def import_tracks(source: Path, library: Path, dry_run: bool) -> None:
     for (artist_dir, album_dir), group in sorted(by_dest.items()):
         dest_folder = library / artist_dir / album_dir
 
-        artist_tag = Counter(td["TPE1"] for _, td in group).most_common(1)[0][0]
-        album_tag  = Counter(td["TALB"] for _, td in group).most_common(1)[0][0]
-        year_tag   = Counter(td["YEAR"] for _, td in group).most_common(1)[0][0]
+        album_artist_tag = Counter(td["ALBUMARTIST"] for _, td in group).most_common(1)[0][0]
+        artist_tag       = Counter(td["TPE1"] for _, td in group).most_common(1)[0][0]
+        album_tag        = Counter(td["TALB"] for _, td in group).most_common(1)[0][0]
+        year_tag         = Counter(td["YEAR"] for _, td in group).most_common(1)[0][0]
 
         print(f"{'─' * 60}")
         print(f"  Destination : {artist_dir}/{album_dir}")
@@ -446,10 +489,15 @@ def import_tracks(source: Path, library: Path, dry_run: bool) -> None:
                     dtags = ID3()
 
                 for key in list(dtags.keys()):
+                    if key[:4] == "TXXX":
+                        desc = key[5:] if len(key) > 5 else ""
+                        if desc.lower() == "numtracks" or desc == ALBUM_ARTIST_DESC:
+                            continue
                     if key[:4] not in KEEP_TAGS:
                         del dtags[key]
 
                 dtags["TPE1"] = TPE1(encoding=3, text=td.get("TPE1") or artist_tag)
+                set_album_artist(dtags, td.get("ALBUMARTIST") or album_artist_tag)
                 dtags["TIT2"] = TIT2(encoding=3, text=td.get("TIT2") or src.stem)
                 dtags["TALB"] = TALB(encoding=3, text=album_tag)
                 dtags["TYER"] = TYER(encoding=3, text=year_tag)

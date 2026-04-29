@@ -34,7 +34,7 @@ C_FMT          = 8   # green — format badge [FLAC] etc.
 # ── Key helpers ───────────────────────────────────────────────────────────────
 
 def _artist_key(td: dict) -> str:
-    return td.get("TPE1") or "(Unknown Artist)"
+    return td.get("ALBUMARTIST") or td.get("TPE1") or "(Unknown Album Artist)"
 
 
 def _album_key(td: dict) -> str:
@@ -129,6 +129,7 @@ def _build_tree(entries: list[tuple[Path, dict]]) -> list[Node]:
                 tnode.tags   = {
                     "title":   td.get("TIT2") or "",
                     "artist":  td.get("TPE1") or "",
+                    "albumartist": td.get("ALBUMARTIST") or "",
                     "album":   td.get("TALB") or "",
                     "year":    td.get("YEAR") or "",
                     "genre":   td.get("TCON") or "",
@@ -273,7 +274,7 @@ def _draw(stdscr, items: list[Node], sel: int, scroll: int,
             t   = node.tags
             ext = node.path.suffix.lower()
             parts = [t.get("title") or node.path.stem]
-            for k in ("artist", "album", "year", "genre"):
+            for k in ("artist", "albumartist", "album", "year", "genre"):
                 if t.get(k):
                     parts.append(t[k])
             if ext in LOSSLESS_EXTENSIONS:
@@ -302,8 +303,15 @@ def _edit(stdscr, node: Node, entries: list[tuple[Path, dict]]) -> bool:
     bar  = h - 1
 
     if node.kind == TRACK:
-        cur = node.tags.get("title") or node.path.stem
-        val = _text_input(stdscr, bar, f" Title [{cur}]: ", cur)
+        choice = _choose(stdscr, bar, "Edit track",
+                         [("t", "Title"), ("a", "Artist")])
+        if not choice:
+            return False
+
+        key = "TIT2" if choice == "t" else "TPE1"
+        label = "Title" if choice == "t" else "Artist"
+        cur = (node.tags.get("title") if choice == "t" else node.tags.get("artist")) or node.path.stem
+        val = _text_input(stdscr, bar, f" {label} [{cur}]: ", cur)
         if val:
             node_trck = node.tags.get("track", "").split("/")[0]
             for src, td in entries:
@@ -312,7 +320,7 @@ def _edit(stdscr, node: Node, entries: list[tuple[Path, dict]]) -> bool:
                 if td.get("_CUE_START") is not None:
                     if td.get("TRCK", "").split("/")[0] != node_trck:
                         continue
-                td["TIT2"] = _normalize(val)
+                td[key] = _normalize(val)
                 return True
 
     elif node.kind == ALBUM:
@@ -324,7 +332,7 @@ def _edit(stdscr, node: Node, entries: list[tuple[Path, dict]]) -> bool:
 
         choice = _choose(stdscr, bar, "Edit album",
                          [("t", "Title"), ("y", "Year"),
-                          ("a", "Artist"), ("g", "Genre")])
+                          ("a", "Album Artist"), ("g", "Genre")])
         if not choice:
             return False
 
@@ -349,12 +357,12 @@ def _edit(stdscr, node: Node, entries: list[tuple[Path, dict]]) -> bool:
                 return True
 
         elif choice == "a":
-            cur = first_td.get("TPE1") or ""
-            val = _text_input(stdscr, bar, f" Artist [{cur}]: ", cur)
+            cur = first_td.get("ALBUMARTIST") or first_td.get("TPE1") or ""
+            val = _text_input(stdscr, bar, f" Album artist [{cur}]: ", cur)
             if val:
                 v = _normalize(val)
                 for _, td in aentries:
-                    td["TPE1"] = v
+                    td["ALBUMARTIST"] = v
                 return True
 
         elif choice == "g":
@@ -373,16 +381,16 @@ def _edit(stdscr, node: Node, entries: list[tuple[Path, dict]]) -> bool:
             return False
 
         choice = _choose(stdscr, bar, "Edit artist",
-                         [("n", "Name"), ("g", "Genre")])
+                         [("n", "Album Artist"), ("g", "Genre")])
         if not choice:
             return False
 
         if choice == "n":
-            val = _text_input(stdscr, bar, f" Artist name [{aname}]: ", aname)
+            val = _text_input(stdscr, bar, f" Album artist [{aname}]: ", aname)
             if val:
                 v = _normalize(val)
                 for _, td in aentries:
-                    td["TPE1"] = v
+                    td["ALBUMARTIST"] = v
                 return True
 
         elif choice == "g":

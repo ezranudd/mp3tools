@@ -2,7 +2,7 @@
 """
 Terminal music library browser with edit mode.
 
-Expected structure: root/Artist/Album/mp3s
+Expected structure: root/Album Artist/Album/mp3s
 Auto-detects if you point it at the library root, an artist folder, or an album folder.
 
 Browse controls
@@ -16,9 +16,9 @@ Browse controls
   q / Esc           Quit
 
 Edit / preview controls
-  e (on artist)     Edit name or genre for all albums
-  e (on album)      Edit title, year, artist, or genre
-  e (on track)      Edit track title
+  e (on artist)     Edit album artist or genre for all albums
+  e (on album)      Edit title, year, album artist, or genre
+  e (on track)      Edit track title or artist
   a                 Apply all pending edits
   Esc               Discard pending edits and return to browse
 """
@@ -37,8 +37,9 @@ import curses
 from mutagen.mp3 import MP3
 from mutagen.id3 import (
     ID3, ID3NoHeaderError,
-    TPE1 as _TPE1, TIT2 as _TIT2, TALB as _TALB,
+    TPE1 as _TPE1, TPE2 as _TPE2, TIT2 as _TIT2, TALB as _TALB,
     TYER as _TYER, TDRC as _TDRC, TCON as _TCON, TRCK as _TRCK,
+    TXXX as _TXXX,
 )
 
 
@@ -61,6 +62,15 @@ _CHAR_MAP: dict[str, str] = {
 }
 
 _YEAR_RE = re.compile(r"\b(19\d{2}|20\d{2})\b")
+_ALBUM_ARTIST_DESC = "album artist"
+_ALBUM_ARTIST_KEYS = (
+    "TXXX:album artist",
+    "TXXX:ALBUMARTIST",
+    "TXXX:ALBUM ARTIST",
+    "TXXX:AlbumArtist",
+    "TXXX:Album Artist",
+    "TPE2",
+)
 
 
 def _normalize(s: str) -> str:
@@ -85,6 +95,27 @@ def _extract_year(s: str) -> str | None:
 def _load_id3(path: Path) -> ID3:
     """Load raw ID3 frames without mutagen's v2.4 translation layer."""
     return ID3(path, translate=False)
+
+
+def _album_artist_value(tags: ID3) -> str:
+    for key in _ALBUM_ARTIST_KEYS:
+        frame = tags.get(key)
+        if frame and hasattr(frame, "text") and frame.text:
+            return str(frame.text[0])
+    return ""
+
+
+def _set_album_artist(tags: ID3, value: str) -> None:
+    canonical_key = f"TXXX:{_ALBUM_ARTIST_DESC}"
+    for key in _ALBUM_ARTIST_KEYS:
+        if key not in (canonical_key, "TPE2") and key in tags:
+            del tags[key]
+    tags["TPE2"] = _TPE2(encoding=3, text=value)
+    tags[canonical_key] = _TXXX(
+        encoding=3,
+        desc=_ALBUM_ARTIST_DESC,
+        text=value,
+    )
 
 
 # ── Node model ────────────────────────────────────────────────────────────────
@@ -128,9 +159,9 @@ def build_tree(root: Path) -> list[Node]:
     """
     Build a Node tree from *root*, auto-detecting which level it represents.
 
-    Library root  root/Artist/Album/mp3   → 3-level tree
-    Artist dir    root/Album/mp3          → 2-level tree (root becomes the artist)
-    Album dir     root/mp3               → 1-level (root is artist+album)
+    Library root  root/Album Artist/Album/mp3   → 3-level tree
+    Album artist dir root/Album/mp3             → 2-level tree
+    Album dir     root/mp3                      → 1-level
     """
     child_dirs = _subdirs(root)
 
@@ -180,6 +211,7 @@ def _read_tags(path: Path) -> dict[str, str]:
         result = {
             "title":  g("TIT2"),
             "artist": g("TPE1"),
+            "albumartist": _album_artist_value(t),
             "album":  g("TALB"),
             "year":   g("TYER") or g("TDRC"),
             "genre":  g("TCON"),
@@ -220,6 +252,9 @@ def _write_tags(path: Path, updates: dict[str, str]) -> None:
     except ID3NoHeaderError:
         tags = ID3()
     for frame_id, value in updates.items():
+        if frame_id == "ALBUMARTIST":
+            _set_album_artist(tags, value)
+            continue
         cls = _CLS.get(frame_id)
         if cls:
             tags[frame_id] = cls(encoding=3, text=value)
@@ -369,6 +404,7 @@ def _draw(stdscr, items: list[Node], sel: int, scroll: int, root_str: str,
                 raw_trk = t.get("track", "").split("/")[0].strip()
                 parts   = [t.get("title") or node.path.stem]
                 if t.get("artist"): parts.append(t["artist"])
+                if t.get("albumartist"): parts.append(t["albumartist"])
                 if t.get("album"):  parts.append(t["album"])
                 if t.get("year"):   parts.append(t["year"])
                 if raw_trk:         parts.append(f"Track {raw_trk}")
@@ -503,24 +539,13 @@ def _build_artist_rename(artist: Node, raw: str) -> "PendingEdit | None":
     for album in artist.children:
         load_album_tags(album)
 
-    edit = PendingEdit(f"Artist rename: {artist.label!r} → {new_name!r}")
+    edit = PendingEdit(f"Album artist rename: {artist.label!r} → {new_name!r}")
     edit.preview_labels[id(artist)] = new_name
 
     for album in artist.children:
-        w = _track_width(album)
         for track in album.children:
-            t = track.tags
-            if not t:
-                continue
-            num = _track_num(track)
-            if num is None:
-                continue
-            title_s  = _sanitize(t.get("title", ""))
-            new_name_ = _new_track_filename(num, w, new_name, title_s)
-            new_path  = track.path.parent / new_name_
-            edit.tag_writes.append((track.path, {"TPE1": new_tag}))
-            if new_path != track.path:
-                edit.file_renames.append((track.path, new_path))
+            if track.tags:
+                edit.tag_writes.append((track.path, {"ALBUMARTIST": new_tag}))
 
     new_dir = artist.path.parent / new_name
     if new_dir != artist.path:
@@ -606,15 +631,14 @@ def _build_album_genre(album: Node, raw: str) -> "PendingEdit | None":
 
 
 def _build_album_artist(album: Node, raw: str) -> "PendingEdit | None":
-    """Move album to a different artist folder, retag TPE1, rename files."""
+    """Move album to a different album artist folder and retag ALBUMARTIST."""
     new_artist = _sanitize(raw)
     new_tag    = _normalize(raw)
     if not new_artist:
         return None
     load_album_tags(album)
-    w = _track_width(album)
 
-    # New location: sibling of current artist folder, same album folder name
+    # New location: sibling of current album artist folder, same album folder name
     new_artist_dir = album.path.parent.parent / new_artist
     new_album_dir  = new_artist_dir / album.path.name
 
@@ -622,18 +646,8 @@ def _build_album_artist(album: Node, raw: str) -> "PendingEdit | None":
     edit.preview_labels[id(album)] = f"{album.label}  [→ {new_artist}]"
 
     for track in album.children:
-        t = track.tags
-        if not t:
-            continue
-        num = _track_num(track)
-        if num is None:
-            continue
-        title_s  = _sanitize(t.get("title", ""))
-        new_fname = _new_track_filename(num, w, new_artist, title_s)
-        new_path  = track.path.parent / new_fname
-        edit.tag_writes.append((track.path, {"TPE1": new_tag}))
-        if new_path != track.path:
-            edit.file_renames.append((track.path, new_path))
+        if track.tags:
+            edit.tag_writes.append((track.path, {"ALBUMARTIST": new_tag}))
 
     if new_album_dir != album.path:
         edit.dir_renames.append((album.path, new_album_dir))
@@ -661,6 +675,32 @@ def _build_track_title(track: Node, raw: str) -> "PendingEdit | None":
     edit = PendingEdit(f"Track title → {new_title!r}")
     edit.preview_labels[id(track)] = new_label
     edit.tag_writes.append((track.path, {"TIT2": new_title}))
+    if new_path != track.path:
+        edit.file_renames.append((track.path, new_path))
+    return edit
+
+
+def _build_track_artist(track: Node, raw: str) -> "PendingEdit | None":
+    new_artist = _normalize(raw)
+    if not new_artist:
+        return None
+    t = track.tags
+    if not t:
+        return None
+    num = _track_num(track)
+    if num is None:
+        return None
+    album    = track.parent
+    w        = _track_width(album) if album else 2
+    artist_s = _sanitize(new_artist)
+    title_s  = _sanitize(t.get("title", ""))
+    new_fname = _new_track_filename(num, w, artist_s, title_s)
+    new_path  = track.path.parent / new_fname
+    new_label = _track_label({**t, "artist": new_artist}, new_path.name)
+
+    edit = PendingEdit(f"Track artist → {new_artist!r}")
+    edit.preview_labels[id(track)] = new_label
+    edit.tag_writes.append((track.path, {"TPE1": new_artist}))
     if new_path != track.path:
         edit.file_renames.append((track.path, new_path))
     return edit
@@ -712,13 +752,24 @@ def _do_edit(stdscr, node: Node) -> "PendingEdit | None":
     if node.kind == TRACK:
         if not node.tags:
             load_album_tags(node.parent)
-        cur = node.tags.get("title", node.path.stem)
-        val = _text_input(stdscr, bar, f" Title [{cur}]: ", cur)
-        return _build_track_title(node, val) if val else None
+        choice = _choose(stdscr, bar, "Edit track",
+                         [("t", "Title"), ("a", "Artist")])
+        if not choice:
+            return None
+
+        if choice == "t":
+            cur = node.tags.get("title", node.path.stem)
+            val = _text_input(stdscr, bar, f" Title [{cur}]: ", cur)
+            return _build_track_title(node, val) if val else None
+
+        if choice == "a":
+            cur = node.tags.get("artist", "")
+            val = _text_input(stdscr, bar, f" Artist [{cur}]: ", cur)
+            return _build_track_artist(node, val) if val else None
 
     elif node.kind == ALBUM:
         choice = _choose(stdscr, bar, "Edit album",
-                         [("t", "Title"), ("y", "Year"), ("a", "Artist"), ("g", "Genre")])
+                         [("t", "Title"), ("y", "Year"), ("a", "Album Artist"), ("g", "Genre")])
         if not choice:
             return None
         load_album_tags(node)
@@ -742,8 +793,13 @@ def _do_edit(stdscr, node: Node) -> "PendingEdit | None":
             return _build_album_year(node, val) if val else None
 
         elif choice == "a":
-            cur_a = next((tr.tags.get("artist", "") for tr in node.children if tr.tags.get("artist")), "")
-            val = _text_input(stdscr, bar, f" Artist [{cur_a}]: ", cur_a)
+            cur_a = next(
+                (tr.tags.get("albumartist", "") or tr.tags.get("artist", "")
+                 for tr in node.children
+                 if tr.tags.get("albumartist") or tr.tags.get("artist")),
+                "",
+            )
+            val = _text_input(stdscr, bar, f" Album artist [{cur_a}]: ", cur_a)
             return _build_album_artist(node, val) if val else None
 
         elif choice == "g":
@@ -753,12 +809,12 @@ def _do_edit(stdscr, node: Node) -> "PendingEdit | None":
 
     elif node.kind == ARTIST:
         choice = _choose(stdscr, bar, "Edit artist",
-                         [("n", "Name"), ("g", "Genre")])
+                         [("n", "Album Artist"), ("g", "Genre")])
         if not choice:
             return None
 
         if choice == "n":
-            val = _text_input(stdscr, bar, f" Artist name [{node.label}]: ", node.label)
+            val = _text_input(stdscr, bar, f" Album artist [{node.label}]: ", node.label)
             return _build_artist_rename(node, val) if val else None
 
         elif choice == "g":
@@ -920,7 +976,7 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python browse.py ~/Music               # library root (Artist/Album/mp3)
+  python browse.py ~/Music               # library root (Album Artist/Album/mp3)
   python browse.py ~/Music/Johnny\\ Paycheck  # single artist
   python browse.py .                     # current directory
         """,

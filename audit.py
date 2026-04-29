@@ -4,13 +4,13 @@ Scan a music directory for style compliance (read-only — no files modified).
 
 Expected structure:
   root/
-  └── Artist Name/           ← folder name must match Artist tag
+  └── Album Artist Name/     ← folder name must match Album Artist tag
       └── YEAR - Album Name/ ← folder name derived from Year + Album tags
           ├── 01. Artist Name - Track Title.mp3
           └── cover.jpg      ← exactly one cover, stem must be "cover"
 
 Checks performed:
-  1.  Required tags present (Artist, Title, Album, Year, Genre, Track)
+  1.  Required tags present (Artist, Album Artist, Title, Album, Year, Genre, Track)
   2.  No non-standard characters in tag values or filenames
   3.  Year tags normalized to 4-digit year only
   4.  TDRC frame absent (ID3v2.4 timestamp must not appear in ID3v2.3 files)
@@ -18,7 +18,7 @@ Checks performed:
   6.  Only MP3 files + one "cover.*" image per album folder; no other files
   7.  Filename matches "XX. Artist - Title.mp3" derived from tags
   8.  Album folder name matches "YEAR - Album Title" derived from tags
-  9.  Artist (parent) folder name matches Artist tag
+  9.  Album artist (parent) folder name matches Album Artist tag
  10.  No CD subfolders (CD1, CD2, …) — flag for merge_cds
  11.  No other subfolders containing music
 """
@@ -53,6 +53,7 @@ CHAR_REPLACEMENTS: dict[str, str] = {
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
 CD_PATTERN = re.compile(r"^CD(\d+)$")
 YEAR_RE = re.compile(r"\b(19\d{2}|20\d{2})\b")
+ALBUM_ARTIST_DESC = "album artist"
 
 CATEGORY_LABELS: dict[str, str] = {
     "READ_ERROR":    "Tag read error",
@@ -67,7 +68,8 @@ CATEGORY_LABELS: dict[str, str] = {
     "COVER":         "Cover image issue",
     "FILENAME":      "Filename mismatch",
     "FOLDER_NAME":   "Folder name mismatch",
-    "ARTIST_FOLDER": "Artist folder name mismatch",
+    "ALBUM_ARTIST":  "Album artist issue",
+    "ARTIST_FOLDER": "Album artist folder name mismatch",
     "CD_MERGE":      "CD subfolders need merging",
     "NESTED_MUSIC":  "Unexpected nested music",
 }
@@ -124,23 +126,32 @@ def load_id3(path: Path) -> ID3:
     return ID3(path, translate=False)
 
 
+def album_artist_value(tags: ID3) -> str | None:
+    frame = tags.get(f"TXXX:{ALBUM_ARTIST_DESC}")
+    if frame and hasattr(frame, "text") and frame.text:
+        return str(frame.text[0])
+    return None
+
+
 def read_tags(path: Path) -> dict | None:
     """
     Read ID3 tags from file.
     Returns dict of tag values (None when tag absent) plus _version tuple,
     or None on read error.
     """
-    keys = ("TPE1", "TIT2", "TALB", "TYER", "TDRC", "TCON", "TRCK")
+    keys = ("TPE1", "TPE2", "TIT2", "TALB", "TYER", "TDRC", "TCON", "TRCK")
     try:
         tags = load_id3(path)
         result = {
             k: (str(tags[k].text[0]) if k in tags and hasattr(tags[k], "text") else None)
             for k in keys
         }
+        result["ALBUMARTIST"] = album_artist_value(tags)
         result["_version"] = tags.version
         return result
     except ID3NoHeaderError:
         result = {k: None for k in keys}
+        result["ALBUMARTIST"] = None
         result["_version"] = None
         return result
     except Exception:
@@ -222,6 +233,8 @@ def audit_file(path: Path, width: int) -> tuple[dict | None, list[Issue]]:
     # 1. Missing required tags
     missing = []
     if not tags.get("TPE1"): missing.append("Artist")
+    if not tags.get("ALBUMARTIST"): missing.append("Album Artist")
+    if not tags.get("TPE2"): missing.append("TPE2")
     if not tags.get("TIT2"): missing.append("Title")
     if not tags.get("TALB"): missing.append("Album")
     if not tags.get("TYER"): missing.append("Year")
@@ -230,8 +243,15 @@ def audit_file(path: Path, width: int) -> tuple[dict | None, list[Issue]]:
     if missing:
         issues.append(Issue("MISSING_TAG", "Missing: " + ", ".join(missing)))
 
+    if tags.get("ALBUMARTIST") and tags.get("TPE2") and tags["TPE2"] != tags["ALBUMARTIST"]:
+        issues.append(Issue("ALBUM_ARTIST",
+            f"TPE2 mirror mismatch: {tags['TPE2']!r} → {tags['ALBUMARTIST']!r}"))
+
     # 2. Non-standard characters in tag values
-    for label, key in [("Artist", "TPE1"), ("Title", "TIT2"), ("Album", "TALB"), ("Genre", "TCON")]:
+    for label, key in [
+        ("Artist", "TPE1"), ("Album Artist", "ALBUMARTIST"), ("TPE2", "TPE2"),
+        ("Title", "TIT2"), ("Album", "TALB"), ("Genre", "TCON")
+    ]:
         val = tags.get(key)
         if val and has_nonstandard_chars(val):
             issues.append(Issue("CHAR_NORM", f"{label}: {val!r} → {normalize(val)!r}"))
@@ -405,16 +425,27 @@ def scan(root: Path) -> list[tuple[Path, list[Issue], list[tuple]]]:
             album_issues.append(Issue("FOLDER_NAME",
                 f"{album_folder.name!r} → {exp_folder!r}"))
 
-        # ── Artist folder name check ──────────────────────────────────────────
+        # ── Album artist consistency check ────────────────────────────────────
+        album_artist_values = [
+            sanitize(normalize(t["ALBUMARTIST"]))
+            for t in all_tags
+            if t.get("ALBUMARTIST")
+        ]
+        unique_album_artists = sorted(set(album_artist_values))
+        if len(unique_album_artists) > 1:
+            album_issues.append(Issue("ALBUM_ARTIST",
+                "Album Artist varies within album: " + ", ".join(repr(v) for v in unique_album_artists)))
+
+        # ── Album artist folder name check ────────────────────────────────────
         artist_folder = album_folder.parent
         if artist_folder != root:
-            artists = [t["TPE1"] for t in all_tags if t.get("TPE1")]
-            if artists:
-                dominant = Counter(artists).most_common(1)[0][0]
-                expected_artist = sanitize(normalize(dominant))
-                if artist_folder.name != expected_artist:
+            album_artists = [t["ALBUMARTIST"] for t in all_tags if t.get("ALBUMARTIST")]
+            if album_artists:
+                dominant = Counter(album_artists).most_common(1)[0][0]
+                expected_album_artist = sanitize(normalize(dominant))
+                if artist_folder.name != expected_album_artist:
                     album_issues.append(Issue("ARTIST_FOLDER",
-                        f"Parent folder {artist_folder.name!r} ≠ Artist tag {expected_artist!r}"))
+                        f"Parent folder {artist_folder.name!r} ≠ Album Artist tag {expected_album_artist!r}"))
 
         results.append((album_folder, album_issues, file_results))
 
@@ -448,7 +479,7 @@ def print_report(results: list, root: Path, show_ok: bool) -> None:
             for iss in all_issues:
                 issue_counts[iss.cat] += 1
 
-        # ── Artist folder grouping header ─────────────────────────────────────
+        # ── Album artist folder grouping header ───────────────────────────────
         parent = album_folder.parent
         if parent != current_parent:
             current_parent = parent

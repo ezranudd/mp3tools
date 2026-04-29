@@ -10,14 +10,14 @@ Steps
   2.  Prompt for any missing required ID3 tags
   3.  Enforce ID3v2.3: strip ID3v1 tags, downgrade ID3v2.4 to ID3v2.3, convert TDRC→TYER,
       fill TYER from album folder name when absent
-  4.  Strip extraneous ID3 tags (keep only the 6 required)
+  4.  Strip extraneous ID3 tags (keep only the required tags)
   5.  Normalize special characters in tags and filenames
   6.  Normalize year tags to 4-digit format
   7.  Zero-pad track numbers
   8.  Set total track counts in TRCK tag
   9.  Rename album folders to "YEAR - Album Title"
   10. Deduplicate album titles → retag/rename duplicates as "Title (2)", etc.
-  11. Rename artist folders to match TPE1 tag
+  11. Rename album artist folders to match album artist tag
   12. Rename MP3 files to "XX. Artist - Title.mp3"
   13. Remove non-MP3 files; keep exactly one cover image named cover.*
 
@@ -38,13 +38,23 @@ from convert_lossless import step_convert_lossless
 
 from mutagen.id3 import (
     ID3, ID3NoHeaderError,
-    TPE1, TIT2, TALB, TYER, TCON, TRCK,
+    TPE1, TIT2, TALB, TYER, TCON, TRCK, TXXX,
+    TPE2,
 )
 
 
 # ── Shared constants ──────────────────────────────────────────────────────────
 
-KEEP_TAGS = {"TPE1", "TIT2", "TALB", "TYER", "TCON", "TRCK"}
+KEEP_TAGS = {"TPE1", "TPE2", "TIT2", "TALB", "TYER", "TCON", "TRCK"}
+ALBUM_ARTIST_DESC = "album artist"
+ALBUM_ARTIST_KEYS = (
+    "TXXX:album artist",
+    "TXXX:ALBUMARTIST",
+    "TXXX:ALBUM ARTIST",
+    "TXXX:AlbumArtist",
+    "TXXX:Album Artist",
+    "TPE2",
+)
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
 
@@ -74,13 +84,14 @@ CHAR_REPLACEMENTS = {
 
 REQUIRED_TAG_NAMES = {
     "TPE1": "Artist",
+    "ALBUMARTIST": "Album Artist",
     "TIT2": "Title",
     "TALB": "Album",
     "YEAR": "Year",   # virtual: TYER (step 3 converts any TDRC before this matters)
     "TCON": "Genre",
     "TRCK": "Track",
 }
-ALBUM_LEVEL_TAGS = {"TALB", "YEAR", "TCON", "TPE1"}
+ALBUM_LEVEL_TAGS = {"TALB", "YEAR", "TCON", "TPE1", "ALBUMARTIST"}
 TRACK_LEVEL_TAGS = {"TIT2", "TRCK"}
 
 
@@ -149,6 +160,38 @@ def _header(n: int, title: str) -> None:
 def load_id3(path: Path) -> ID3:
     """Load raw ID3 frames without mutagen's v2.4 translation layer."""
     return ID3(path, translate=False)
+
+
+def album_artist_value(tags: ID3) -> str | None:
+    for key in ALBUM_ARTIST_KEYS:
+        frame = tags.get(key)
+        if frame and hasattr(frame, "text") and frame.text:
+            return str(frame.text[0])
+    return None
+
+
+def has_canonical_album_artist(tags: ID3) -> bool:
+    return bool(tags.get(f"TXXX:{ALBUM_ARTIST_DESC}"))
+
+
+def album_artist_mirror_needs_fix(tags: ID3, value: str) -> bool:
+    tpe2 = tags.get("TPE2")
+    if not tpe2 or not hasattr(tpe2, "text") or not tpe2.text:
+        return True
+    return str(tpe2.text[0]) != value
+
+
+def set_album_artist(tags: ID3, value: str) -> None:
+    canonical_key = f"TXXX:{ALBUM_ARTIST_DESC}"
+    for key in ALBUM_ARTIST_KEYS:
+        if key not in (canonical_key, "TPE2") and key in tags:
+            del tags[key]
+    tags["TPE2"] = TPE2(encoding=3, text=value)
+    tags[canonical_key] = TXXX(
+        encoding=3,
+        desc=ALBUM_ARTIST_DESC,
+        text=value,
+    )
 
 
 # ── Step 1: Merge disc subfolders ─────────────────────────────────────────────
@@ -294,7 +337,7 @@ def step_merge_subfolders(root: Path, dry_run: bool) -> dict:
 # ── Step 2: Fix missing tags ──────────────────────────────────────────────────
 
 def _read_required_tags(mp3: Path) -> dict | None:
-    """Return dict with keys TPE1 TIT2 TALB YEAR TCON TRCK (value or None)."""
+    """Return dict with required tag keys (value or None)."""
     try:
         tags = load_id3(mp3)
     except ID3NoHeaderError:
@@ -310,6 +353,8 @@ def _read_required_tags(mp3: Path) -> dict | None:
             tdrc = tags.get("TDRC")
             val  = str(tyer.text[0]) if tyer else (str(tdrc.text[0])[:4] if tdrc else None)
             result["YEAR"] = val
+        elif key == "ALBUMARTIST":
+            result[key] = album_artist_value(tags)
         else:
             frame = tags.get(key)
             result[key] = str(frame.text[0]) if frame else None
@@ -326,6 +371,10 @@ def _save_tag(mp3: Path, key: str, value: str) -> bool:
             "TPE1": TPE1, "TIT2": TIT2, "TALB": TALB,
             "YEAR": TYER, "TCON": TCON, "TRCK": TRCK,
         }
+        if key == "ALBUMARTIST":
+            set_album_artist(tags, value)
+            tags.save(mp3, v2_version=3, v1=0)
+            return True
         actual = "TYER" if key == "YEAR" else key
         tags[actual] = cls_map[key](encoding=3, text=value)
         tags.save(mp3, v2_version=3, v1=0)
@@ -372,7 +421,9 @@ def step_fix_missing_tags(root: Path, dry_run: bool) -> dict:
             album_values["YEAR"] = auto_year
             print(f"  -- Auto-fill Year: {auto_year} ({source})")
 
-        prompt_album = album_missing - {"YEAR"}
+        # Album Artist is required, but it is derived: when absent, use Artist.
+        # If Artist is also missing, the prompt below fills TPE1 first.
+        prompt_album = album_missing - {"YEAR", "ALBUMARTIST"}
         if prompt_album and not dry_run:
             print(f"  -- Album-level tags (applies to all {len(entries)} files) --")
             for key in sorted(prompt_album):
@@ -399,6 +450,12 @@ def step_fix_missing_tags(root: Path, dry_run: bool) -> dict:
             print(f"  -- Missing album tags (dry run): "
                   f"{', '.join(REQUIRED_TAG_NAMES[k] for k in sorted(prompt_album))} --")
 
+        if "ALBUMARTIST" in album_missing:
+            if dry_run:
+                print("  -- Missing Album Artist (dry run): would copy Artist")
+            else:
+                print("  -- Auto-fill Album Artist from Artist")
+
         # Process each file
         for mp3, tag_dict, missing in entries:
             file_changed = False
@@ -408,6 +465,11 @@ def step_fix_missing_tags(root: Path, dry_run: bool) -> dict:
                 if key in missing:
                     if _save_tag(mp3, key, val):
                         file_changed = True
+
+            if "ALBUMARTIST" in missing and not dry_run:
+                album_artist = tag_dict.get("TPE1") or album_values.get("TPE1")
+                if album_artist and _save_tag(mp3, "ALBUMARTIST", album_artist):
+                    file_changed = True
 
             # Track-level tags
             track_missing = [k for k in missing if k in TRACK_LEVEL_TAGS]
@@ -519,7 +581,7 @@ def step_enforce_id3v23(root: Path, dry_run: bool) -> dict:
 
 def step_strip_tags(root: Path, dry_run: bool) -> dict:
     _header(4, "Strip extraneous tags")
-    stats = {"files": 0, "tags_removed": 0}
+    stats = {"files": 0, "tags_removed": 0, "albumartist_fixed": 0}
 
     for mp3 in sorted(root.rglob("*.mp3")):
         try:
@@ -527,30 +589,51 @@ def step_strip_tags(root: Path, dry_run: bool) -> dict:
         except Exception:
             continue
 
+        album_artist = album_artist_value(tags)
+        needs_albumartist = (
+            bool(album_artist)
+            and (
+                not has_canonical_album_artist(tags)
+                or album_artist_mirror_needs_fix(tags, album_artist)
+            )
+        )
+
         to_remove = []
         for key in tags.keys():
             base = key[:4]
             if base == "TXXX":
                 desc = key[5:] if len(key) > 5 else ""
-                if desc.lower() == "numtracks":
+                if desc.lower() == "numtracks" or desc == ALBUM_ARTIST_DESC:
                     continue
             if base not in KEEP_TAGS:
                 to_remove.append(key)
 
-        if to_remove:
-            print(f"  {mp3.name}: remove {', '.join(sorted(to_remove))}")
+        if to_remove or needs_albumartist:
+            actions = []
+            if needs_albumartist:
+                actions.append(f"write TXXX:{ALBUM_ARTIST_DESC} + TPE2")
+            if to_remove:
+                actions.append(f"remove {', '.join(sorted(to_remove))}")
+            print(f"  {mp3.name}: {'; '.join(actions)}")
             stats["files"] += 1
             stats["tags_removed"] += len(to_remove)
             if not dry_run:
+                if needs_albumartist:
+                    set_album_artist(tags, album_artist)
+                    stats["albumartist_fixed"] += 1
                 for key in to_remove:
-                    del tags[key]
+                    if key in tags:
+                        del tags[key]
                 tags.save(mp3, v2_version=3, v1=0)
+            elif needs_albumartist:
+                stats["albumartist_fixed"] += 1
 
     if stats["files"] == 0:
         print("  No extraneous tags found.")
     else:
         print(f"\n  Files modified: {stats['files']}  "
-              f"Tags removed: {stats['tags_removed']}")
+              f"Tags removed: {stats['tags_removed']}  "
+              f"Album artists fixed: {stats['albumartist_fixed']}")
     return stats
 
 
@@ -906,13 +989,13 @@ def step_deduplicate_albums(root: Path, dry_run: bool) -> dict:
     return stats
 
 
-# ── Step 10: Rename artist folders ────────────────────────────────────────────
+# ── Step 10: Rename album artist folders ──────────────────────────────────────
 
 def step_rename_artist_folders(root: Path, dry_run: bool) -> dict:
-    _header(11, "Rename artist folders")
+    _header(11, "Rename album artist folders")
     stats = {"renamed": 0, "retagged": 0, "moved": 0, "skipped": 0, "errors": 0}
 
-    # Artist folders: direct children of root that do NOT directly contain MP3s
+    # Album artist folders: direct children of root that do NOT directly contain MP3s
     # but whose children do contain MP3s (standard 3-level structure)
     artist_candidates: set[Path] = set()
     for mp3 in root.rglob("*.mp3"):
@@ -925,15 +1008,25 @@ def step_rename_artist_folders(root: Path, dry_run: bool) -> dict:
         if not artist_folder.exists():
             continue
 
-        # Most common TPE1 across all MP3s in this subtree
+        # Most common album artist across all MP3s in this subtree.
+        # Missing Album Artist is repaired from TPE1 before folder comparisons.
         names: list[str] = []
         mp3_list = sorted(artist_folder.rglob("*.mp3"))
         for mp3 in mp3_list:
             try:
                 tags = load_id3(mp3)
+                album_artist = album_artist_value(tags)
                 tpe1 = tags.get("TPE1")
-                if tpe1:
-                    names.append(normalize_string(str(tpe1.text[0])))
+                if not album_artist and tpe1:
+                    value = normalize_string(str(tpe1.text[0]))
+                    names.append(value)
+                    if not dry_run:
+                        set_album_artist(tags, value)
+                        tags.save(mp3, v2_version=3, v1=0)
+                        stats["retagged"] += 1
+                    continue
+                if album_artist:
+                    names.append(normalize_string(album_artist))
             except Exception:
                 pass
         if not names:
@@ -944,21 +1037,21 @@ def step_rename_artist_folders(root: Path, dry_run: bool) -> dict:
         retagged_all = False
 
         if artist_folder.name != new_name:
-            # Mismatch: folder name differs from dominant tag value
+            # Mismatch: folder name differs from dominant album artist tag value
             print(f"\n  Mismatch detected:")
-            print(f"    Folder : {artist_folder.name}")
-            print(f"    Tag    : {new_name}")
+            print(f"    Folder       : {artist_folder.name}")
+            print(f"    Album Artist : {new_name}")
 
             if dry_run:
-                print(f"    (dry run) Would prompt: retag or rename folder")
+                print(f"    (dry run) Would prompt: retag album artist or rename folder")
                 stats["renamed"] += 1
                 # fall through to album-level checks below
             else:
                 choice = ""
                 while choice not in ("r", "m", "s"):
                     choice = get_input(
-                        f"    [R]etag files to match folder  "
-                        f"[M]ove/rename folder to match tag  "
+                        f"    [R]etag album artist to match folder  "
+                        f"[M]ove/rename folder to match album artist  "
                         f"[S]kip: "
                     ).lower()
 
@@ -973,13 +1066,13 @@ def step_rename_artist_folders(root: Path, dry_run: bool) -> dict:
                     for mp3 in mp3_list:
                         try:
                             tags = load_id3(mp3)
-                            tags["TPE1"] = TPE1(encoding=3, text=folder_artist)
+                            set_album_artist(tags, folder_artist)
                             tags.save(mp3, v2_version=3, v1=0)
                             retagged += 1
                         except Exception as e:
                             print(f"    ERROR retagging {mp3.name}: {e}")
                             stats["errors"] += 1
-                    print(f"    Retagged {retagged} file(s) -> TPE1='{folder_artist}'")
+                    print(f"    Retagged {retagged} file(s) -> Album Artist='{folder_artist}'")
                     stats["retagged"] += retagged
                     retagged_all = True
 
@@ -1005,41 +1098,87 @@ def step_rename_artist_folders(root: Path, dry_run: bool) -> dict:
         if retagged_all:
             continue
 
-        # Check each album subfolder for a mismatched dominant artist
+        # Check each album subfolder for a mismatched dominant album artist
         effective_name = artist_folder.name
         for album_subfolder in sorted(f for f in artist_folder.iterdir() if f.is_dir()):
             album_artists: list[str] = []
-            for mp3 in album_subfolder.glob("*.mp3"):
+            album_mp3s = sorted(album_subfolder.glob("*.mp3"))
+            for mp3 in album_mp3s:
                 try:
                     tags = load_id3(mp3)
+                    album_artist = album_artist_value(tags)
                     tpe1 = tags.get("TPE1")
-                    if tpe1:
-                        album_artists.append(normalize_string(str(tpe1.text[0])))
+                    if not album_artist and tpe1:
+                        value = normalize_string(str(tpe1.text[0]))
+                        album_artists.append(value)
+                        if not dry_run:
+                            set_album_artist(tags, value)
+                            tags.save(mp3, v2_version=3, v1=0)
+                            stats["retagged"] += 1
+                    elif album_artist:
+                        album_artists.append(normalize_string(album_artist))
                 except Exception:
                     pass
             if not album_artists:
                 continue
             album_dominant = sanitize_name(Counter(album_artists).most_common(1)[0][0])
+            unique_album_artists = sorted({sanitize_name(v) for v in album_artists})
+            if album_dominant == effective_name and len(unique_album_artists) > 1:
+                print(f"\n  Mixed album artists detected:")
+                print(f"    Album        : {album_subfolder.name}")
+                print(f"    Folder       : {effective_name}/")
+                print(f"    Values       : {', '.join(unique_album_artists)}")
+
+                if dry_run:
+                    print(f"    (dry run) Would retag album artist to match folder")
+                    stats["retagged"] += len(album_mp3s)
+                    continue
+
+                choice = ""
+                while choice not in ("r", "s"):
+                    choice = get_input(
+                        f"    [R]etag album artist to match folder  [S]kip: "
+                    ).lower()
+
+                if choice == "s":
+                    print("    Skipped.")
+                    stats["skipped"] += 1
+                    continue
+
+                retagged = 0
+                for mp3 in album_mp3s:
+                    try:
+                        tags = load_id3(mp3)
+                        set_album_artist(tags, effective_name)
+                        tags.save(mp3, v2_version=3, v1=0)
+                        retagged += 1
+                    except Exception as e:
+                        print(f"    ERROR retagging {mp3.name}: {e}")
+                        stats["errors"] += 1
+                print(f"    Retagged {retagged} file(s) -> Album Artist='{effective_name}'")
+                stats["retagged"] += retagged
+                continue
+
             if album_dominant == effective_name:
                 continue
 
             print(f"\n  Misplaced album detected:")
-            print(f"    Album  : {album_subfolder.name}")
-            print(f"    In     : {effective_name}/")
-            print(f"    Artist : {album_dominant}")
+            print(f"    Album        : {album_subfolder.name}")
+            print(f"    In           : {effective_name}/")
+            print(f"    Album Artist : {album_dominant}")
             dest_album = root / album_dominant / album_subfolder.name
-            print(f"    Move to: {album_dominant}/{album_subfolder.name}")
+            print(f"    Move to      : {album_dominant}/{album_subfolder.name}")
 
             if dry_run:
-                print(f"    (dry run) Would prompt: retag or move album")
+                print(f"    (dry run) Would prompt: retag album artist or move album")
                 stats["moved"] += 1
                 continue
 
             choice = ""
             while choice not in ("r", "m", "s"):
                 choice = get_input(
-                    f"    [R]etag files to match folder  "
-                    f"[M]ove album to correct artist folder  [S]kip: "
+                    f"    [R]etag album artist to match folder  "
+                    f"[M]ove album to correct album artist folder  [S]kip: "
                 ).lower()
 
             if choice == "s":
@@ -1049,16 +1188,16 @@ def step_rename_artist_folders(root: Path, dry_run: bool) -> dict:
 
             if choice == "r":
                 retagged = 0
-                for mp3 in sorted(album_subfolder.glob("*.mp3")):
+                for mp3 in album_mp3s:
                     try:
                         tags = load_id3(mp3)
-                        tags["TPE1"] = TPE1(encoding=3, text=effective_name)
+                        set_album_artist(tags, effective_name)
                         tags.save(mp3, v2_version=3, v1=0)
                         retagged += 1
                     except Exception as e:
                         print(f"    ERROR retagging {mp3.name}: {e}")
                         stats["errors"] += 1
-                print(f"    Retagged {retagged} file(s) -> TPE1='{effective_name}'")
+                print(f"    Retagged {retagged} file(s) -> Album Artist='{effective_name}'")
                 stats["retagged"] += retagged
                 continue
 
@@ -1076,7 +1215,7 @@ def step_rename_artist_folders(root: Path, dry_run: bool) -> dict:
                 stats["errors"] += 1
 
     if stats["renamed"] == 0 and stats["retagged"] == 0 and stats["moved"] == 0 and stats["errors"] == 0:
-        print("  All artist folders already named correctly.")
+        print("  All album artist folders already named correctly.")
     else:
         print(f"\n  Renamed: {stats['renamed']}  Retagged: {stats['retagged']}  "
               f"Moved: {stats['moved']}  Skipped: {stats['skipped']}  Errors: {stats['errors']}")
