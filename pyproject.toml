@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mp3tools"
+version = "1.0.0"
+requires-python = ">=3.8"
+dependencies = ["mutagen"]
+
+[project.scripts]
+mp3tools = "mp3tools:main"
+
+[tool.setuptools]
+py-modules = ["mp3tools", "audit", "browse", "import_tracks", "standardize", "convert_lossless", "import_preview"]
