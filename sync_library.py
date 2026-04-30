@@ -14,6 +14,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from termtext import cell_width, clip_cells, fit_cells
+
 
 C_HDR = 1
 C_BAR = 2
@@ -224,17 +226,9 @@ def _put(win, y: int, x: int, text: str, attr: int = 0) -> None:
     try:
         h, w = win.getmaxyx()
         if 0 <= y < h and 0 <= x < w:
-            win.addstr(y, x, text[:max(0, w - x - 1)], attr)
+            win.addstr(y, x, clip_cells(text, max(0, w - x - 1)), attr)
     except curses.error:
         pass
-
-
-def _clip(text: str, width: int) -> str:
-    if width <= 0:
-        return ""
-    if len(text) <= width:
-        return text
-    return text[:max(0, width - 1)] + "…"
 
 
 def _bar(done: int, total: int, width: int) -> str:
@@ -257,8 +251,6 @@ def _existing_lines(existing: list[tuple[str, list[str]]], limit: int) -> list[s
             lines.append(f"  ... {len(albums) - 3} more")
         if len(lines) >= limit:
             break
-    if len(existing) > 0 and len(lines) >= limit:
-        lines[-1] = _clip(lines[-1], 999)
     return lines[:limit]
 
 
@@ -280,7 +272,7 @@ def draw_artist_menu(
 
     mode = "DRY RUN" if dry_run else "LIVE"
     header = f" SYNC  {mode}  Library: {library}  Device: {device} "
-    _put(stdscr, 0, 0, header.ljust(w - 1), curses.color_pair(C_HDR) | curses.A_BOLD)
+    _put(stdscr, 0, 0, fit_cells(header, w - 1), curses.color_pair(C_HDR) | curses.A_BOLD)
 
     summary = (
         f"Free {format_size(usage.free)} / {format_size(usage.total)}   "
@@ -303,21 +295,24 @@ def draw_artist_menu(
         mark = "x" if artist.selected else " "
         name_w = max(12, list_w - 55)
         status_w = max(0, list_w - 33 - name_w)
+        prefix = f"[{mark}] {idx + 1:>3}. "
+        name_col = fit_cells(artist.path.name, name_w)
+        status_col = clip_cells(artist.device_status, status_w)
         row = (
-            f"[{mark}] {idx + 1:>3}. {_clip(artist.path.name, name_w):<{name_w}} "
-            f"{format_size(artist.size):>9} {artist.files:>5} files  {_clip(artist.device_status, status_w)}"
+            f"{prefix}{name_col} "
+            f"{format_size(artist.size):>9} {artist.files:>5} files  {status_col}"
         )
         attr = curses.color_pair(C_SEL) if idx == sel else 0
-        _put(stdscr, y, 1, row.ljust(list_w), attr)
+        _put(stdscr, y, 1, fit_cells(row, list_w), attr)
 
     right_h = max(0, h - 6)
     for i, line in enumerate(_existing_lines(existing, right_h)):
-        _put(stdscr, 4 + i, right_x, _clip(line, max(10, w - right_x - 1)), curses.color_pair(C_DIM))
+        _put(stdscr, 4 + i, right_x, clip_cells(line, max(10, w - right_x - 1)), curses.color_pair(C_DIM))
 
     footer = " ↑↓/j/k Move  Space Toggle  a All  n None  s Sync  q Cancel "
     if flash:
         footer = " " + flash
-    _put(stdscr, h - 1, 0, footer[:w - 1].ljust(w - 1), curses.color_pair(C_BAR))
+    _put(stdscr, h - 1, 0, fit_cells(footer, w - 1), curses.color_pair(C_BAR))
     stdscr.refresh()
 
 
@@ -325,7 +320,7 @@ def draw_plan(stdscr, plan: SyncPlan, selected_count: int, free_space: int, dry_
     h, w = stdscr.getmaxyx()
     stdscr.erase()
     net_needed = max(0, plan.bytes_to_copy - plan.bytes_to_remove)
-    _put(stdscr, 0, 0, " SYNC PLAN ".ljust(w - 1), curses.color_pair(C_HDR) | curses.A_BOLD)
+    _put(stdscr, 0, 0, fit_cells(" SYNC PLAN ", w - 1), curses.color_pair(C_HDR) | curses.A_BOLD)
     rows = [
         f"Artists selected : {selected_count}",
         f"Files to copy    : {len(plan.copy_files)} ({format_size(plan.bytes_to_copy)})",
@@ -340,7 +335,7 @@ def draw_plan(stdscr, plan: SyncPlan, selected_count: int, free_space: int, dry_
         _put(stdscr, 8, 2, message, curses.color_pair(C_WARN) | curses.A_BOLD)
 
     key_line = " Enter Apply dry-run preview " if dry_run else " Type YES then Enter to apply, Esc to cancel "
-    _put(stdscr, h - 1, 0, key_line[:w - 1].ljust(w - 1), curses.color_pair(C_BAR))
+    _put(stdscr, h - 1, 0, fit_cells(key_line, w - 1), curses.color_pair(C_BAR))
     stdscr.refresh()
 
 
@@ -378,14 +373,14 @@ def draw_progress(
     h, w = stdscr.getmaxyx()
     stdscr.erase()
     title = " SYNC PREVIEW " if dry_run else " SYNC IN PROGRESS "
-    _put(stdscr, 0, 0, title.ljust(w - 1), curses.color_pair(C_HDR) | curses.A_BOLD)
+    _put(stdscr, 0, 0, fit_cells(title, w - 1), curses.color_pair(C_HDR) | curses.A_BOLD)
     _put(stdscr, 2, 2, f"Action : {action}")
-    _put(stdscr, 3, 2, f"File   : {_clip(current, max(10, w - 11))}")
+    _put(stdscr, 3, 2, f"File   : {clip_cells(current, max(10, w - 11), chr(0x2026))}")
     _put(stdscr, 5, 2, f"Files  : {done_files}/{total_files}")
     _put(stdscr, 6, 2, _bar(done_files, total_files, max(10, w - 6)))
     _put(stdscr, 8, 2, f"Bytes  : {format_size(done_bytes)} / {format_size(total_bytes)}")
     _put(stdscr, 9, 2, _bar(done_bytes, total_bytes, max(10, w - 6)))
-    _put(stdscr, h - 1, 0, " Working... ".ljust(w - 1), curses.color_pair(C_BAR))
+    _put(stdscr, h - 1, 0, fit_cells(" Working... ", w - 1), curses.color_pair(C_BAR))
     stdscr.refresh()
 
 
@@ -421,7 +416,7 @@ def apply_plan(stdscr, plan: SyncPlan, dry_run: bool) -> tuple[int, int, int]:
     done_bytes = 0
 
     for path in plan.remove_files:
-        draw_progress(stdscr, "Delete", str(path), done_files, total_files, done_bytes, total_bytes, dry_run)
+        draw_progress(stdscr, "Delete", path.name, done_files, total_files, done_bytes, total_bytes, dry_run)
         size = 0
         try:
             size = path.stat().st_size
@@ -431,11 +426,11 @@ def apply_plan(stdscr, plan: SyncPlan, dry_run: bool) -> tuple[int, int, int]:
             path.unlink()
         done_files += 1
         done_bytes += size
-        draw_progress(stdscr, "Delete", str(path), done_files, total_files, done_bytes, total_bytes, dry_run)
+        draw_progress(stdscr, "Delete", path.name, done_files, total_files, done_bytes, total_bytes, dry_run)
         removed_files += 1
 
     for path in plan.remove_dirs:
-        draw_progress(stdscr, "Remove folder", str(path), done_files, total_files, done_bytes, total_bytes, dry_run)
+        draw_progress(stdscr, "Remove folder", path.name, done_files, total_files, done_bytes, total_bytes, dry_run)
         if not dry_run and path.exists():
             try:
                 path.rmdir()
@@ -445,10 +440,10 @@ def apply_plan(stdscr, plan: SyncPlan, dry_run: bool) -> tuple[int, int, int]:
         elif dry_run:
             removed_dirs += 1
         done_files += 1
-        draw_progress(stdscr, "Remove folder", str(path), done_files, total_files, done_bytes, total_bytes, dry_run)
+        draw_progress(stdscr, "Remove folder", path.name, done_files, total_files, done_bytes, total_bytes, dry_run)
 
     for src, dst in plan.copy_files:
-        label = f"{src} -> {dst}"
+        label = src.name
         draw_progress(stdscr, "Copy", label, done_files, total_files, done_bytes, total_bytes, dry_run)
         if dry_run:
             try:
@@ -471,13 +466,13 @@ def apply_plan(stdscr, plan: SyncPlan, dry_run: bool) -> tuple[int, int, int]:
 def draw_result(stdscr, copied: int, removed_files: int, removed_dirs: int, dry_run: bool) -> None:
     h, w = stdscr.getmaxyx()
     stdscr.erase()
-    _put(stdscr, 0, 0, " SYNC COMPLETE ".ljust(w - 1), curses.color_pair(C_HDR) | curses.A_BOLD)
+    _put(stdscr, 0, 0, fit_cells(" SYNC COMPLETE ", w - 1), curses.color_pair(C_HDR) | curses.A_BOLD)
     _put(stdscr, 2, 2, f"Copied files    : {copied}")
     _put(stdscr, 3, 2, f"Deleted files   : {removed_files}")
     _put(stdscr, 4, 2, f"Removed folders : {removed_dirs}")
     if dry_run:
         _put(stdscr, 6, 2, "Dry run complete. Run in live mode to apply changes.", curses.color_pair(C_WARN))
-    _put(stdscr, h - 1, 0, " Press any key to exit ".ljust(w - 1), curses.color_pair(C_BAR))
+    _put(stdscr, h - 1, 0, fit_cells(" Press any key to exit ", w - 1), curses.color_pair(C_BAR))
     stdscr.refresh()
     stdscr.getch()
 

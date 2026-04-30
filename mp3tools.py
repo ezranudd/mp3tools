@@ -9,6 +9,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from termtext import cell_width
+
 if sys.version_info < (3, 10):
     print(f"Error: Python 3.10 or newer is required (found {sys.version})", file=sys.stderr)
     sys.exit(1)
@@ -37,6 +39,7 @@ def get_input(prompt: str) -> str:
     except (EOFError, KeyboardInterrupt):
         print()
         return "q"
+
 
 
 def print_menu(directory: str, dry_run: bool):
@@ -99,7 +102,7 @@ def select_directory(start: str | None = None) -> str | None:
         # 8 header lines + 3 current-dir block + 9 footer lines (incl. prompt)
         avail_rows = max(4, term_h - 20)
 
-        max_name = max((len(d.name) for d in subdirs), default=10)
+        max_name = max((cell_width(d.name) for d in subdirs), default=10)
         col_w = num_w + 3 + max_name + 1 + 2   # "[NNN] name/" + 2-char gap
         num_cols = max(1, (term_w - 2) // col_w)
 
@@ -135,7 +138,7 @@ def select_directory(start: str | None = None) -> str | None:
                     name = page_dirs[i].name
                     plain = f"[{num:{num_w}}] {name}/"
                     colored = f"[{BOLD}{GREEN}{num:{num_w}}{RESET}] {name}/"
-                    line += colored + " " * (col_w - len(plain))
+                    line += colored + " " * max(0, col_w - cell_width(plain))
                 print("  " + line)
         else:
             print(f"  {DIM}(no subdirectories){RESET}")

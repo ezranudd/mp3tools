@@ -161,6 +161,7 @@ def convert_to_mp3_progress(src: Path, dst: Path, bitrate: int,
             "-acodec", "libmp3lame",
             "-b:a", f"{bitrate}k",
             "-map_metadata", "0",
+            "-f", "mp3",
             "-progress", "pipe:1",
             "-y", str(dst),
         ]

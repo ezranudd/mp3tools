@@ -28,7 +28,10 @@ import os
 import re
 import shutil
 import sys
+import unicodedata
 from pathlib import Path
+
+from termtext import cell_width, clip_cells, fit_cells
 
 os.environ.setdefault("ESCDELAY", "25")
 
@@ -74,6 +77,7 @@ _ALBUM_ARTIST_KEYS = (
 
 
 def _normalize(s: str) -> str:
+    s = unicodedata.normalize("NFC", s)
     for old, new in _CHAR_MAP.items():
         s = s.replace(old, new)
     return s
@@ -344,9 +348,9 @@ def _draw(stdscr, items: list[Node], sel: int, scroll: int, root_str: str,
     else:
         keys = " ↑↓ j/k  PgUp/PgDn  g/G  →/Enter Expand  ← Collapse  e Edit  q Quit "
     path_str = f" {root_str}"
-    gap    = max(0, w - len(keys))
-    header = path_str[:gap].ljust(gap) + keys
-    _put(stdscr, 0, 0, header[:w], curses.color_pair(C_HDR) | curses.A_BOLD)
+    gap    = max(0, w - cell_width(keys))
+    header = fit_cells(path_str, gap) + keys
+    _put(stdscr, 0, 0, clip_cells(header, w), curses.color_pair(C_HDR) | curses.A_BOLD)
 
     if not items:
         _put(stdscr, 2, 2, "No music found.", curses.A_DIM)
@@ -380,17 +384,17 @@ def _draw(stdscr, items: list[Node], sel: int, scroll: int, root_str: str,
             if edited:
                 base |= curses.A_BOLD
 
-        aside_w = len(aside)
+        aside_w = cell_width(aside)
         label_w = max(0, w - aside_w - 1)
-        label_s = label[:label_w].ljust(label_w)
+        label_s = fit_cells(label, label_w)
 
         if selected:
-            full = (label_s + aside)[: w - 1].ljust(w - 1)
+            full = fit_cells(label_s + aside, w - 1)
             _put(stdscr, row, 0, full, curses.A_REVERSE | curses.A_BOLD)
         else:
             _put(stdscr, row, 0, label_s, base)
             if aside:
-                _put(stdscr, row, label_w, aside[: w - label_w - 1],
+                _put(stdscr, row, label_w, clip_cells(aside, w - label_w - 1),
                      curses.color_pair(C_DIM) | curses.A_DIM)
 
     # ── Status bar ────────────────────────────────────────────────────────────
@@ -422,7 +426,7 @@ def _draw(stdscr, items: list[Node], sel: int, scroll: int, root_str: str,
             info   = (f" {node.label}  │  {na} album{'s' if na != 1 else ''}"
                       f"  │  {nt} track{'s' if nt != 1 else ''}")
 
-    _put(stdscr, h - 1, 0, info[: w - 1].ljust(w - 1), curses.color_pair(C_BAR))
+    _put(stdscr, h - 1, 0, fit_cells(info, w - 1), curses.color_pair(C_BAR))
     stdscr.refresh()
 
 
@@ -434,13 +438,16 @@ def _text_input(stdscr, row: int, prompt: str, prefill: str = "") -> "str | None
     _, w = stdscr.getmaxyx()
     buf = list(prefill)
     pos = len(buf)
-    pw  = len(prompt)
+    pw  = cell_width(prompt)
 
     while True:
-        line = (prompt + "".join(buf))[:w - 1]
-        _put(stdscr, row, 0, line.ljust(w - 1), curses.A_REVERSE)
+        content = prompt + "".join(buf)
+        clipped = clip_cells(content, w - 1)
+        pad     = max(0, w - 1 - cell_width(clipped))
+        _put(stdscr, row, 0, clipped + " " * pad, curses.A_REVERSE)
+        cursor_col = min(pw + cell_width("".join(buf[:pos])), w - 2)
         try:
-            stdscr.move(row, min(pw + pos, w - 2))
+            stdscr.move(row, cursor_col)
         except curses.error:
             pass
         stdscr.refresh()

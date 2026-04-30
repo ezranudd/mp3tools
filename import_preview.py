@@ -17,6 +17,7 @@ from pathlib import Path
 
 os.environ.setdefault("ESCDELAY", "25")
 
+from termtext import cell_width, clip_cells, fit_cells
 from browse import (
     Node, ARTIST, ALBUM, TRACK,
     visible,
@@ -319,30 +320,30 @@ def _draw(stdscr, items: list[Node], sel: int, scroll: int,
             aside = ""
             base  = curses.color_pair(C_TRACK)
 
-        aside_w = len(aside)
+        aside_w = cell_width(aside)
         label_w = max(0, w - aside_w - 1)
 
         if fmt_tag:
-            fmt_w  = len(fmt_tag)
+            fmt_w  = cell_width(fmt_tag)
             body_w = max(0, label_w - fmt_w)
-            body_s = label[:body_w].ljust(body_w)
+            body_s = fit_cells(label, body_w)
             if selected:
                 _put(stdscr, row, 0,
-                     (body_s + fmt_tag)[:w - 1].ljust(w - 1),
+                     fit_cells(body_s + fmt_tag, w - 1),
                      curses.A_REVERSE | curses.A_BOLD)
             else:
                 _put(stdscr, row, 0, body_s, base)
                 _put(stdscr, row, body_w, fmt_tag, fmt_color)
         else:
-            label_s = label[:label_w].ljust(label_w)
+            label_s = fit_cells(label, label_w)
             if selected:
                 _put(stdscr, row, 0,
-                     (label_s + aside)[:w - 1].ljust(w - 1),
+                     fit_cells(label_s + aside, w - 1),
                      curses.A_REVERSE | curses.A_BOLD)
             else:
                 _put(stdscr, row, 0, label_s, base)
                 if aside:
-                    _put(stdscr, row, label_w, aside[:w - label_w - 1],
+                    _put(stdscr, row, label_w, clip_cells(aside, w - label_w - 1),
                          curses.color_pair(C_DIM) | curses.A_DIM)
 
     # ── Status bar ────────────────────────────────────────────────────────────
@@ -370,7 +371,7 @@ def _draw(stdscr, items: list[Node], sel: int, scroll: int,
             info = (f" {node.label}  │  {na} album{'s' if na != 1 else ''}"
                     f"  │  {nt} track{'s' if nt != 1 else ''}")
 
-    _put(stdscr, h - 1, 0, info[:w - 1].ljust(w - 1),
+    _put(stdscr, h - 1, 0, fit_cells(info, w - 1),
          curses.color_pair(C_BAR))
     stdscr.refresh()
 
