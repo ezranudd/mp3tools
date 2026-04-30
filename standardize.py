@@ -34,12 +34,13 @@ import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
+import settings as settings_mod
 from convert_lossless import step_convert_lossless
 
 from mutagen.id3 import (
     ID3, ID3NoHeaderError,
     TPE1, TIT2, TALB, TYER, TCON, TRCK,
-    TPE2,
+    TPE2, APIC,
 )
 
 
@@ -571,9 +572,12 @@ def step_enforce_id3v23(root: Path, dry_run: bool) -> dict:
 
 # ── Step 4: Strip extraneous tags ─────────────────────────────────────────────
 
-def step_strip_tags(root: Path, dry_run: bool) -> dict:
+def step_strip_tags(root: Path, dry_run: bool, keep_apic: bool = False) -> dict:
     _header(4, "Strip extraneous tags")
-    stats = {"files": 0, "tags_removed": 0, "albumartist_fixed": 0}
+    stats = {"files": 0, "tags_removed": 0, "albumartist_fixed": 0, "covers_extracted": 0}
+    keep = KEEP_TAGS | ({"APIC"} if keep_apic else set())
+    # Track folders where we've already checked cover extraction (one cover per folder).
+    extracted_folders: set[Path] = set()
 
     for mp3 in sorted(root.rglob("*.mp3")):
         try:
@@ -590,7 +594,28 @@ def step_strip_tags(root: Path, dry_run: bool) -> dict:
             or str(tpe2.text[0]) != album_artist
         )
 
-        to_remove = [key for key in tags.keys() if key[:4] not in KEEP_TAGS]
+        to_remove = [key for key in tags.keys() if key[:4] not in keep]
+
+        # Before discarding an APIC frame, save it as cover.jpg if no cover exists.
+        apic_being_removed = [k for k in to_remove if k[:4] == "APIC"]
+        if apic_being_removed and mp3.parent not in extracted_folders:
+            extracted_folders.add(mp3.parent)
+            if not _find_cover_file(mp3.parent):
+                apic = tags.get(apic_being_removed[0])
+                if apic and getattr(apic, "data", None):
+                    mime = getattr(apic, "mime", "image/jpeg").lower()
+                    ext  = ".png" if "png" in mime else ".jpg"
+                    cover_path = mp3.parent / f"cover{ext}"
+                    rel = cover_path.relative_to(root)
+                    print(f"  Extract cover before strip: {rel}")
+                    if not dry_run:
+                        try:
+                            cover_path.write_bytes(apic.data)
+                            stats["covers_extracted"] += 1
+                        except Exception as e:
+                            print(f"    ERROR extracting cover: {e}")
+                    else:
+                        stats["covers_extracted"] += 1
 
         if to_remove or needs_albumartist:
             actions = []
@@ -612,12 +637,15 @@ def step_strip_tags(root: Path, dry_run: bool) -> dict:
             elif needs_albumartist:
                 stats["albumartist_fixed"] += 1
 
-    if stats["files"] == 0:
+    if stats["files"] == 0 and stats["covers_extracted"] == 0:
         print("  No extraneous tags found.")
     else:
-        print(f"\n  Files modified: {stats['files']}  "
-              f"Tags removed: {stats['tags_removed']}  "
-              f"Album artists fixed: {stats['albumartist_fixed']}")
+        parts = [f"Files modified: {stats['files']}",
+                 f"Tags removed: {stats['tags_removed']}",
+                 f"Album artists fixed: {stats['albumartist_fixed']}"]
+        if stats["covers_extracted"]:
+            parts.append(f"Covers extracted: {stats['covers_extracted']}")
+        print("\n  " + "  ".join(parts))
     return stats
 
 
@@ -1292,7 +1320,7 @@ def _is_image(name: str) -> bool:
     return Path(name).suffix.lower() in IMAGE_EXTENSIONS
 
 
-def step_clean_files(root: Path, dry_run: bool) -> dict:
+def step_clean_files(root: Path, dry_run: bool, cover_art: str = "folder") -> dict:
     _header(13, "Clean non-MP3 files and cover images")
     stats = {"deleted": 0, "renamed_covers": 0, "missing_covers": 0, "errors": 0}
 
@@ -1371,8 +1399,8 @@ def step_clean_files(root: Path, dry_run: bool) -> dict:
                 else:
                     print(f"    Kept.")
 
-        # ── Report missing cover (no longer auto-created) ─────────────────────
-        if keep_cover is None:
+        # ── Report missing cover (skipped when embedding handles art) ─────────
+        if keep_cover is None and cover_art != "embed":
             print(f"  [{rel}] no cover found — add cover.jpg manually")
             stats["missing_covers"] += 1
 
@@ -1387,6 +1415,101 @@ def step_clean_files(root: Path, dry_run: bool) -> dict:
             parts.append(f"Covers renamed: {stats['renamed_covers']}")
         if stats["missing_covers"]:
             parts.append(f"Albums needing cover art: {stats['missing_covers']}")
+        if stats["errors"]:
+            parts.append(f"Errors: {stats['errors']}")
+        print("\n  " + "  ".join(parts))
+    return stats
+
+
+# ── Step 14: Embed cover art ──────────────────────────────────────────────────
+
+def _find_cover_file(folder: Path) -> Path | None:
+    for f in sorted(folder.iterdir()):
+        if f.is_file() and _cover_stem(f.name):
+            return f
+    for f in sorted(folder.iterdir()):
+        if f.is_file() and _is_image(f.name):
+            return f
+    return None
+
+
+def _prepare_cover_data(image_path: Path, max_size: int) -> tuple[bytes, str] | None:
+    try:
+        suffix = image_path.suffix.lower()
+        mime   = "image/jpeg" if suffix in (".jpg", ".jpeg") else "image/png"
+        data   = image_path.read_bytes()
+        if max_size > 0:
+            try:
+                import io
+                from PIL import Image
+                img = Image.open(image_path)
+                if img.width > max_size or img.height > max_size:
+                    img = img.convert("RGB")
+                    img.thumbnail((max_size, max_size), Image.LANCZOS)
+                    buf = io.BytesIO()
+                    img.save(buf, "JPEG", quality=88)
+                    data = buf.getvalue()
+                    mime = "image/jpeg"
+            except ImportError:
+                pass
+        return data, mime
+    except Exception as e:
+        print(f"  ERROR reading {image_path.name}: {e}")
+        return None
+
+
+def step_embed_cover_art(root: Path, dry_run: bool,
+                         max_size: int = 500, delete_covers: bool = False) -> dict:
+    _header(14, "Embed cover art")
+    stats = {"embedded": 0, "already_ok": 0, "no_cover": 0, "errors": 0}
+
+    for folder in sorted(album_folders(root)):
+        cover = _find_cover_file(folder)
+        if not cover:
+            stats["no_cover"] += 1
+            continue
+
+        prepared = _prepare_cover_data(cover, max_size)
+        if not prepared:
+            stats["errors"] += 1
+            continue
+        data, mime = prepared
+
+        folder_errors = 0
+        for mp3 in sorted(folder.glob("*.mp3")):
+            try:
+                tags = load_id3(mp3)
+                existing = tags.get("APIC:")
+                if existing and existing.data == data:
+                    stats["already_ok"] += 1
+                    continue
+                rel = mp3.relative_to(root)
+                print(f"  {rel}")
+                stats["embedded"] += 1
+                if not dry_run:
+                    tags["APIC:"] = APIC(
+                        encoding=3, mime=mime, type=3, desc="", data=data,
+                    )
+                    tags.save(mp3, v2_version=3, v1=0)
+            except Exception as e:
+                print(f"  ERROR ({mp3.name}): {e}")
+                stats["errors"] += 1
+                folder_errors += 1
+
+        if delete_covers and not dry_run and folder_errors == 0:
+            try:
+                cover.unlink()
+            except Exception as e:
+                print(f"  ERROR deleting {cover.name}: {e}")
+
+    if stats["embedded"] == 0 and stats["errors"] == 0:
+        print("  All tracks already have correct cover art embedded.")
+    else:
+        parts = [f"Embedded: {stats['embedded']}"]
+        if stats["already_ok"]:
+            parts.append(f"Already OK: {stats['already_ok']}")
+        if stats["no_cover"]:
+            parts.append(f"No cover found: {stats['no_cover']}")
         if stats["errors"]:
             parts.append(f"Errors: {stats['errors']}")
         print("\n  " + "  ".join(parts))
@@ -1438,12 +1561,30 @@ Examples:
         metavar="N[,N...]",
         help="Run only specific step numbers (e.g. --steps 4,5)",
     )
+    parser.add_argument(
+        "--cover-art",
+        choices=["folder", "embed", "both"],
+        default=None,
+        help="Cover art mode (default: read from library settings)",
+    )
+    parser.add_argument(
+        "--cover-art-size",
+        type=int,
+        default=None,
+        metavar="PX",
+        help="Max embed pixel width (0 = no resize; default: read from library settings)",
+    )
     args = parser.parse_args()
 
     root = args.directory.resolve()
     if not root.is_dir():
         print(f"Error: not a directory: {root}", file=sys.stderr)
         sys.exit(1)
+
+    sett          = settings_mod.load(root)
+    cover_art     = args.cover_art or sett["cover_art"]
+    cover_art_size = (args.cover_art_size if args.cover_art_size is not None
+                      else sett["cover_art_embed_size"])
 
     # Parse optional step filter
     step_filter: set[int] | None = None
@@ -1456,6 +1597,8 @@ Examples:
 
     print("Standardize music library")
     print(f"Directory : {root}")
+    print(f"Cover art : {cover_art}"
+          + (f"  (max {cover_art_size}px)" if cover_art != "folder" and cover_art_size > 0 else ""))
     if args.dry_run:
         print("Mode      : DRY RUN – no files will be modified")
     print()
@@ -1463,10 +1606,25 @@ Examples:
     if not step_filter or 0 in step_filter:
         step_convert_lossless(root, args.dry_run)
 
+    keep_apic = cover_art in ("embed", "both")
+
     for idx, fn in enumerate(STEPS, 1):
         if step_filter and idx not in step_filter:
             continue
-        fn(root, args.dry_run)
+        if fn is step_strip_tags:
+            fn(root, args.dry_run, keep_apic=keep_apic)
+        elif fn is step_clean_files:
+            fn(root, args.dry_run, cover_art=cover_art)
+        else:
+            fn(root, args.dry_run)
+
+    if not step_filter or 14 in step_filter:
+        if cover_art in ("embed", "both"):
+            step_embed_cover_art(
+                root, args.dry_run,
+                max_size=cover_art_size,
+                delete_covers=(cover_art == "embed"),
+            )
 
     print("\n" + "=" * 60)
     if args.dry_run:

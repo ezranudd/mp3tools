@@ -20,6 +20,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from mutagen import File as _AudioFile
 
+import settings as settings_mod
 from convert_lossless import (
     LOSSLESS_EXTENSIONS, find_lossless, read_lossless_tags,
     read_cue_tracks,
@@ -29,7 +30,7 @@ from mutagen.mp3 import MP3 as _MP3Info
 from mutagen.id3 import (
     ID3, ID3NoHeaderError,
     TPE1, TIT2, TALB, TYER, TCON, TRCK,
-    TPE2,
+    TPE2, APIC,
 )
 
 
@@ -376,6 +377,31 @@ def _find_cover(folder: Path) -> Path | None:
     return None
 
 
+def _prepare_cover_data(image_path: Path, max_size: int) -> tuple[bytes, str] | None:
+    try:
+        suffix = image_path.suffix.lower()
+        mime   = "image/jpeg" if suffix in (".jpg", ".jpeg") else "image/png"
+        data   = image_path.read_bytes()
+        if max_size > 0:
+            try:
+                import io
+                from PIL import Image
+                img = Image.open(image_path)
+                if img.width > max_size or img.height > max_size:
+                    img = img.convert("RGB")
+                    img.thumbnail((max_size, max_size), Image.LANCZOS)
+                    buf = io.BytesIO()
+                    img.save(buf, "JPEG", quality=88)
+                    data = buf.getvalue()
+                    mime = "image/jpeg"
+            except ImportError:
+                pass
+        return data, mime
+    except Exception as e:
+        print(f"  ERROR reading {image_path.name}: {e}")
+        return None
+
+
 def _create_placeholder_cover(path: Path) -> bool:
     """Write a 600x600 solid dark-grey JPEG. Returns True on success."""
     try:
@@ -391,7 +417,8 @@ def _create_placeholder_cover(path: Path) -> bool:
         return False
 
 
-def import_tracks(source: Path, library: Path, dry_run: bool) -> None:
+def import_tracks(source: Path, library: Path, dry_run: bool,
+                  cover_art: str = "folder", cover_art_size: int = 500) -> None:
     print(f"Source  : {source}")
     print(f"Library : {library}")
     if dry_run:
@@ -544,6 +571,22 @@ def import_tracks(source: Path, library: Path, dry_run: bool) -> None:
                 except Exception as e:
                     print(f"  ERROR updating existing TRCK ({ex.name}): {e}")
 
+        # ── Locate cover source and pre-prepare embed data ─────────────────────
+        src_folders = {src.parent for src, _ in group}
+        cover_src   = None
+        for sf in sorted(src_folders):
+            if sf.is_dir():
+                c = _find_cover(sf)
+                if c:
+                    cover_src = c
+                    break
+
+        cover_apic_data: tuple[bytes, str] | None = None
+        if cover_art in ("embed", "both") and cover_src:
+            cover_apic_data = _prepare_cover_data(cover_src, cover_art_size)
+            if cover_apic_data:
+                print(f"  Cover art  : embedding from {cover_src.name}")
+
         # ── Copy new files ─────────────────────────────────────────────────────
         for i, (src, td) in enumerate(group_sorted, offset + 1):
             artist_safe = sanitize_name(td.get("TPE1") or artist_tag)
@@ -599,6 +642,11 @@ def import_tracks(source: Path, library: Path, dry_run: bool) -> None:
                     text=f"{str(i).zfill(width)}/{total}")
                 if td.get("TCON"):
                     dtags["TCON"] = TCON(encoding=1, text=td["TCON"])
+                if cover_apic_data:
+                    apic_data, apic_mime = cover_apic_data
+                    dtags["APIC:"] = APIC(
+                        encoding=3, mime=apic_mime, type=3, desc="", data=apic_data,
+                    )
 
                 dtags.save(tmp_path, v2_version=3, v1=0)
                 tmp_path.rename(dest_path)
@@ -613,53 +661,45 @@ def import_tracks(source: Path, library: Path, dry_run: bool) -> None:
                 else:
                     raise
 
-        # ── Cover image ────────────────────────────────────────────────────────
-        src_folders = {src.parent for src, _ in group}
-        cover_src   = None
-        for sf in sorted(src_folders):
-            if sf.is_dir():
-                c = _find_cover(sf)
-                if c:
-                    cover_src = c
-                    break
-
-        if cover_src:
-            dest_cover = dest_folder / ("cover" + cover_src.suffix.lower())
-            if not dest_cover.exists():
-                print(f"  Cover       : {cover_src.name}  →  {dest_cover.name}")
-                if not dry_run:
-                    try:
-                        shutil.copy2(cover_src, dest_cover)
-                    except Exception as e:
-                        print(f"    ERROR copying cover: {e}")
-        else:
-            has_cover = dest_folder.exists() and any(
-                f.is_file() and f.stem.lower() == "cover"
-                and f.suffix.lower() in IMAGE_EXTENSIONS
-                for f in dest_folder.iterdir()
-            )
-            if not has_cover:
-                # Prefer renaming an existing image over generating a blank placeholder.
-                existing_img = None
-                if dest_folder.exists():
-                    for f in sorted(dest_folder.iterdir()):
-                        if f.is_file() and f.suffix.lower() in IMAGE_EXTENSIONS:
-                            existing_img = f
-                            break
-
-                if existing_img:
-                    dest_cover = dest_folder / ("cover" + existing_img.suffix.lower())
-                    print(f"  Cover       : {existing_img.name}  →  {dest_cover.name}")
+        # ── Cover image file ───────────────────────────────────────────────────
+        if cover_art in ("folder", "both"):
+            if cover_src:
+                dest_cover = dest_folder / ("cover" + cover_src.suffix.lower())
+                if not dest_cover.exists():
+                    print(f"  Cover       : {cover_src.name}  →  {dest_cover.name}")
                     if not dry_run:
                         try:
-                            existing_img.rename(dest_cover)
+                            shutil.copy2(cover_src, dest_cover)
                         except Exception as e:
-                            print(f"    ERROR renaming cover: {e}")
-                else:
-                    placeholder = dest_folder / "cover.jpg"
-                    print(f"  Cover       : creating placeholder cover.jpg")
-                    if not dry_run:
-                        _create_placeholder_cover(placeholder)
+                            print(f"    ERROR copying cover: {e}")
+            else:
+                has_cover = dest_folder.exists() and any(
+                    f.is_file() and f.stem.lower() == "cover"
+                    and f.suffix.lower() in IMAGE_EXTENSIONS
+                    for f in dest_folder.iterdir()
+                )
+                if not has_cover:
+                    # Prefer renaming an existing image over generating a blank placeholder.
+                    existing_img = None
+                    if dest_folder.exists():
+                        for f in sorted(dest_folder.iterdir()):
+                            if f.is_file() and f.suffix.lower() in IMAGE_EXTENSIONS:
+                                existing_img = f
+                                break
+
+                    if existing_img:
+                        dest_cover = dest_folder / ("cover" + existing_img.suffix.lower())
+                        print(f"  Cover       : {existing_img.name}  →  {dest_cover.name}")
+                        if not dry_run:
+                            try:
+                                existing_img.rename(dest_cover)
+                            except Exception as e:
+                                print(f"    ERROR renaming cover: {e}")
+                    else:
+                        placeholder = dest_folder / "cover.jpg"
+                        print(f"  Cover       : creating placeholder cover.jpg")
+                        if not dry_run:
+                            _create_placeholder_cover(placeholder)
 
         print()
 
@@ -692,6 +732,19 @@ Examples:
         action="store_true",
         help="Show what would be done without modifying anything",
     )
+    parser.add_argument(
+        "--cover-art",
+        choices=["folder", "embed", "both"],
+        default=None,
+        help="Cover art mode (default: read from library settings)",
+    )
+    parser.add_argument(
+        "--cover-art-size",
+        type=int,
+        default=None,
+        metavar="PX",
+        help="Max embed pixel width (0 = no resize; default: read from library settings)",
+    )
     args = parser.parse_args()
 
     for path, name in [(args.source, "source"), (args.library, "library")]:
@@ -705,7 +758,13 @@ Examples:
         print("Error: source cannot be the same as or a subdirectory of the library", file=sys.stderr)
         sys.exit(1)
 
-    import_tracks(args.source.resolve(), args.library.resolve(), args.dry_run)
+    sett           = settings_mod.load(lib_resolved)
+    cover_art      = args.cover_art or sett["cover_art"]
+    cover_art_size = (args.cover_art_size if args.cover_art_size is not None
+                      else sett["cover_art_embed_size"])
+
+    import_tracks(src_resolved, lib_resolved, args.dry_run,
+                  cover_art=cover_art, cover_art_size=cover_art_size)
 
 
 if __name__ == "__main__":

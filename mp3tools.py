@@ -9,6 +9,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import settings as settings_mod
 from termtext import cell_width
 
 if sys.version_info < (3, 10):
@@ -40,6 +41,71 @@ def get_input(prompt: str) -> str:
         print()
         return "q"
 
+
+
+_COVER_ART_DESCS = {
+    "folder": "Keep cover.jpg per album folder",
+    "embed":  "Embed art in every track's ID3 tags",
+    "both":   "Embed and keep cover.jpg",
+}
+
+
+def settings_page(directory: str) -> None:
+    lib = Path(directory)
+    cfg = settings_mod.load(lib)
+
+    while True:
+        clear_screen()
+        ca      = cfg["cover_art"]
+        ca_size = cfg["cover_art_embed_size"]
+
+        print(f"{CYAN}{'=' * 50}{RESET}")
+        print(f"{BOLD}{CYAN}  SETTINGS{RESET}")
+        print(f"{CYAN}{'=' * 50}{RESET}")
+        print()
+        print(f"  {BOLD}{CYAN}Library:{RESET}  {directory}")
+        print()
+        print("-" * 50)
+        print()
+        print(f"  {BOLD}Cover Art{RESET}")
+        print()
+        for i, key in enumerate(("folder", "embed", "both"), 1):
+            marker = f"{BOLD}{GREEN}*{RESET}" if key == ca else " "
+            print(f"  {marker} [{BOLD}{GREEN}{i}{RESET}] {key:<8}  {_COVER_ART_DESCS[key]}")
+        print()
+        size_note = f"{DIM}(requires Pillow; 0 = no resize){RESET}"
+        print(f"  Max embed size : {BOLD}{ca_size}{RESET} px  {size_note}")
+        print(f"  [{BOLD}{BLUE}4{RESET}] Change max embed size")
+        print()
+        print("-" * 50)
+        print()
+        print(f"  [{BOLD}{GREEN}s{RESET}] Save and return")
+        print(f"  [{BOLD}{RED}c{RESET}] Cancel")
+        print()
+
+        choice = get_input("Select option: ").lower()
+
+        if choice == "c":
+            return
+        elif choice == "s":
+            settings_mod.save(lib, cfg)
+            print(f"\n{GREEN}Settings saved.{RESET}")
+            get_input("\nPress Enter to continue...")
+            return
+        elif choice in ("1", "2", "3"):
+            cfg["cover_art"] = ("folder", "embed", "both")[int(choice) - 1]
+        elif choice == "4":
+            val = get_input(f"\n  Max embed size in pixels (0 = no resize) [{ca_size}]: ")
+            if val == "":
+                pass
+            elif val.isdigit():
+                cfg["cover_art_embed_size"] = int(val)
+            else:
+                print(f"\n{RED}Enter a whole number.{RESET}")
+                get_input("\nPress Enter to continue...")
+        else:
+            print(f"\n{RED}Unknown option: {choice}{RESET}")
+            get_input("\nPress Enter to continue...")
 
 
 def print_menu(directory: str, dry_run: bool):
@@ -74,6 +140,9 @@ def print_menu(directory: str, dry_run: bool):
     print()
     print(f"  [{BOLD}{GREEN}5{RESET}] Sync")
     print(f"      {DIM}Sync selected artists to a device such as an SD card{RESET}")
+    print()
+    print(f"  [{BOLD}{GREEN}6{RESET}] Settings")
+    print(f"      {DIM}Configure library preferences (cover art, etc.){RESET}")
     print()
     print("-" * 50)
     print()
@@ -326,6 +395,7 @@ def run_script(script: str, args: list[str]):
 def main():
     directory = str(Path.cwd())
     dry_run   = True
+    cfg       = settings_mod.load(Path(directory))
 
     while True:
         clear_screen()
@@ -341,6 +411,7 @@ def main():
             selected = select_directory(start=directory)
             if selected:
                 directory = selected
+                cfg = settings_mod.load(Path(directory))
 
         elif choice == "m":
             dry_run = not dry_run
@@ -371,6 +442,8 @@ def main():
             args = [directory]
             if dry_run:
                 args.append("--dry-run")
+            args += ["--cover-art", cfg["cover_art"],
+                     "--cover-art-size", str(cfg["cover_art_embed_size"])]
             run_script("standardize.py", args)
             get_input("\nPress Enter to continue...")
 
@@ -393,6 +466,8 @@ def main():
             args = [source, directory]
             if dry_run:
                 args.append("--dry-run")
+            args += ["--cover-art", cfg["cover_art"],
+                     "--cover-art-size", str(cfg["cover_art_embed_size"])]
             run_script("import_tracks.py", args)
             get_input("\nPress Enter to continue...")
 
@@ -412,6 +487,14 @@ def main():
             if dry_run:
                 args.append("--dry-run")
             run_script("sync_library.py", args)
+
+        elif choice == "6":
+            if not directory:
+                print(f"\n{RED}ERROR: Please set a directory first (press 'd'){RESET}")
+                get_input("\nPress Enter to continue...")
+                continue
+            settings_page(directory)
+            cfg = settings_mod.load(Path(directory))
 
         else:
             print(f"\n{RED}Unknown option: {choice}{RESET}")
