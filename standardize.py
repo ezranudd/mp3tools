@@ -1312,6 +1312,48 @@ def step_rename_files(root: Path, dry_run: bool) -> dict:
     return stats
 
 
+def step_enforce_track_artist(root: Path, dry_run: bool) -> dict:
+    _header(12, "Enforce Artist = Album Artist")
+    stats = {"fixed": 0, "skipped": 0, "errors": 0}
+
+    for mp3 in sorted(root.rglob("*.mp3")):
+        try:
+            tags = load_id3(mp3)
+        except Exception:
+            stats["errors"] += 1
+            continue
+
+        album_artist = album_artist_value(tags)
+        if not album_artist:
+            stats["skipped"] += 1
+            continue
+
+        artist = tags.get("TPE1")
+        artist_value = str(artist.text[0]) if artist and artist.text else ""
+        if artist_value == album_artist:
+            stats["skipped"] += 1
+            continue
+
+        rel = mp3.relative_to(root)
+        old = artist_value or "(missing)"
+        print(f"  {rel}: Artist {old!r} -> {album_artist!r}")
+        stats["fixed"] += 1
+        if not dry_run:
+            try:
+                tags["TPE1"] = TPE1(encoding=1, text=album_artist)
+                tags.save(mp3, v2_version=3, v1=0)
+            except Exception as e:
+                print(f"    ERROR: {e}")
+                stats["errors"] += 1
+
+    if stats["fixed"] == 0 and stats["errors"] == 0:
+        print("  All track artists already match album artist.")
+    else:
+        print(f"\n  Fixed: {stats['fixed']}  "
+              f"Skipped: {stats['skipped']}  Errors: {stats['errors']}")
+    return stats
+
+
 # ── Step 12: Clean non-MP3 files and cover images ─────────────────────────────
 
 def _cover_stem(name: str) -> bool:
@@ -1759,6 +1801,7 @@ Examples:
     cover_art_size   = (args.cover_art_size if args.cover_art_size is not None
                         else sett["cover_art_embed_size"])
     fetch_art_online = sett.get("fetch_art_online", False)
+    enforce_track_artist = sett.get("enforce_artist_equals_album_artist", False)
 
     # Parse optional step filter
     step_filter: set[int] | None = None
@@ -1775,6 +1818,8 @@ Examples:
           + (f"  (max {cover_art_size}px)" if cover_art != "folder" and cover_art_size > 0 else ""))
     if fetch_art_online:
         print("Online art: ON")
+    if enforce_track_artist:
+        print("Artist   : enforce Artist = Album Artist")
     if args.dry_run:
         print("Mode      : DRY RUN – no files will be modified")
     print()
@@ -1791,6 +1836,9 @@ Examples:
             fn(root, args.dry_run, keep_apic=keep_apic)
         elif fn is step_clean_files:
             fn(root, args.dry_run, cover_art=cover_art)
+        elif fn is step_rename_files and enforce_track_artist:
+            step_enforce_track_artist(root, args.dry_run)
+            fn(root, args.dry_run)
         else:
             fn(root, args.dry_run)
 

@@ -160,6 +160,12 @@ Trailing periods and spaces are also stripped from folder and filenames.
 
 ---
 
+## Optional Artist Enforcement
+
+- When enabled in settings, `standardize.py` rewrites every track's `Artist` tag to match that file's `Album Artist` tag before renaming MP3 files.
+
+---
+
 ## Tools
 
 | Script           | Purpose                                           |

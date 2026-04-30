@@ -11,6 +11,7 @@ ART_SOURCE_ORDER = ["itunes", "musicbrainz", "theaudiodb", "discogs"]
 DEFAULTS: dict = {
     "cover_art":            "folder",  # "folder" | "embed" | "both"
     "cover_art_embed_size": 500,       # pixels; 0 = no resize
+    "enforce_artist_equals_album_artist": False,
     "fetch_art_online":     False,     # run step 15 during standardize
     "art_sources": {
         "itunes":       True,
@@ -38,6 +39,8 @@ def load(library_root: Path) -> dict:
                 settings["cover_art"] = data["cover_art"]
             if isinstance(data.get("cover_art_embed_size"), int):
                 settings["cover_art_embed_size"] = max(0, data["cover_art_embed_size"])
+            if isinstance(data.get("enforce_artist_equals_album_artist"), bool):
+                settings["enforce_artist_equals_album_artist"] = data["enforce_artist_equals_album_artist"]
             if isinstance(data.get("fetch_art_online"), bool):
                 settings["fetch_art_online"] = data["fetch_art_online"]
             if isinstance(data.get("art_sources"), dict):

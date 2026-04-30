@@ -40,6 +40,10 @@ python standardize.py -n ~/Music   # dry run
 - In Settings, enable “Fetch missing art during Standardize” to make `standardize.py` fetch art for albums missing the configured folder and/or embedded artwork.
 - You can also run just the fetch step with `python standardize.py --steps 15 ~/Music`; use `-n` first for a dry-run preview.
 
+## Artist Enforcement
+
+- In Settings, enable “Enforce Artist = Album Artist” to make `standardize.py` rewrite each track artist tag from its album artist tag before MP3 filenames are generated.
+
 ## Scripts
 
 | Script             | Purpose                                              |

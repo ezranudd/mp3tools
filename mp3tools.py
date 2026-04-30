@@ -89,6 +89,11 @@ def settings_page(directory: str) -> None:
         print(f"  Max embed size : {BOLD}{ca_size}{RESET} px  {size_note}")
         print(f"  [{BOLD}{BLUE}4{RESET}] Change max embed size")
         print()
+        enforce_artist = cfg.get("enforce_artist_equals_album_artist", False)
+        enforce_label = f"{BOLD}{GREEN}ON{RESET} " if enforce_artist else f"{DIM}OFF{RESET}"
+        print(f"  [{BOLD}{GREEN}t{RESET}] Enforce Artist = Album Artist  [{enforce_label}]")
+        print(f"      {DIM}Standardize rewrites each track artist from its album artist tag{RESET}")
+        print()
         print("-" * 50)
         print()
         print(f"  {BOLD}Online Art Fetch{RESET}")
@@ -138,6 +143,10 @@ def settings_page(directory: str) -> None:
         elif choice == "d":
             val = get_input("\n  Discogs token (blank to clear): ")
             cfg["discogs_token"] = val.strip()
+        elif choice == "t":
+            cfg["enforce_artist_equals_album_artist"] = not cfg.get(
+                "enforce_artist_equals_album_artist", False
+            )
         elif choice == "4":
             val = get_input(f"\n  Max embed size in pixels (0 = no resize) [{ca_size}]: ")
             if val == "":
