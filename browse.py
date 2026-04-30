@@ -884,32 +884,43 @@ def _album_search_terms(node: Node) -> tuple[str, str]:
 
 def _pick_artwork(stdscr, results: list[dict], label: str) -> int:
     """Overlay showing search results. Returns selected index or -1 for cancel."""
-    h, w = stdscr.getmaxyx()
     n = min(len(results), 9)
 
-    start = max(1, h - n - 3)
+    def draw_picker() -> None:
+        h, w = stdscr.getmaxyx()
+        if h < 4 or w < 20:
+            stdscr.erase()
+            _put(stdscr, 0, 0, "Resize terminal larger.", curses.color_pair(C_BAR))
+            stdscr.refresh()
+            return
 
-    _put(stdscr, start, 0,
-         fit_cells(f" Artwork results for {label!r}", w - 1),
-         curses.color_pair(C_HDR) | curses.A_BOLD)
+        start = max(1, h - n - 3)
+        for row in range(start, h):
+            _put(stdscr, row, 0, " " * max(0, w - 1), curses.A_NORMAL)
 
-    for i, res in enumerate(results[:n]):
-        source = res.get("source_label", res.get("source", ""))
-        artist = res.get("artist", "")
-        album  = res.get("album", "")
-        year   = res.get("year", "")
-        size   = res.get("size", "")
-        line   = f"  [{i + 1}] {source:<11} {artist} - {album}"
-        if year:
-            line += f"  ({year})"
-        if size:
-            line += f"  [{size}]"
-        _put(stdscr, start + 1 + i, 0, fit_cells(line, w - 1), curses.A_NORMAL)
+        _put(stdscr, start, 0,
+             fit_cells(f" Artwork results for {label!r}", w - 1),
+             curses.color_pair(C_HDR) | curses.A_BOLD)
 
-    _put(stdscr, h - 1, 0,
-         fit_cells(f"  Select 1-{n}  |  [Esc] Cancel", w - 1),
-         curses.color_pair(C_BAR))
-    stdscr.refresh()
+        for i, res in enumerate(results[:n]):
+            source = res.get("source_label", res.get("source", ""))
+            artist = res.get("artist", "")
+            album  = res.get("album", "")
+            year   = res.get("year", "")
+            size   = res.get("size", "")
+            line   = f"  [{i + 1}] {source:<11} {artist} - {album}"
+            if year:
+                line += f"  ({year})"
+            if size:
+                line += f"  [{size}]"
+            _put(stdscr, start + 1 + i, 0, fit_cells(line, w - 1), curses.A_NORMAL)
+
+        _put(stdscr, h - 1, 0,
+             fit_cells(f"  Select 1-{n}  |  [Esc] Cancel", w - 1),
+             curses.color_pair(C_BAR))
+        stdscr.refresh()
+
+    draw_picker()
 
     while True:
         try:
@@ -925,6 +936,9 @@ def _pick_artwork(stdscr, results: list[dict], label: str) -> int:
                     return idx
         elif key == 27:
             return -1
+        elif key == curses.KEY_RESIZE:
+            curses.update_lines_cols()
+            draw_picker()
 
 
 def _apply_art_to_album(album: Node, data: bytes, mime: str,
