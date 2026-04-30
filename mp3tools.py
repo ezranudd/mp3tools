@@ -48,6 +48,18 @@ _COVER_ART_DESCS = {
     "embed":  "Embed art in every track's ID3 tags",
     "both":   "Embed and keep cover.jpg",
 }
+_ART_SOURCE_DESCS = {
+    "itunes":      "Apple iTunes artwork search",
+    "musicbrainz": "MusicBrainz + Cover Art Archive",
+    "theaudiodb":  "TheAudioDB fallback (API key required)",
+    "discogs":     "Discogs candidates in Browse only",
+}
+_ART_SOURCE_KEYS = {
+    "6": "itunes",
+    "7": "musicbrainz",
+    "8": "theaudiodb",
+    "9": "discogs",
+}
 
 
 def settings_page(directory: str) -> None:
@@ -79,6 +91,26 @@ def settings_page(directory: str) -> None:
         print()
         print("-" * 50)
         print()
+        print(f"  {BOLD}Online Art Fetch{RESET}")
+        print()
+        fao = cfg.get("fetch_art_online", False)
+        fao_label = f"{BOLD}{GREEN}ON{RESET} " if fao else f"{DIM}OFF{RESET}"
+        print(f"  [{BOLD}{GREEN}5{RESET}] Fetch missing art during Standardize  [{fao_label}]")
+        print(f"      {DIM}Queries enabled non-Discogs sources for albums missing cover art{RESET}")
+        print()
+        sources = cfg.get("art_sources", {})
+        print(f"  {BOLD}Artwork Sources{RESET}")
+        for key, source in _ART_SOURCE_KEYS.items():
+            enabled = sources.get(source, False)
+            state = f"{BOLD}{GREEN}ON{RESET} " if enabled else f"{DIM}OFF{RESET}"
+            print(f"  [{BOLD}{GREEN}{key}{RESET}] {source:<11} [{state}]  {_ART_SOURCE_DESCS[source]}")
+        print(f"      {DIM}Batch order: iTunes -> MusicBrainz -> TheAudioDB; Discogs is interactive only{RESET}")
+        adb = "set" if cfg.get("theaudiodb_api_key") else "not set"
+        dgs = "set" if cfg.get("discogs_token") else "not set"
+        print(f"  [{BOLD}{BLUE}a{RESET}] Set TheAudioDB API key  [{adb}]")
+        print(f"  [{BOLD}{BLUE}d{RESET}] Set Discogs token       [{dgs}]")
+        print()
+        print()
         print(f"  [{BOLD}{GREEN}s{RESET}] Save and return")
         print(f"  [{BOLD}{RED}c{RESET}] Cancel")
         print()
@@ -94,6 +126,18 @@ def settings_page(directory: str) -> None:
             return
         elif choice in ("1", "2", "3"):
             cfg["cover_art"] = ("folder", "embed", "both")[int(choice) - 1]
+        elif choice == "5":
+            cfg["fetch_art_online"] = not cfg.get("fetch_art_online", False)
+        elif choice in _ART_SOURCE_KEYS:
+            source = _ART_SOURCE_KEYS[choice]
+            cfg.setdefault("art_sources", {})
+            cfg["art_sources"][source] = not cfg["art_sources"].get(source, False)
+        elif choice == "a":
+            val = get_input("\n  TheAudioDB API key (blank to clear): ")
+            cfg["theaudiodb_api_key"] = val.strip()
+        elif choice == "d":
+            val = get_input("\n  Discogs token (blank to clear): ")
+            cfg["discogs_token"] = val.strip()
         elif choice == "4":
             val = get_input(f"\n  Max embed size in pixels (0 = no resize) [{ca_size}]: ")
             if val == "":

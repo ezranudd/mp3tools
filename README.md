@@ -31,6 +31,15 @@ python standardize.py ~/Music
 python standardize.py -n ~/Music   # dry run
 ```
 
+## Album Art
+
+- In `browse.py`, press `r` on an album to search enabled artwork sources, pick a result, and apply it according to the library cover-art setting.
+- Press `r` on an artist to fetch the first confident non-Discogs artwork result for each album under that artist.
+- Press `x` on an album or track to remove folder art, embedded art, or both from that album.
+- In Settings, enable/disable artwork sources. Batch order is iTunes, MusicBrainz/Cover Art Archive, then TheAudioDB; Discogs is interactive-only. TheAudioDB needs an API key, and Discogs image results need a Discogs token.
+- In Settings, enable “Fetch missing art during Standardize” to make `standardize.py` fetch art for albums missing the configured folder and/or embedded artwork.
+- You can also run just the fetch step with `python standardize.py --steps 15 ~/Music`; use `-n` first for a dry-run preview.
+
 ## Scripts
 
 | Script             | Purpose                                              |

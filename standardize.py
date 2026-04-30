@@ -20,6 +20,8 @@ Steps
   11. Rename album artist folders to match album artist tag
   12. Rename MP3 files to "XX. Artist - Title.mp3"
   13. Remove non-MP3 files; keep exactly one cover image named cover.*
+  14. Embed folder cover art into tracks when configured
+  15. Fetch missing album art online when enabled, or when explicitly selected
 
 Usage
   python standardize.py ~/Music                 # full library
@@ -1516,6 +1518,177 @@ def step_embed_cover_art(root: Path, dry_run: bool,
     return stats
 
 
+# ── Step 15: Fetch missing album art online ───────────────────────────────────
+
+def _all_tracks_have_embedded_art(folder: Path) -> bool:
+    mp3s = sorted(folder.glob("*.mp3"))
+    if not mp3s:
+        return False
+    for mp3 in mp3s:
+        try:
+            if not load_id3(mp3).get("APIC:"):
+                return False
+        except Exception:
+            return False
+    return True
+
+
+def _needs_art(folder: Path, cover_art: str) -> bool:
+    if cover_art in ("folder", "both") and _find_cover_file(folder) is None:
+        return True
+    if cover_art in ("embed", "both") and not _all_tracks_have_embedded_art(folder):
+        return True
+    return False
+
+
+def _album_search_terms(folder: Path) -> tuple[str, str]:
+    """Return (artist, album_title) suitable for an iTunes search."""
+    artist = folder.parent.name
+    album  = folder.name
+    m = re.match(r"^\d{4}\s*-\s*(.+)$", album)
+    if m:
+        album = m.group(1)
+    for mp3 in folder.glob("*.mp3"):
+        try:
+            tags = load_id3(mp3)
+            aa   = album_artist_value(tags)
+            if aa:
+                artist = aa
+            talb = tags.get("TALB")
+            if talb:
+                album = str(talb.text[0])
+        except Exception:
+            pass
+        break
+    return artist, album
+
+
+def _apply_art_to_folder(folder: Path, data: bytes, mime: str,
+                          cover_art: str, max_size: int) -> tuple[int, int]:
+    """Write/embed artwork per cover_art mode. Returns (updated, errors)."""
+    from fetch_art import resize_artwork
+    data, mime = resize_artwork(data, mime, max_size)
+
+    updated = errors = 0
+
+    if cover_art in ("folder", "both"):
+        ext = ".jpg" if ("jpeg" in mime or "jpg" in mime) else ".png"
+        cover_path = folder / f"cover{ext}"
+        try:
+            for existing in sorted(folder.iterdir()):
+                if (existing.is_file()
+                        and _is_image(existing.name)
+                        and existing != cover_path):
+                    existing.unlink()
+            cover_path.write_bytes(data)
+            updated += 1
+            print(f"  Wrote {cover_path.name}")
+        except Exception as e:
+            print(f"  ERROR writing cover: {e}")
+            errors += 1
+
+    if cover_art in ("embed", "both"):
+        for mp3 in sorted(folder.glob("*.mp3")):
+            try:
+                tags = load_id3(mp3)
+                tags["APIC:"] = APIC(encoding=3, mime=mime, type=3, desc="", data=data)
+                tags.save(mp3, v2_version=3, v1=0)
+                updated += 1
+            except Exception as e:
+                print(f"  ERROR embedding in {mp3.name}: {e}")
+                errors += 1
+
+    return updated, errors
+
+
+def step_fetch_missing_art(root: Path, dry_run: bool,
+                            settings: dict | None = None,
+                            cover_art: str = "folder",
+                            max_size: int = 500) -> dict:
+    _header(15, "Fetch missing album art online")
+    from fetch_art import CONFIDENT_MATCH_SCORE, search_art_sources, fetch_artwork
+
+    settings = settings or {}
+    stats = {
+        "fetched": 0,
+        "skipped": 0,
+        "not_found": 0,
+        "uncertain": 0,
+        "errors": 0,
+        "by_source": {},
+    }
+
+    for folder in sorted(album_folders(root)):
+        if not _needs_art(folder, cover_art):
+            stats["skipped"] += 1
+            continue
+
+        artist, album = _album_search_terms(folder)
+        label = f"{artist} - {album}".strip(" -")
+        print(f"\n  {label}")
+
+        try:
+            results = [
+                r for r in search_art_sources(
+                    artist, album, settings,
+                    interactive=False,
+                )
+                if r.get("url")
+            ]
+        except RuntimeError as e:
+            print(f"  Search error: {e}")
+            stats["errors"] += 1
+            continue
+
+        if not results:
+            print("  Not found in enabled artwork sources")
+            stats["not_found"] += 1
+            continue
+
+        result = results[0]
+        year_s = f" ({result['year']})" if result.get("year") else ""
+        size_s = f" [{result['size']}]" if result.get("size") else ""
+        source_s = result.get("source_label", result.get("source", "source"))
+        print(f"  Found via {source_s}: {result['artist']} - {result['album']}{year_s}{size_s}")
+        if result.get("score", 0) < CONFIDENT_MATCH_SCORE:
+            print("  Skipped: low-confidence match")
+            stats["uncertain"] += 1
+            continue
+
+        if dry_run:
+            stats["fetched"] += 1
+            by_source = stats["by_source"]
+            by_source[source_s] = by_source.get(source_s, 0) + 1
+            continue
+
+        try:
+            data, mime = fetch_artwork(result["url"])
+        except RuntimeError as e:
+            print(f"  Fetch error: {e}")
+            stats["errors"] += 1
+            continue
+
+        _, errs = _apply_art_to_folder(folder, data, mime, cover_art, max_size)
+        if errs:
+            stats["errors"] += errs
+        else:
+            stats["fetched"] += 1
+            by_source = stats["by_source"]
+            by_source[source_s] = by_source.get(source_s, 0) + 1
+
+    parts = []
+    if stats["fetched"]:
+        parts.append(f"{'Would fetch' if dry_run else 'Fetched'}: {stats['fetched']}")
+    for source, count in sorted(stats["by_source"].items()):
+        parts.append(f"{source}: {count}")
+    if stats["skipped"]:   parts.append(f"Already OK: {stats['skipped']}")
+    if stats["not_found"]: parts.append(f"Not found: {stats['not_found']}")
+    if stats["uncertain"]: parts.append(f"Uncertain: {stats['uncertain']}")
+    if stats["errors"]:    parts.append(f"Errors: {stats['errors']}")
+    print("\n  " + ("  ".join(parts) if parts else "Nothing to do."))
+    return stats
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 STEPS = [
@@ -1581,10 +1754,11 @@ Examples:
         print(f"Error: not a directory: {root}", file=sys.stderr)
         sys.exit(1)
 
-    sett          = settings_mod.load(root)
-    cover_art     = args.cover_art or sett["cover_art"]
-    cover_art_size = (args.cover_art_size if args.cover_art_size is not None
-                      else sett["cover_art_embed_size"])
+    sett             = settings_mod.load(root)
+    cover_art        = args.cover_art or sett["cover_art"]
+    cover_art_size   = (args.cover_art_size if args.cover_art_size is not None
+                        else sett["cover_art_embed_size"])
+    fetch_art_online = sett.get("fetch_art_online", False)
 
     # Parse optional step filter
     step_filter: set[int] | None = None
@@ -1599,6 +1773,8 @@ Examples:
     print(f"Directory : {root}")
     print(f"Cover art : {cover_art}"
           + (f"  (max {cover_art_size}px)" if cover_art != "folder" and cover_art_size > 0 else ""))
+    if fetch_art_online:
+        print("Online art: ON")
     if args.dry_run:
         print("Mode      : DRY RUN – no files will be modified")
     print()
@@ -1624,6 +1800,14 @@ Examples:
                 root, args.dry_run,
                 max_size=cover_art_size,
                 delete_covers=(cover_art == "embed"),
+            )
+
+    if (not step_filter and fetch_art_online) or (step_filter and 15 in step_filter):
+            step_fetch_missing_art(
+                root, args.dry_run,
+                settings=sett,
+                cover_art=cover_art,
+                max_size=cover_art_size,
             )
 
     print("\n" + "=" * 60)

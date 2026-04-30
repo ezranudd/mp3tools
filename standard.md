@@ -156,6 +156,7 @@ Trailing periods and spaces are also stripped from folder and filenames.
 - Accepted extensions: `.jpg`, `.jpeg`, `.png`, `.gif`, `.webp`, `.bmp`
 - All other image files (e.g. `Front.jpg`, `Back.jpg`, `folder.jpg`, `CD.jpg`) must be removed.
 - If multiple images exist, all but one must be removed and the remaining one renamed to `cover.*`.
+- Missing cover art can be fetched from enabled online sources through the browser `r` command or standardize step 15.
 
 ---
 

@@ -13,6 +13,8 @@ Browse controls
   g / Home          Jump to top
   G / End           Jump to bottom
   e                 Edit selected node
+  r                 Fetch online album art for selected album/artist
+  x                 Remove album art from selected album
   q / Esc           Quit
 
 Edit / preview controls
@@ -31,6 +33,13 @@ import sys
 import unicodedata
 from pathlib import Path
 
+import settings as settings_mod
+from fetch_art import (
+    CONFIDENT_MATCH_SCORE,
+    fetch_artwork,
+    resize_artwork,
+    search_art_sources,
+)
 from termtext import cell_width, clip_cells, fit_cells
 
 os.environ.setdefault("ESCDELAY", "25")
@@ -40,6 +49,7 @@ import curses
 from mutagen.mp3 import MP3
 from mutagen.id3 import (
     ID3, ID3NoHeaderError,
+    APIC as _APIC,
     TPE1 as _TPE1, TPE2 as _TPE2, TIT2 as _TIT2, TALB as _TALB,
     TYER as _TYER, TDRC as _TDRC, TCON as _TCON, TRCK as _TRCK,
     TXXX as _TXXX,
@@ -64,7 +74,9 @@ _CHAR_MAP: dict[str, str] = {
     "′": "'", "″": '"', "‴": "'''", "⁊": "&",
 }
 
-_YEAR_RE = re.compile(r"\b(19\d{2}|20\d{2})\b")
+_YEAR_RE       = re.compile(r"\b(19\d{2}|20\d{2})\b")
+_ALBUM_YEAR_RE = re.compile(r"^\d{4}\s*-\s*(.+)$")
+_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
 _ALBUM_ARTIST_DESC = "album artist"
 _ALBUM_ARTIST_KEYS = (
     "TXXX:album artist",
@@ -346,7 +358,7 @@ def _draw(stdscr, items: list[Node], sel: int, scroll: int, root_str: str,
     if in_preview:
         keys = " [PREVIEW]  a=Apply  e=Edit more  Esc=Discard "
     else:
-        keys = " ↑↓ j/k  PgUp/PgDn  g/G  →/Enter Expand  ← Collapse  e Edit  q Quit "
+        keys = " ↑↓ j/k  PgUp/PgDn  g/G  →/Enter Expand  ← Collapse  e Edit  r Art  x RemoveArt  q Quit "
     path_str = f" {root_str}"
     gap    = max(0, w - cell_width(keys))
     header = fit_cells(path_str, gap) + keys
@@ -837,6 +849,278 @@ def _do_edit(stdscr, node: Node) -> "PendingEdit | None":
     return None
 
 
+# ── Online art fetch ─────────────────────────────────────────────────────────
+
+def _album_search_terms(node: Node) -> tuple[str, str]:
+    """Return (artist, album_title) for iTunes search from an ALBUM node."""
+    artist = node.parent.label if node.parent else ""
+    album  = node.label
+    m = _ALBUM_YEAR_RE.match(album)
+    if m:
+        album = m.group(1)
+    # Prefer tag values if available
+    if node.children:
+        first = node.children[0]
+        if first.tags:
+            if first.tags.get("albumartist"):
+                artist = first.tags["albumartist"]
+            elif first.tags.get("artist"):
+                artist = first.tags["artist"]
+            if first.tags.get("album"):
+                album = first.tags["album"]
+        else:
+            try:
+                t = _load_id3(first.path)
+                aa = _album_artist_value(t)
+                if aa:
+                    artist = aa
+                talb = t.get("TALB")
+                if talb:
+                    album = str(talb.text[0])
+            except Exception:
+                pass
+    return artist, album
+
+
+def _pick_artwork(stdscr, results: list[dict], label: str) -> int:
+    """Overlay showing search results. Returns selected index or -1 for cancel."""
+    h, w = stdscr.getmaxyx()
+    n = min(len(results), 9)
+
+    start = max(1, h - n - 3)
+
+    _put(stdscr, start, 0,
+         fit_cells(f" Artwork results for {label!r}", w - 1),
+         curses.color_pair(C_HDR) | curses.A_BOLD)
+
+    for i, res in enumerate(results[:n]):
+        source = res.get("source_label", res.get("source", ""))
+        artist = res.get("artist", "")
+        album  = res.get("album", "")
+        year   = res.get("year", "")
+        size   = res.get("size", "")
+        line   = f"  [{i + 1}] {source:<11} {artist} - {album}"
+        if year:
+            line += f"  ({year})"
+        if size:
+            line += f"  [{size}]"
+        _put(stdscr, start + 1 + i, 0, fit_cells(line, w - 1), curses.A_NORMAL)
+
+    _put(stdscr, h - 1, 0,
+         fit_cells(f"  Select 1-{n}  |  [Esc] Cancel", w - 1),
+         curses.color_pair(C_BAR))
+    stdscr.refresh()
+
+    while True:
+        try:
+            key = stdscr.get_wch()
+        except curses.error:
+            continue
+        if isinstance(key, str):
+            if key == "\x1b":
+                return -1
+            if key.isdigit():
+                idx = int(key) - 1
+                if 0 <= idx < n:
+                    return idx
+        elif key == 27:
+            return -1
+
+
+def _apply_art_to_album(album: Node, data: bytes, mime: str,
+                         cover_art: str, cover_art_size: int) -> tuple[int, int]:
+    """Write/embed art for *album*. Returns (updated, errors)."""
+    data, mime = resize_artwork(data, mime, cover_art_size)
+    updated = errors = 0
+
+    if cover_art in ("folder", "both"):
+        ext = ".jpg" if ("jpeg" in mime or "jpg" in mime) else ".png"
+        cover_path = album.path / f"cover{ext}"
+        try:
+            for existing in sorted(album.path.iterdir()):
+                if (existing.is_file()
+                        and existing.suffix.lower() in _IMAGE_EXTENSIONS
+                        and existing != cover_path):
+                    existing.unlink()
+            cover_path.write_bytes(data)
+            updated += 1
+        except Exception:
+            errors += 1
+
+    if cover_art in ("embed", "both"):
+        for mp3 in sorted(album.path.glob("*.mp3")):
+            try:
+                tags = _load_id3(mp3)
+                tags["APIC:"] = _APIC(encoding=3, mime=mime, type=3, desc="", data=data)
+                tags.save(mp3, v2_version=3, v1=0)
+                updated += 1
+            except Exception:
+                errors += 1
+
+    return updated, errors
+
+
+def _remove_art_from_album(album: Node, mode: str) -> tuple[int, int]:
+    """Remove folder images and/or embedded APIC art. Returns (removed, errors)."""
+    removed = errors = 0
+
+    if mode in ("folder", "both"):
+        for image in sorted(album.path.iterdir()):
+            if not image.is_file() or image.suffix.lower() not in _IMAGE_EXTENSIONS:
+                continue
+            try:
+                image.unlink()
+                removed += 1
+            except Exception:
+                errors += 1
+
+    if mode in ("embed", "both"):
+        for mp3 in sorted(album.path.glob("*.mp3")):
+            try:
+                tags = _load_id3(mp3)
+            except ID3NoHeaderError:
+                continue
+            except Exception:
+                errors += 1
+                continue
+
+            if not tags.getall("APIC"):
+                continue
+
+            try:
+                tags.delall("APIC")
+                tags.save(mp3, v2_version=3, v1=0)
+                removed += 1
+            except Exception:
+                errors += 1
+
+    return removed, errors
+
+
+def _remove_art_for_album(stdscr, album: Node) -> str:
+    """Interactive album-art removal for one album."""
+    h, _ = stdscr.getmaxyx()
+    choice = _choose(
+        stdscr, h - 1, f"Remove art from {album.label}",
+        [("f", "Folder files"), ("e", "Embedded tags"), ("b", "Both")],
+    )
+    if not choice:
+        return ""
+
+    mode = {"f": "folder", "e": "embed", "b": "both"}[choice]
+    removed, errors = _remove_art_from_album(album, mode)
+    if errors:
+        return f"Art removal: {removed} removed, {errors} errors"
+    if removed:
+        return f"Removed art from {album.label}"
+    return f"No art found in {album.label}"
+
+
+def _fetch_art_for_album(stdscr, album: Node, settings: dict, cover_art: str,
+                          cover_art_size: int) -> str:
+    """Interactive art fetch for one album. Returns a flash message string."""
+    h, w = stdscr.getmaxyx()
+    artist, album_title = _album_search_terms(album)
+    label = f"{artist} - {album_title}".strip(" -") if artist else album_title
+
+    _put(stdscr, h - 1, 0,
+         fit_cells(f" Searching artwork sources for {label!r}...", w - 1),
+         curses.color_pair(C_BAR))
+    stdscr.refresh()
+
+    try:
+        results = [
+            r for r in search_art_sources(
+                artist, album_title, settings,
+                interactive=True,
+            )
+            if r.get("url")
+        ]
+    except RuntimeError as e:
+        return f"Search error: {e}"
+
+    if not results:
+        return f"No results for {label!r}"
+
+    idx = _pick_artwork(stdscr, results, label)
+    if idx < 0:
+        return ""
+
+    _put(stdscr, h - 1, 0, fit_cells(" Downloading...", w - 1), curses.color_pair(C_BAR))
+    stdscr.refresh()
+
+    try:
+        data, mime = fetch_artwork(results[idx]["url"])
+    except RuntimeError as e:
+        return f"Download error: {e}"
+
+    updated, errors = _apply_art_to_album(album, data, mime, cover_art, cover_art_size)
+    if errors:
+        return f"Errors applying art ({errors} failed, {updated} OK)"
+    return f"Art applied to {album.label}"
+
+
+def _fetch_art_for_artist(stdscr, artist: Node, settings: dict, cover_art: str,
+                           cover_art_size: int) -> str:
+    """Batch-fetch first confident result for each album under *artist*."""
+    h, w = stdscr.getmaxyx()
+    albums  = artist.children
+    total   = len(albums)
+    fetched = not_found = uncertain = errors = 0
+    by_source: dict[str, int] = {}
+
+    for i, album in enumerate(albums):
+        art_str, alb_str = _album_search_terms(album)
+        label = f"{art_str} - {alb_str}".strip(" -") if art_str else alb_str
+
+        _put(stdscr, h - 1, 0,
+             fit_cells(f" [{i + 1}/{total}] {label}...", w - 1),
+             curses.color_pair(C_BAR))
+        stdscr.refresh()
+
+        try:
+            results = [
+                r for r in search_art_sources(
+                    art_str, alb_str, settings,
+                    interactive=False,
+                )
+                if r.get("url")
+            ]
+        except RuntimeError:
+            errors += 1
+            continue
+
+        if not results:
+            not_found += 1
+            continue
+        if results[0].get("score", 0) < CONFIDENT_MATCH_SCORE:
+            uncertain += 1
+            continue
+
+        try:
+            data, mime = fetch_artwork(results[0]["url"])
+        except RuntimeError:
+            errors += 1
+            continue
+
+        _, errs = _apply_art_to_album(album, data, mime, cover_art, cover_art_size)
+        if errs:
+            errors += errs
+        else:
+            fetched += 1
+            source = results[0].get("source_label", results[0].get("source", "source"))
+            by_source[source] = by_source.get(source, 0) + 1
+
+    parts = []
+    if fetched:    parts.append(f"{fetched} fetched")
+    for source, count in sorted(by_source.items()):
+        parts.append(f"{source}: {count}")
+    if not_found:  parts.append(f"{not_found} not found")
+    if uncertain:  parts.append(f"{uncertain} uncertain")
+    if errors:     parts.append(f"{errors} errors")
+    return "Art: " + ", ".join(parts) if parts else "Done"
+
+
 # ── Event loop ────────────────────────────────────────────────────────────────
 
 def _expand(node: Node, artists: list[Node], sel: int) -> int:
@@ -852,6 +1136,10 @@ def _run(stdscr, artists: list[Node], root: Path, root_str: str) -> None:
     _init_colors()
     curses.curs_set(0)
     stdscr.keypad(True)
+
+    sett           = settings_mod.load(root)
+    cover_art      = sett["cover_art"]
+    cover_art_size = sett["cover_art_embed_size"]
 
     sel    = 0
     scroll = 0
@@ -969,6 +1257,36 @@ def _run(stdscr, artists: list[Node], root: Path, root_str: str) -> None:
                 sel = 0
                 scroll = 0
                 flash = f"Errors: {err}"
+
+        # ── Fetch art ─────────────────────────────────────────────────────────
+        elif key == ord("r"):
+            if pending:
+                flash = "Apply or discard pending edits before fetching art."
+            else:
+                node = items[sel]
+                if node.kind == TRACK:
+                    node = node.parent
+                if node is None:
+                    pass
+                elif node.kind == ALBUM:
+                    flash = _fetch_art_for_album(stdscr, node, sett, cover_art, cover_art_size)
+                elif node.kind == ARTIST:
+                    flash = _fetch_art_for_artist(stdscr, node, sett, cover_art, cover_art_size)
+
+        # ── Remove art ────────────────────────────────────────────────────────
+        elif key == ord("x"):
+            if pending:
+                flash = "Apply or discard pending edits before removing art."
+            else:
+                node = items[sel]
+                if node.kind == TRACK:
+                    node = node.parent
+                if node is None:
+                    pass
+                elif node.kind == ALBUM:
+                    flash = _remove_art_for_album(stdscr, node)
+                else:
+                    flash = "Select an album or track to remove album art."
 
         # ── Resize ────────────────────────────────────────────────────────────
         elif key == curses.KEY_RESIZE:
