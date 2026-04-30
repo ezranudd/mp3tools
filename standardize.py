@@ -716,6 +716,62 @@ def step_normalize_chars(root: Path, dry_run: bool) -> dict:
     return stats
 
 
+def _replace_brackets(value: str) -> str:
+    return value.replace("[", "(").replace("]", ")")
+
+
+def step_replace_title_brackets(root: Path, dry_run: bool) -> dict:
+    _header(5, "Replace [] with () in album and song titles")
+    stats = {"files": 0, "fields": 0, "errors": 0}
+
+    for mp3 in sorted(root.rglob("*.mp3")):
+        try:
+            tags = load_id3(mp3)
+        except Exception:
+            stats["errors"] += 1
+            continue
+
+        changed = False
+        for frame_id in ("TALB", "TIT2"):
+            frame = tags.get(frame_id)
+            if not frame or not hasattr(frame, "text"):
+                continue
+            new_text = []
+            frame_changed = False
+            for value in frame.text:
+                if isinstance(value, str):
+                    new_value = _replace_brackets(value)
+                    new_text.append(new_value)
+                    if new_value != value:
+                        frame_changed = True
+                else:
+                    new_text.append(value)
+            if not frame_changed:
+                continue
+            old_val = str(frame.text[0])[:60]
+            new_val = str(new_text[0])[:60]
+            print(f"  {mp3.name}  {frame_id}: {old_val!r}  ->  {new_val!r}")
+            frame.text = new_text
+            changed = True
+            stats["fields"] += 1
+
+        if changed:
+            stats["files"] += 1
+            if not dry_run:
+                try:
+                    tags.save(mp3, v2_version=3, v1=0)
+                except Exception as e:
+                    print(f"    ERROR: {e}")
+                    stats["errors"] += 1
+
+    if stats["files"] == 0 and stats["errors"] == 0:
+        print("  No square brackets found in album or song titles.")
+    else:
+        print(f"\n  Files changed: {stats['files']}  "
+              f"Fields changed: {stats['fields']}  Errors: {stats['errors']}")
+    return stats
+
+
 # ── Step 5: Normalize year tags ───────────────────────────────────────────────
 
 def step_normalize_year(root: Path, dry_run: bool) -> dict:
@@ -1802,6 +1858,7 @@ Examples:
                         else sett["cover_art_embed_size"])
     fetch_art_online = sett.get("fetch_art_online", False)
     enforce_track_artist = sett.get("enforce_artist_equals_album_artist", False)
+    replace_title_brackets = sett.get("replace_brackets_with_parentheses", False)
 
     # Parse optional step filter
     step_filter: set[int] | None = None
@@ -1820,6 +1877,8 @@ Examples:
         print("Online art: ON")
     if enforce_track_artist:
         print("Artist   : enforce Artist = Album Artist")
+    if replace_title_brackets:
+        print("Titles   : replace [] with ()")
     if args.dry_run:
         print("Mode      : DRY RUN – no files will be modified")
     print()
@@ -1834,6 +1893,9 @@ Examples:
             continue
         if fn is step_strip_tags:
             fn(root, args.dry_run, keep_apic=keep_apic)
+        elif fn is step_normalize_year and replace_title_brackets:
+            step_replace_title_brackets(root, args.dry_run)
+            fn(root, args.dry_run)
         elif fn is step_clean_files:
             fn(root, args.dry_run, cover_art=cover_art)
         elif fn is step_rename_files and enforce_track_artist:

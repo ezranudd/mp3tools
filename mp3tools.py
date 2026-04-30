@@ -94,6 +94,11 @@ def settings_page(directory: str) -> None:
         print(f"  [{BOLD}{GREEN}t{RESET}] Enforce Artist = Album Artist  [{enforce_label}]")
         print(f"      {DIM}Standardize rewrites each track artist from its album artist tag{RESET}")
         print()
+        replace_brackets = cfg.get("replace_brackets_with_parentheses", False)
+        rb_label = f"{BOLD}{GREEN}ON{RESET} " if replace_brackets else f"{DIM}OFF{RESET}"
+        print(f"  [{BOLD}{GREEN}b{RESET}] Replace [] with () in titles  [{rb_label}]")
+        print(f"      {DIM}Standardize updates album and song title tags before renaming{RESET}")
+        print()
         print("-" * 50)
         print()
         print(f"  {BOLD}Online Art Fetch{RESET}")
@@ -146,6 +151,10 @@ def settings_page(directory: str) -> None:
         elif choice == "t":
             cfg["enforce_artist_equals_album_artist"] = not cfg.get(
                 "enforce_artist_equals_album_artist", False
+            )
+        elif choice == "b":
+            cfg["replace_brackets_with_parentheses"] = not cfg.get(
+                "replace_brackets_with_parentheses", False
             )
         elif choice == "4":
             val = get_input(f"\n  Max embed size in pixels (0 = no resize) [{ca_size}]: ")

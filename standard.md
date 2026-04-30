@@ -166,6 +166,12 @@ Trailing periods and spaces are also stripped from folder and filenames.
 
 ---
 
+## Optional Title Formatting
+
+- When enabled in settings, `standardize.py` replaces square brackets with parentheses in album title and song title tags before renaming folders and MP3 files.
+
+---
+
 ## Tools
 
 | Script           | Purpose                                           |

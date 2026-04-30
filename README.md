@@ -43,6 +43,7 @@ python standardize.py -n ~/Music   # dry run
 ## Artist Enforcement
 
 - In Settings, enable “Enforce Artist = Album Artist” to make `standardize.py` rewrite each track artist tag from its album artist tag before MP3 filenames are generated.
+- In Settings, enable “Replace [] with () in titles” to make `standardize.py` update album and song title tags before folders/files are renamed.
 
 ## Scripts
 
