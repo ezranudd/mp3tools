@@ -155,7 +155,7 @@ def album_folders(root: Path) -> list[Path]:
     return result
 
 
-def _header(n: int, title: str) -> None:
+def _header(n: int | str, title: str) -> None:
     print(f"\n{'=' * 60}")
     print(f"Step {n}: {title}")
     print("=" * 60)
@@ -722,7 +722,7 @@ def _replace_brackets(value: str) -> str:
 
 
 def step_replace_title_brackets(root: Path, dry_run: bool) -> dict:
-    _header(5, "Replace [] with () in album and song titles")
+    _header("5a", "Replace [] with () in album and song titles")
     stats = {"files": 0, "fields": 0, "errors": 0}
 
     for mp3 in sorted(root.rglob("*.mp3")):
@@ -1371,7 +1371,7 @@ def step_rename_files(root: Path, dry_run: bool) -> dict:
 
 
 def step_enforce_track_artist(root: Path, dry_run: bool) -> dict:
-    _header(12, "Enforce Artist = Album Artist")
+    _header("12a", "Enforce Artist = Album Artist")
     stats = {"fixed": 0, "skipped": 0, "errors": 0}
 
     for mp3 in sorted(root.rglob("*.mp3")):
@@ -1570,7 +1570,10 @@ def step_embed_cover_art(root: Path, dry_run: bool,
     for folder in sorted(album_folders(root)):
         cover = _find_cover_file(folder)
         if not cover:
-            stats["no_cover"] += 1
+            if _all_tracks_have_embedded_art(folder):
+                stats["already_ok"] += 1
+            else:
+                stats["no_cover"] += 1
             continue
 
         prepared = _prepare_cover_data(cover, max_size)
@@ -1628,7 +1631,8 @@ def _all_tracks_have_embedded_art(folder: Path) -> bool:
         return False
     for mp3 in mp3s:
         try:
-            if not load_id3(mp3).get("APIC:"):
+            tags = load_id3(mp3)
+            if not any(k.startswith("APIC") for k in tags.keys()):
                 return False
         except Exception:
             return False

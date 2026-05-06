@@ -30,6 +30,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from mutagen.id3 import ID3, ID3NoHeaderError
+import settings as settings_mod
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -131,6 +132,15 @@ def _has_id3v1(path: Path) -> bool:
 def load_id3(path: Path) -> ID3:
     """Load raw ID3 frames without mutagen's v2.4 translation layer."""
     return ID3(path, translate=False)
+
+
+def has_embedded_art(path: Path) -> bool:
+    """Return True if the file has at least one APIC (embedded image) frame."""
+    try:
+        tags = load_id3(path)
+        return any(k.startswith("APIC") for k in tags.keys())
+    except Exception:
+        return False
 
 
 def album_artist_value(tags: ID3) -> str | None:
@@ -300,10 +310,17 @@ def audit_file(path: Path, width: int) -> tuple[dict | None, list[Issue]]:
 
 # ─── Album-level audit ────────────────────────────────────────────────────────
 
-def audit_cover_and_extras(folder: Path, also_check_cd_subdirs: bool = False) -> list[Issue]:
+def audit_cover_and_extras(
+    folder: Path,
+    mp3s: list[Path] | None = None,
+    cover_art_mode: str = "folder",
+    also_check_cd_subdirs: bool = False,
+) -> list[Issue]:
     """
-    Check that the folder has exactly one cover image named 'cover.*'
-    and no other non-MP3 files.
+    Check cover art presence and extra files according to cover_art_mode:
+      "folder" — require a cover.* file in the album folder
+      "embed"  — require APIC frame in every MP3; no folder file expected
+      "both"   — require both
     """
     issues: list[Issue] = []
     files = [f for f in folder.iterdir() if f.is_file() and not f.name.startswith(".")]
@@ -311,30 +328,48 @@ def audit_cover_and_extras(folder: Path, also_check_cd_subdirs: bool = False) ->
     covers = [f for f in non_mp3 if f.stem.lower() == "cover" and f.suffix.lower() in IMAGE_EXTENSIONS]
     extras = [f for f in non_mp3 if f not in covers]
 
-    if not covers:
-        if also_check_cd_subdirs:
-            # Cover might be inside a CD subfolder; will be moved on merge
-            cd_cover = None
-            for d in folder.iterdir():
-                if d.is_dir() and CD_PATTERN.match(d.name):
-                    found = next(
-                        (f for f in d.iterdir()
-                         if f.is_file() and f.stem.lower() == "cover" and f.suffix.lower() in IMAGE_EXTENSIONS),
-                        None,
-                    )
-                    if found:
-                        cd_cover = found
-                        break
-            if cd_cover:
-                issues.append(Issue("COVER",
-                    f"Cover image is inside {cd_cover.parent.name}/ "
-                    f"(will move to album folder on merge): {cd_cover.name}"))
+    need_folder = cover_art_mode in ("folder", "both")
+    need_embed  = cover_art_mode in ("embed", "both")
+
+    if need_folder:
+        if not covers:
+            if also_check_cd_subdirs:
+                cd_cover = None
+                for d in folder.iterdir():
+                    if d.is_dir() and CD_PATTERN.match(d.name):
+                        found = next(
+                            (f for f in d.iterdir()
+                             if f.is_file() and f.stem.lower() == "cover"
+                             and f.suffix.lower() in IMAGE_EXTENSIONS),
+                            None,
+                        )
+                        if found:
+                            cd_cover = found
+                            break
+                if cd_cover:
+                    issues.append(Issue("COVER",
+                        f"Cover image is inside {cd_cover.parent.name}/ "
+                        f"(will move to album folder on merge): {cd_cover.name}"))
+                else:
+                    issues.append(Issue("COVER",
+                        "No cover image found (expected: cover.jpg, cover.png, etc.)"))
             else:
-                issues.append(Issue("COVER", "No cover image found (expected: cover.jpg, cover.png, etc.)"))
-        else:
-            issues.append(Issue("COVER", "No cover image found (expected: cover.jpg, cover.png, etc.)"))
-    elif len(covers) > 1:
-        issues.append(Issue("COVER", f"Multiple cover images: {', '.join(f.name for f in sorted(covers))}"))
+                issues.append(Issue("COVER",
+                    "No cover image found (expected: cover.jpg, cover.png, etc.)"))
+        elif len(covers) > 1:
+            issues.append(Issue("COVER",
+                f"Multiple cover images: {', '.join(f.name for f in sorted(covers))}"))
+
+    if need_embed and mp3s:
+        missing = [p for p in mp3s if not has_embedded_art(p)]
+        if missing:
+            if len(missing) == len(mp3s):
+                issues.append(Issue("COVER", "No embedded art in any track"))
+            else:
+                names = ", ".join(p.name for p in missing[:5])
+                suffix = f" (and {len(missing) - 5} more)" if len(missing) > 5 else ""
+                issues.append(Issue("COVER",
+                    f"Missing embedded art in {len(missing)} track(s): {names}{suffix}"))
 
     if extras:
         issues.append(Issue("NON_MP3", f"Files to remove: {', '.join(f.name for f in sorted(extras))}"))
@@ -355,6 +390,9 @@ def scan(root: Path) -> list[tuple[Path, list[Issue], list[tuple]]]:
     - A folder directly containing MP3 files (regular album)
     - A folder whose CDN-named children contain MP3 files (needs merge_cds)
     """
+    sett = settings_mod.load(root)
+    cover_art_mode = sett.get("cover_art", "folder")
+
     # Discover all folders that directly contain at least one MP3
     leaf_folders: set[Path] = {mp3.parent for mp3 in root.rglob("*.mp3")}
 
@@ -414,7 +452,11 @@ def scan(root: Path) -> list[tuple[Path, list[Issue], list[tuple]]]:
                 f"Subfolders with music files: {', '.join(d.name for d in sorted(non_cd_music))}"))
 
         # ── Cover + extra files ───────────────────────────────────────────────
-        album_issues += audit_cover_and_extras(album_folder, also_check_cd_subdirs=is_cd_parent)
+        album_issues += audit_cover_and_extras(
+            album_folder, mp3s=mp3s,
+            cover_art_mode=cover_art_mode,
+            also_check_cd_subdirs=is_cd_parent,
+        )
 
         # ── File-level checks ─────────────────────────────────────────────────
         width = 3 if len(mp3s) >= 100 else 2
