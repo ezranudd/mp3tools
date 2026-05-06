@@ -59,20 +59,6 @@ def _track_sort(src: Path, td: dict) -> tuple[int, int]:
     return (disc, track)
 
 
-_DISC_RE = re.compile(
-    r'[\s\-_]*([\(\[]?)(cd|disc|disk|part)\s*(\d+)([\)\]]?)\s*$',
-    re.IGNORECASE,
-)
-
-
-def _disc_base(name: str) -> tuple[str, int]:
-    """Strip a trailing disc indicator. Returns (base_name, disc_num)."""
-    m = _DISC_RE.search(name)
-    if m:
-        return name[:m.start()].strip(), int(m.group(3))
-    return name, 1
-
-
 def _track_label(src: Path, td: dict, global_num: int | None = None,
                  num_width: int = 2) -> str:
     title = td.get("TIT2") or src.stem
@@ -90,22 +76,6 @@ def _build_tree(entries: list[tuple[Path, dict]]) -> list[Node]:
     """Build a fully-expanded artist/album/track tree from in-memory entries."""
     # Preserve original discovery order so renamed albums append rather than interleave.
     entry_order = {id(td): i for i, (_, td) in enumerate(entries)}
-
-    # Auto-merge multi-disc albums: "Album CD1" + "Album CD2" → "Album".
-    # Group by (artist, base_name) and merge only when multiple disc numbers exist.
-    disc_groups: dict[tuple[str, str], list[tuple[int, dict]]] = defaultdict(list)
-    for _, td in entries:
-        album = td.get("TALB") or ""
-        base, disc_num = _disc_base(album)
-        if base != album:
-            disc_groups[(_artist_key(td), base)].append((disc_num, td))
-
-    for (_, base), disc_list in disc_groups.items():
-        if len({disc for disc, _ in disc_list}) > 1:
-            for disc_num, td in disc_list:
-                td["TALB"] = base
-                if not td.get("TPOS"):
-                    td["TPOS"] = str(disc_num)
 
     groups: dict[str, dict[str, list[tuple[Path, dict]]]] = \
         defaultdict(lambda: defaultdict(list))

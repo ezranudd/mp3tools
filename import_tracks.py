@@ -367,21 +367,6 @@ def fill_track_tags(mp3: Path, td: dict, dry_run: bool, *, ask_text=None) -> Non
 
 # ── Core ──────────────────────────────────────────────────────────────────────
 
-def _track_sort_key(mp3: Path, td: dict) -> tuple[int, int]:
-    disc_raw  = (td.get("TPOS") or "1").split("/")[0].strip()
-    trck_raw  = (td.get("TRCK") or "").split("/")[0].strip()
-    try:
-        disc = int(disc_raw)
-    except ValueError:
-        disc = 1
-    try:
-        track = int(trck_raw)
-    except ValueError:
-        m = re.match(r"^(\d+)", mp3.stem)
-        track = int(m.group(1)) if m else 9999
-    return (disc, track)
-
-
 def _find_cover(folder: Path) -> Path | None:
     for f in sorted(folder.iterdir()):
         if f.is_file() and f.stem.lower() == "cover" and f.suffix.lower() in IMAGE_EXTENSIONS:
@@ -509,6 +494,11 @@ def import_tracks(source: Path, library: Path, dry_run: bool,
         print("\nImport aborted.")
         return
 
+    # Build a position index matching what the preview displayed, so that track
+    # numbers written to the library reflect the user's arranged order rather than
+    # TPOS/TRCK tags (which matter for manual multi-CD merges in particular).
+    entries_index = {id(td): i for i, (_, td) in enumerate(entries)}
+
     # Drop lossless entries the user chose to skip in the preview
     if all_lossless:
         entries = [(src, td) for src, td in entries
@@ -568,7 +558,10 @@ def import_tracks(source: Path, library: Path, dry_run: bool,
                     offset = len(existing_mp3s)
 
         # ── Sort and assign track numbers ──────────────────────────────────────
-        group_sorted = sorted(group, key=lambda x: _track_sort_key(x[0], x[1]))
+        # Sort by position in the entries list, which matches the preview display
+        # order. This ensures manual multi-CD merges produce consecutive numbering
+        # rather than interleaving by TPOS/TRCK tags.
+        group_sorted = sorted(group, key=lambda x: entries_index.get(id(x[1]), 9999))
         total = offset + len(group_sorted)
         width = 3 if total >= 100 else 2
 
