@@ -149,8 +149,9 @@ def _conversion_duration(src: Path, start_time: float | None, end_time: float | 
 
 def convert_to_mp3_progress(src: Path, dst: Path, bitrate: int,
                             start_time: float | None = None,
-                            end_time: float | None = None) -> bool:
-    """Convert src to MP3 and print an in-place progress bar."""
+                            end_time: float | None = None,
+                            progress=None) -> bool:
+    """Convert src to MP3 and report progress via callback or CLI progress bar."""
     duration = _conversion_duration(src, start_time, end_time)
     try:
         cmd = ["ffmpeg", "-hide_banner", "-nostats", "-i", str(src)]
@@ -176,7 +177,9 @@ def convert_to_mp3_progress(src: Path, dst: Path, bitrate: int,
 
         last_secs = 0.0
         ffmpeg_output: list[str] = []
-        if not duration:
+        if progress:
+            progress(src.name, None)
+        elif not duration:
             print(f"\r    Converting {_progress_bar(0, 1)}", end="", flush=True)
         if proc.stdout:
             for line in proc.stdout:
@@ -188,17 +191,26 @@ def convert_to_mp3_progress(src: Path, dst: Path, bitrate: int,
                         continue
                     if duration:
                         pct = min(100, int((last_secs / duration) * 100))
-                        bar = _progress_bar(last_secs, duration)
-                        print(f"\r    Converting {bar} {pct:3d}%", end="", flush=True)
+                        if progress:
+                            progress(src.name, pct)
+                        else:
+                            bar = _progress_bar(last_secs, duration)
+                            print(f"\r    Converting {bar} {pct:3d}%", end="", flush=True)
                 elif line == "progress=end":
-                    suffix = " 100%" if duration else ""
-                    print(f"\r    Converting {_progress_bar(1, 1)}{suffix}", end="", flush=True)
+                    if progress:
+                        progress(src.name, 100)
+                    else:
+                        suffix = " 100%" if duration else ""
+                        print(f"\r    Converting {_progress_bar(1, 1)}{suffix}", end="", flush=True)
                 elif line:
                     ffmpeg_output.append(line)
                     ffmpeg_output = ffmpeg_output[-20:]
 
         rc = proc.wait()
-        print()
+        if progress:
+            progress(src.name, 100, done=True)
+        else:
+            print()
         if rc != 0:
             print(f"    ffmpeg error: {' '.join(ffmpeg_output)[-300:].strip()}")
             return False
@@ -266,7 +278,8 @@ def read_tags(mp3: Path) -> dict | None:
 
 # ── Prompting ──────────────────────────────────────────────────────────────────
 
-def fill_album_tags(group: list[tuple[Path, dict]], label: str, dry_run: bool) -> None:
+def fill_album_tags(group: list[tuple[Path, dict]], label: str, dry_run: bool,
+                    *, ask_text=None) -> None:
     """Auto-fill YEAR/TCON/ALBUMARTIST; prompt for artist/album title if still missing."""
     # Year: try folder name for a 4-digit year, fall back to 1900.
     year_default  = extract_year(label) or "1900"
@@ -301,6 +314,7 @@ def fill_album_tags(group: list[tuple[Path, dict]], label: str, dry_run: bool) -
         if not td.get("TCON"):
             td["TCON"] = "Unknown"
 
+    _ask = ask_text or get_input
     if missing_prompt:
         print(f"\n  ── {label} ──")
         for key in ("TPE1", "TALB"):
@@ -311,7 +325,7 @@ def fill_album_tags(group: list[tuple[Path, dict]], label: str, dry_run: bool) -
             if suggestion:
                 prompt += f" [{suggestion}]"
             prompt += ": "
-            val = get_input(prompt)
+            val = _ask(prompt)
             if not val and suggestion:
                 val = suggestion
             if val:
@@ -324,8 +338,9 @@ def fill_album_tags(group: list[tuple[Path, dict]], label: str, dry_run: bool) -
             td["ALBUMARTIST"] = td["TPE1"]
 
 
-def fill_track_tags(mp3: Path, td: dict, dry_run: bool) -> None:
+def fill_track_tags(mp3: Path, td: dict, dry_run: bool, *, ask_text=None) -> None:
     """Prompt for Title if missing; update td in place."""
+    _ask = ask_text or get_input
     for key in TRACK_TAGS:
         if td.get(key):
             continue
@@ -343,7 +358,7 @@ def fill_track_tags(mp3: Path, td: dict, dry_run: bool) -> None:
         if suggestion:
             prompt += f" [{suggestion}]"
         prompt += ": "
-        val = get_input(prompt)
+        val = _ask(prompt)
         if not val and suggestion:
             val = suggestion
         if val:
@@ -418,7 +433,9 @@ def _create_placeholder_cover(path: Path) -> bool:
 
 
 def import_tracks(source: Path, library: Path, dry_run: bool,
-                  cover_art: str = "folder", cover_art_size: int = 500) -> None:
+                  cover_art: str = "folder", cover_art_size: int = 500,
+                  *, preview_fn=None, ask_text=None, ask_choice=None,
+                  progress=None) -> None:
     print(f"Source  : {source}")
     print(f"Library : {library}")
     if dry_run:
@@ -470,9 +487,9 @@ def import_tracks(source: Path, library: Path, dry_run: bool,
     for src_folder in sorted(by_src):
         group = by_src[src_folder]
         label = src_folder.name if src_folder != source else source.name
-        fill_album_tags(group, label, dry_run)
+        fill_album_tags(group, label, dry_run, ask_text=ask_text)
         for mp3, td in group:
-            fill_track_tags(mp3, td, dry_run)
+            fill_track_tags(mp3, td, dry_run, ask_text=ask_text)
 
     # ── Normalize tags in memory ───────────────────────────────────────────────
     def _normalize_entries(elist):
@@ -486,7 +503,8 @@ def import_tracks(source: Path, library: Path, dry_run: bool,
     _normalize_entries(entries)
 
     # ── Import preview ─────────────────────────────────────────────────────────
-    proceed = run_preview(entries, bool(all_lossless))
+    _preview = preview_fn or run_preview
+    proceed = _preview(entries, bool(all_lossless))
     if not proceed:
         print("\nImport aborted.")
         return
@@ -539,9 +557,10 @@ def import_tracks(source: Path, library: Path, dry_run: bool,
                     print("  (dry run) Would prompt to add or skip")
                     offset = len(existing_mp3s)
                 else:
+                    _ask_choice = ask_choice or get_input
                     choice = ""
                     while choice not in ("a", "s"):
-                        choice = get_input("  [A]dd to existing album  [S]kip: ").lower()
+                        choice = _ask_choice("  [A]dd to existing album  [S]kip: ").lower()
                     if choice == "s":
                         print("  Skipped.\n")
                         stats["skipped"] += len(group)
@@ -616,7 +635,8 @@ def import_tracks(source: Path, library: Path, dry_run: bool,
                     cue_start = td.get("_CUE_START")
                     cue_end   = td.get("_CUE_END")
                     if not convert_to_mp3_progress(src, tmp_path, lossless_bitrate,
-                                                   cue_start, cue_end):
+                                                   cue_start, cue_end,
+                                                   progress=progress):
                         stats["errors"] += 1
                         if tmp_path.exists():
                             tmp_path.unlink()

@@ -121,13 +121,15 @@ def read_lossless_tags(path: Path) -> dict:
             return empty
 
 
-def prompt_bitrate() -> int | None:
+def prompt_bitrate(ask_choice=None) -> int | None:
     """Ask user to pick 192/256/320 kbps or skip. Returns kbps int or None."""
     while True:
         try:
-            choice = input(
-                "  Convert to: [1] 192 kbps  [2] 256 kbps  [3] 320 kbps  [S]kip: "
-            ).strip().lower()
+            prompt = "  Convert to: [1] 192 kbps  [2] 256 kbps  [3] 320 kbps  [S]kip: "
+            if ask_choice:
+                choice = str(ask_choice(prompt)).strip().lower()
+            else:
+                choice = input(prompt).strip().lower()
         except (EOFError, KeyboardInterrupt):
             print()
             return None
@@ -285,7 +287,7 @@ def read_cue_tracks(flac_path: Path) -> list[tuple[Path, dict]] | None:
     return result
 
 
-def step_convert_lossless(root: Path, dry_run: bool) -> dict:
+def step_convert_lossless(root: Path, dry_run: bool, *, ask_choice=None) -> dict:
     """
     Step 0 for standardize: find FLAC/ALAC files in root, prompt for bitrate,
     convert each to MP3 in-place, and delete the original.
@@ -317,7 +319,7 @@ def step_convert_lossless(root: Path, dry_run: bool) -> dict:
         print("  Skipping lossless conversion.")
         return {"converted": 0, "errors": len(lossless)}
 
-    bitrate = prompt_bitrate()
+    bitrate = prompt_bitrate(ask_choice=ask_choice)
     if bitrate is None:
         print("  Skipped.")
         return {"converted": 0, "errors": 0}

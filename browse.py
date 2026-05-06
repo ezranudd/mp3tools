@@ -1347,5 +1347,14 @@ Examples:
         pass
 
 
+def run_in_session(stdscr, root: Path) -> None:
+    """Enter the browse view using an already-active curses session."""
+    artists = build_tree(root)
+    if not artists:
+        return
+    _init_colors()
+    _run(stdscr, artists, root, str(root))
+
+
 if __name__ == "__main__":
     main()

@@ -656,3 +656,9 @@ def run_preview(entries: list[tuple[Path, dict]],
         return curses.wrapper(_run, entries, has_lossless)
     except KeyboardInterrupt:
         return False
+
+
+def run_preview_in_session(stdscr, entries: list[tuple[Path, dict]],
+                            has_lossless: bool) -> bool:
+    """Run the import preview using an already-active curses session."""
+    return _run(stdscr, entries, has_lossless)

@@ -379,7 +379,7 @@ def _save_tag(mp3: Path, key: str, value: str) -> bool:
         return False
 
 
-def step_fix_missing_tags(root: Path, dry_run: bool) -> dict:
+def step_fix_missing_tags(root: Path, dry_run: bool, *, ask_text=None) -> dict:
     _header(2, "Fix missing tags")
     stats = {"fixed": 0, "skipped": 0}
 
@@ -419,6 +419,7 @@ def step_fix_missing_tags(root: Path, dry_run: bool) -> dict:
         # Album Artist is required, but it is derived: when absent, use Artist.
         # If Artist is also missing, the prompt below fills TPE1 first.
         prompt_album = album_missing - {"YEAR", "ALBUMARTIST"}
+        _ask_text = ask_text or get_input
         if prompt_album and not dry_run:
             print(f"  -- Album-level tags (applies to all {len(entries)} files) --")
             for key in sorted(prompt_album):
@@ -434,7 +435,7 @@ def step_fix_missing_tags(root: Path, dry_run: bool) -> dict:
                 if suggestion:
                     prompt += f" [{suggestion}]"
                 prompt += ": "
-                val = get_input(prompt)
+                val = _ask_text(prompt)
                 if not val and suggestion:
                     val = suggestion
                     print(f"      -> Using: {val}")
@@ -479,7 +480,7 @@ def step_fix_missing_tags(root: Path, dry_run: bool) -> dict:
                     if suggestion:
                         prompt += f" [{suggestion}]"
                     prompt += ": "
-                    val = get_input(prompt)
+                    val = _ask_text(prompt)
                     if not val and suggestion:
                         val = suggestion
                         print(f"      -> Using: {val}")
@@ -1066,7 +1067,7 @@ def step_deduplicate_albums(root: Path, dry_run: bool) -> dict:
 
 # ── Step 10: Rename album artist folders ──────────────────────────────────────
 
-def step_rename_artist_folders(root: Path, dry_run: bool) -> dict:
+def step_rename_artist_folders(root: Path, dry_run: bool, *, ask_choice=None) -> dict:
     _header(11, "Rename album artist folders")
     stats = {"renamed": 0, "retagged": 0, "moved": 0, "skipped": 0, "errors": 0}
 
@@ -1110,6 +1111,7 @@ def step_rename_artist_folders(root: Path, dry_run: bool) -> dict:
 
         new_name = sanitize_name(Counter(names).most_common(1)[0][0])
         retagged_all = False
+        _ask_choice = ask_choice or get_input
 
         if artist_folder.name != new_name:
             # Mismatch: folder name differs from dominant album artist tag value
@@ -1124,7 +1126,7 @@ def step_rename_artist_folders(root: Path, dry_run: bool) -> dict:
             else:
                 choice = ""
                 while choice not in ("r", "m", "s"):
-                    choice = get_input(
+                    choice = _ask_choice(
                         f"    [R]etag album artist to match folder  "
                         f"[M]ove/rename folder to match album artist  "
                         f"[S]kip: "
@@ -1211,7 +1213,7 @@ def step_rename_artist_folders(root: Path, dry_run: bool) -> dict:
 
                 choice = ""
                 while choice not in ("r", "s"):
-                    choice = get_input(
+                    choice = _ask_choice(
                         f"    [R]etag album artist to match folder  [S]kip: "
                     ).lower()
 
@@ -1251,7 +1253,7 @@ def step_rename_artist_folders(root: Path, dry_run: bool) -> dict:
 
             choice = ""
             while choice not in ("r", "m", "s"):
-                choice = get_input(
+                choice = _ask_choice(
                     f"    [R]etag album artist to match folder  "
                     f"[M]ove album to correct album artist folder  [S]kip: "
                 ).lower()
@@ -1420,9 +1422,11 @@ def _is_image(name: str) -> bool:
     return Path(name).suffix.lower() in IMAGE_EXTENSIONS
 
 
-def step_clean_files(root: Path, dry_run: bool, cover_art: str = "folder") -> dict:
+def step_clean_files(root: Path, dry_run: bool, cover_art: str = "folder",
+                     *, ask_choice=None) -> dict:
     _header(13, "Clean non-MP3 files and cover images")
     stats = {"deleted": 0, "renamed_covers": 0, "missing_covers": 0, "errors": 0}
+    _ask_choice = ask_choice or get_input
 
     for folder in sorted(album_folders(root)):
         all_files = [f for f in folder.iterdir() if f.is_file()]
@@ -1485,7 +1489,7 @@ def step_clean_files(root: Path, dry_run: bool, cover_art: str = "folder") -> di
             else:
                 choice = ""
                 while choice not in ("d", "k"):
-                    choice = get_input(
+                    choice = _ask_choice(
                         f"    [D]elete {len(confirm_delete)} file(s)  [K]eep: "
                     ).lower()
                 if choice == "d":

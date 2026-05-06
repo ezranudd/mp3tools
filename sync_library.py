@@ -567,6 +567,15 @@ def run_sync(library: Path, device: Path, dry_run: bool) -> int:
         return 0
 
 
+def run_in_session(stdscr, library: Path, device: Path, dry_run: bool) -> None:
+    """Enter sync view using an already-active curses session."""
+    artists = build_artist_info(library, device)
+    if not artists:
+        return
+    _init_colors()
+    _run_curses(stdscr, library, device, dry_run, artists)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Sync selected library artists to a device")
     parser.add_argument("library", type=Path, help="Local MP3 library root")
