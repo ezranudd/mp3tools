@@ -12,4 +12,4 @@ dependencies = ["mutagen", "wcwidth"]
 mp3tools = "tui:main"
 
 [tool.setuptools]
-py-modules = ["tui", "audit", "browse", "import_tracks", "standardize", "convert_lossless", "import_preview", "sync_library", "termtext", "settings", "fetch_art"]
+py-modules = ["tui", "audit", "browse", "import_tracks", "standardize", "convert_lossless", "import_preview", "sync_library", "termtext", "settings", "fetch_art", "rip_cd"]

@@ -276,12 +276,13 @@ class AsyncOperationView(View):
 # ── Main menu ─────────────────────────────────────────────────────────────────
 
 _MENU = [
-    ("1", "Audit",        "Scan and report compliance issues  (read-only)"),
-    ("2", "Browse",       "Browse library in an interactive tag editor"),
-    ("3", "Standardize",  "Run all fixes; prompts for missing tags"),
-    ("4", "Import",       "Copy and standardize tracks from another directory"),
-    ("5", "Sync",         "Sync selected artists to a device"),
-    ("6", "Settings",     "Configure library preferences"),
+    ("1", "Audit",          "Scan and report compliance issues  (read-only)"),
+    ("2", "Browse",         "Browse library in an interactive tag editor"),
+    ("3", "Standardize",    "Run all fixes; prompts for missing tags"),
+    ("4", "Import",         "Copy and standardize tracks from another directory"),
+    ("5", "Import from CD", "Rip a CD and import tracks into the library"),
+    ("6", "Sync",           "Sync selected artists to a device"),
+    ("7", "Settings",       "Configure library preferences"),
 ]
 
 _TITLE_ART = [
@@ -374,12 +375,24 @@ class MainMenuView(View):
         if key in (curses.KEY_ENTER, ord("\n"), ord("\r"), curses.KEY_RIGHT):
             ch = str(self._sel + 1)
 
-        _ACTIONS = [AuditView, BrowseView, StandardizeView,
-                    ImportSourceView, DevicePickerView, SettingsView]
-        if ch in ("1", "2", "3", "4", "5", "6"):
-            return _ACTIONS[int(ch) - 1](self.state)
+        if ch == "5":
+            return self._launch_cd_rip()
+        _ACTIONS = {
+            "1": AuditView, "2": BrowseView, "3": StandardizeView,
+            "4": ImportSourceView, "6": DevicePickerView, "7": SettingsView,
+        }
+        if ch in _ACTIONS:
+            return _ACTIONS[ch](self.state)
 
         return self
+
+    def _launch_cd_rip(self) -> "View":
+        import rip_cd as _rip_mod
+        devices = _rip_mod.detect_cd_devices()
+        if not devices:
+            self._flash = "No CD drive found (checked /dev/cdrom, /dev/sr0 ...)"
+            return self
+        return RipCDView(self.state, device=devices[0])
 
 
 # ── Directory picker ──────────────────────────────────────────────────────────
@@ -987,6 +1000,127 @@ class ImportView(AsyncOperationView):
             self.log.scroll(-(h - 2), h - 2)
         elif key == curses.KEY_NPAGE:
             self.log.scroll(h - 2, h - 2)
+        return self
+
+
+# ── CD rip view ───────────────────────────────────────────────────────────────
+
+class _CDImportView(ImportView):
+    """ImportView subclass that deletes the (temp) source directory when done."""
+    def _run(self) -> None:
+        try:
+            super()._run()
+        finally:
+            shutil.rmtree(str(self.source), ignore_errors=True)
+
+
+class RipCDView(AsyncOperationView):
+    def __init__(self, state: AppState, device: Path) -> None:
+        self.state = state
+        self.device = device
+        self._rip_dir: Path | None = None
+        self._rip_ok = False
+        self._cancelling = False
+        self._cancel_event = threading.Event()
+        # (track, total, pct): pct 0-100 = ripping, pct -1 = converting
+        self._rip_track: tuple[int, int, int] = (0, 0, 0)
+        self._init_async()
+
+    def draw(self, stdscr) -> None:
+        self._stdscr = stdscr
+        self._start_worker(self._run)
+        self._render(stdscr)
+
+    def _render(self, stdscr) -> None:
+        h, w = stdscr.getmaxyx()
+        stdscr.erase()
+        _put(stdscr, 0, 0, fit_cells(f" Import from CD  {self.device}", w),
+             curses.color_pair(C_HDR) | curses.A_BOLD)
+        self.log.draw(stdscr, 1, h - 1)
+
+        if self._done:
+            if self._cancelling:
+                status = " Cancelled — q=Return"
+            elif self._rip_ok:
+                status = " Rip complete — Enter=Import  q=Cancel"
+            else:
+                status = " Rip failed — q=Return"
+        elif self._cancelling:
+            status = " Cancelling..."
+        else:
+            track, total, pct = self._rip_track
+            if pct == -1 and track > 0:
+                status = f" Converting {track}/{total}..."
+            elif track > 0:
+                hint    = "  q=Cancel"
+                prefix  = f" Track {track}/{total}  "
+                suffix  = f"  {pct:3d}%{hint}"
+                bar_w   = max(4, w - cell_width(prefix) - cell_width(suffix) - 2)
+                filled  = int(bar_w * pct / 100)
+                bar     = "[" + "█" * filled + "░" * (bar_w - filled) + "]"
+                status  = prefix + bar + suffix
+            else:
+                status = " Reading disc...  q=Cancel"
+
+        _put(stdscr, h - 1, 0, fit_cells(status, w - 1), curses.color_pair(C_BAR))
+        stdscr.refresh()
+
+    def _run(self) -> None:
+        import tempfile
+        import rip_cd as _rip_mod
+        self._rip_dir = Path(tempfile.mkdtemp(prefix="mp3tools_rip_"))
+
+        def log(msg: str) -> None:
+            self.log.append([msg])
+
+        def progress(track: int, total: int, pct: int) -> None:
+            with self._lock:
+                self._rip_track = (track, total, pct)
+
+        self._rip_ok = _rip_mod.rip(
+            self.device, self._rip_dir,
+            log_fn=log,
+            progress_fn=progress,
+            cancel_event=self._cancel_event,
+        )
+
+    def tick(self, stdscr) -> "View | None":
+        result = super().tick(stdscr)
+        if self._done and self._cancelling:
+            if self._rip_dir:
+                shutil.rmtree(str(self._rip_dir), ignore_errors=True)
+                self._rip_dir = None
+            return None
+        return result
+
+    def handle(self, key: int) -> "View | _PopAndPush | None":
+        h = self._stdscr.getmaxyx()[0] if self._stdscr else 24
+        ch = chr(key).lower() if 0 < key < 256 else ""
+
+        # Cancel is available any time ripping is in progress
+        if not self._done:
+            if ch == "q" or key == 27:
+                self._cancelling = True
+                self._cancel_event.set()
+            return self
+
+        if ch == "q" or key == 27:
+            if self._rip_dir:
+                shutil.rmtree(str(self._rip_dir), ignore_errors=True)
+            return None
+        if key in (curses.KEY_UP, ord("k")):
+            self.log.scroll(-1, h - 2)
+        elif key in (curses.KEY_DOWN, ord("j")):
+            self.log.scroll(1, h - 2)
+        elif key == curses.KEY_PPAGE:
+            self.log.scroll(-(h - 2), h - 2)
+        elif key == curses.KEY_NPAGE:
+            self.log.scroll(h - 2, h - 2)
+        elif (self._rip_ok and self._rip_dir
+              and key in (curses.KEY_ENTER, ord("\n"), ord("\r"))):
+            rip_dir = self._rip_dir
+            self._rip_dir = None  # prevent double-cleanup in _CDImportView
+            return _PopAndPush(_CDImportView(self.state, source=rip_dir))
         return self
 
 
