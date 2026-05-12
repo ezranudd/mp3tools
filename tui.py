@@ -835,8 +835,9 @@ class StandardizeView(AsyncOperationView):
         enforce_artist       = cfg.get("enforce_artist_equals_album_artist", False)
         replace_brackets     = cfg.get("replace_brackets_with_parentheses", False)
         preserve_replay_gain = cfg.get("preserve_replay_gain", False)
-        preserve_tcmp        = cfg.get("preserve_tcmp", False)
-        keep_apic            = cover_art in ("embed", "both")
+        preserve_tcmp         = cfg.get("preserve_tcmp", False)
+        preserve_disc_numbers = cfg.get("preserve_disc_numbers", False)
+        keep_apic             = cover_art in ("embed", "both")
 
         ask_text   = self._make_ask_text()
         ask_choice = self._make_ask_choice()
@@ -862,7 +863,14 @@ class StandardizeView(AsyncOperationView):
                 if fn is std_mod.step_strip_tags:
                     fn(root, dry_run, keep_apic=keep_apic,
                        keep_replay_gain=preserve_replay_gain,
-                       keep_tcmp=preserve_tcmp)
+                       keep_tcmp=preserve_tcmp,
+                       keep_tpos=preserve_disc_numbers)
+                elif fn is std_mod.step_merge_subfolders:
+                    fn(root, dry_run, preserve_tpos=preserve_disc_numbers)
+                elif fn is std_mod.step_pad_tracks:
+                    fn(root, dry_run, respect_tpos=preserve_disc_numbers)
+                elif fn is std_mod.step_set_total_tracks:
+                    fn(root, dry_run, respect_tpos=preserve_disc_numbers)
                 elif fn is std_mod.step_normalize_year and replace_brackets:
                     std_mod.step_replace_title_brackets(root, dry_run)
                     fn(root, dry_run)
@@ -1208,6 +1216,10 @@ class SettingsView(View):
         rows.append(("i",   f"  Preserve iTunes compilation flag  [{v}]  "
                             f"(keeps/sets TCMP=1 when Artist ≠ Album Artist)", a))
 
+        v, a = on(cfg.get("preserve_disc_numbers", False))
+        rows.append(("n",   f"  Preserve disc numbers on merge  [{v}]  "
+                            f"(writes TPOS; keeps per-disc TRCK instead of renumbering)", a))
+
         rows.append(("",    "", 0))
         rows.append(("",    "  CD Import", curses.color_pair(C_ARTIST) | curses.A_BOLD))
 
@@ -1334,6 +1346,9 @@ class SettingsView(View):
                 "preserve_replay_gain", False)
         elif key == "i":
             self.cfg["preserve_tcmp"] = not self.cfg.get("preserve_tcmp", False)
+        elif key == "n":
+            self.cfg["preserve_disc_numbers"] = not self.cfg.get(
+                "preserve_disc_numbers", False)
         elif key == "e":
             self.cfg["eject_cd_after_import"] = not self.cfg.get(
                 "eject_cd_after_import", False)

@@ -175,7 +175,11 @@ Converts any FLAC or ALAC files found under the root to MP3 via ffmpeg. Only run
 
 ### Step 1 — Merge disc subfolders
 
-Finds album folders that contain subfolders with MP3 files (e.g. `CD1`, `CD2`). Merges all MP3s into the parent folder, renumbering tracks sequentially across discs in disc-number order. Sets `TALB` to the most common album title across all subfolders and updates `TRCK` to reflect the merged sequence. Copies a cover image from the first subfolder that has one. Deletes the empty subfolders afterward (skips any subfolder that still contains non-image files).
+Finds album folders that contain subfolders with MP3 files (e.g. `CD1`, `CD2`). Merges all MP3s into the parent folder. Sets `TALB` to the most common album title across all subfolders. Copies a cover image from the first subfolder that has one. Deletes the empty subfolders afterward (skips any subfolder that still contains non-image files).
+
+**Default mode:** tracks are renumbered sequentially (1…N) across all discs and `TRCK` is set to `NN/total`.
+
+**With `preserve_disc_numbers`:** original per-disc track numbers are kept, `TRCK` is set to `NN/disc_total`, and `TPOS` is written with the disc number (e.g. `1/2`, `2/2`). Steps 4, 7, and 8 automatically respect `TPOS` when this setting is enabled.
 
 ### Step 2 — Fix missing tags
 
@@ -290,6 +294,7 @@ These are stored per-library in `{library_root}/.mp3tools` and control condition
 | `replace_brackets_with_parentheses` | Enable step 5a |
 | `preserve_replay_gain` | Keep `TXXX:REPLAYGAIN_*` frames during step 4 (default: strip them) |
 | `preserve_tcmp` | Keep/set `TCMP=1` during step 4: preserved when already present; written when `Artist ≠ Album Artist` (iTunes compilation support) |
+| `preserve_disc_numbers` | Write `TPOS` on disc merge (step 1); keep per-disc `TRCK` values rather than renumbering sequentially; `TPOS` is also kept by steps 4, 7, and 8 |
 
 ---
 

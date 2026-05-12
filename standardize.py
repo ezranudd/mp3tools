@@ -42,7 +42,7 @@ from convert_lossless import step_convert_lossless
 from mutagen.id3 import (
     ID3, ID3NoHeaderError,
     TPE1, TIT2, TALB, TYER, TCON, TRCK,
-    TPE2, APIC, TCMP,
+    TPE2, APIC, TCMP, TPOS,
 )
 
 
@@ -199,11 +199,14 @@ def _music_subfolders(parent: Path) -> list[Path]:
     )
 
 
-def _merge_one(album: Path, subfolders: list[Path], dry_run: bool) -> dict:
+def _merge_one(album: Path, subfolders: list[Path], dry_run: bool,
+               preserve_tpos: bool = False) -> dict:
     """Merge subfolders into album folder. Returns stats."""
-    all_mp3s: list[tuple[Path, int]] = []  # (path, sort_key)
-    for sf in subfolders:
-        files = []
+    num_discs = len(subfolders)
+    # Collect files with disc context: (path, sort_key, disc_num, disc_total, within_disc_idx)
+    all_mp3s: list[tuple[Path, int, int, int, int]] = []
+    for disc_idx, sf in enumerate(subfolders, 1):
+        files: list[tuple[Path, int]] = []
         for mp3 in sf.glob("*.mp3"):
             sort_key = 9999
             try:
@@ -219,14 +222,16 @@ def _merge_one(album: Path, subfolders: list[Path], dry_run: bool) -> dict:
                     sort_key = int(m.group(1))
             files.append((mp3, sort_key))
         files.sort(key=lambda x: x[1])
-        all_mp3s.extend(files)
+        disc_total = len(files)
+        for within_idx, (mp3, sort_key) in enumerate(files, 1):
+            all_mp3s.append((mp3, sort_key, disc_idx, disc_total, within_idx))
 
     total = len(all_mp3s)
-    width = 3 if total >= 100 else 2
+    global_width = 3 if total >= 100 else 2
 
     # Determine album title: most common across all subfolders
     album_titles: list[str] = []
-    for mp3, _ in all_mp3s:
+    for mp3, _, _, _, _ in all_mp3s:
         try:
             tags = load_id3(mp3)
             talb = tags.get("TALB")
@@ -236,13 +241,28 @@ def _merge_one(album: Path, subfolders: list[Path], dry_run: bool) -> dict:
             pass
     album_title = Counter(album_titles).most_common(1)[0][0] if album_titles else None
 
-    print(f"  Merging {len(subfolders)} subfolder(s), {total} tracks")
+    mode = "preserving disc numbers" if preserve_tpos else "renumbering sequentially"
+    print(f"  Merging {num_discs} subfolder(s), {total} tracks ({mode})")
     print(f"  Order: {', '.join(sf.name for sf in subfolders)}")
     if album_title:
         print(f"  Album: {album_title}")
 
     stats = {"moved": 0, "errors": 0}
-    for new_num, (mp3, _) in enumerate(all_mp3s, 1):
+    for seq, (mp3, sort_key, disc_num, disc_total, within_idx) in enumerate(all_mp3s, 1):
+        if preserve_tpos:
+            # Keep original per-disc track number; fall back to within-disc position if unknown.
+            track_num = sort_key if sort_key != 9999 else within_idx
+            disc_width = 3 if disc_total >= 100 else 2
+            trck_val  = f"{track_num}/{disc_total}"
+            tpos_val  = f"{disc_num}/{num_discs}"
+            new_num   = track_num
+            width     = disc_width
+        else:
+            new_num   = seq
+            trck_val  = f"{new_num}/{total}"
+            tpos_val  = None
+            width     = global_width
+
         # Build new filename: keep rest-of-name, replace track prefix
         stem = mp3.stem
         m = re.match(r'^\d+[.\s-]+(.+)$', stem)
@@ -250,12 +270,15 @@ def _merge_one(album: Path, subfolders: list[Path], dry_run: bool) -> dict:
         new_name = f"{new_num:0{width}d}. {rest}.mp3"
         new_path = album / new_name
 
-        print(f"  {mp3.parent.name}/{mp3.name}  ->  {new_name}")
+        disc_label = f"  [disc {disc_num}/{num_discs}]" if preserve_tpos else ""
+        print(f"  {mp3.parent.name}/{mp3.name}  ->  {new_name}{disc_label}")
 
         if not dry_run:
             try:
                 tags = load_id3(mp3)
-                tags["TRCK"] = TRCK(encoding=1, text=f"{new_num}/{total}")
+                tags["TRCK"] = TRCK(encoding=1, text=trck_val)
+                if tpos_val:
+                    tags["TPOS"] = TPOS(encoding=1, text=tpos_val)
                 if album_title:
                     tags["TALB"] = TALB(encoding=1, text=album_title)
                 tags.save(mp3, v2_version=3, v1=0)
@@ -297,7 +320,8 @@ def _merge_one(album: Path, subfolders: list[Path], dry_run: bool) -> dict:
     return stats
 
 
-def step_merge_subfolders(root: Path, dry_run: bool) -> dict:
+def step_merge_subfolders(root: Path, dry_run: bool,
+                          preserve_tpos: bool = False) -> dict:
     _header(1, "Merge disc subfolders")
     total_stats = {"albums": 0, "moved": 0, "errors": 0}
 
@@ -319,7 +343,7 @@ def step_merge_subfolders(root: Path, dry_run: bool) -> dict:
             continue
         rel = album.relative_to(root)
         print(f"\n  Album: {rel}")
-        stats = _merge_one(album, subs, dry_run)
+        stats = _merge_one(album, subs, dry_run, preserve_tpos=preserve_tpos)
         total_stats["albums"] += 1
         total_stats["moved"]  += stats["moved"]
         total_stats["errors"] += stats["errors"]
@@ -584,11 +608,14 @@ def _is_replay_gain_key(key: str) -> bool:
 
 def step_strip_tags(root: Path, dry_run: bool, keep_apic: bool = False,
                     keep_replay_gain: bool = False,
-                    keep_tcmp: bool = False) -> dict:
+                    keep_tcmp: bool = False,
+                    keep_tpos: bool = False) -> dict:
     _header(4, "Strip extraneous tags")
     stats = {"files": 0, "tags_removed": 0, "albumartist_fixed": 0,
              "covers_extracted": 0, "tcmp_set": 0}
-    keep = KEEP_TAGS | ({"APIC"} if keep_apic else set())
+    keep = (KEEP_TAGS
+            | ({"APIC"} if keep_apic else set())
+            | ({"TPOS"} if keep_tpos else set()))
     # Track folders where we've already checked cover extraction (one cover per folder).
     extracted_folders: set[Path] = set()
 
@@ -856,16 +883,41 @@ def step_normalize_year(root: Path, dry_run: bool) -> dict:
 
 # ── Step 6: Pad track numbers ─────────────────────────────────────────────────
 
-def step_pad_tracks(root: Path, dry_run: bool) -> dict:
+def _disc_key(tags: ID3) -> str | None:
+    """Return disc number string from TPOS (e.g. '1' from '1/2'), or None."""
+    tpos = tags.get("TPOS")
+    if tpos and hasattr(tpos, "text") and tpos.text:
+        val = str(tpos.text[0]).split("/")[0].strip()
+        return val or None
+    return None
+
+
+def step_pad_tracks(root: Path, dry_run: bool, respect_tpos: bool = False) -> dict:
     _header(7, "Pad track numbers")
     stats = {"fixed": 0}
 
-    # Determine per-folder width
-    folder_width: dict[Path, int] = {}
-    for mp3 in root.rglob("*.mp3"):
-        f = mp3.parent
-        folder_width[f] = folder_width.get(f, 0) + 1
-    folder_width = {f: (3 if n >= 100 else 2) for f, n in folder_width.items()}
+    # Determine per-file padding width.
+    # With respect_tpos, group by (folder, disc) so width reflects per-disc count.
+    if respect_tpos:
+        disc_counts: dict[tuple[Path, str | None], int] = defaultdict(int)
+        mp3_disc: dict[Path, str | None] = {}
+        for mp3 in root.rglob("*.mp3"):
+            try:
+                disc = _disc_key(load_id3(mp3))
+            except Exception:
+                disc = None
+            mp3_disc[mp3] = disc
+            disc_counts[(mp3.parent, disc)] += 1
+        mp3_width: dict[Path, int] = {
+            mp3: (3 if disc_counts[(mp3.parent, disc)] >= 100 else 2)
+            for mp3, disc in mp3_disc.items()
+        }
+    else:
+        folder_width: dict[Path, int] = {}
+        for mp3 in root.rglob("*.mp3"):
+            f = mp3.parent
+            folder_width[f] = folder_width.get(f, 0) + 1
+        folder_width = {f: (3 if n >= 100 else 2) for f, n in folder_width.items()}
 
     for mp3 in sorted(root.rglob("*.mp3")):
         try:
@@ -882,10 +934,10 @@ def step_pad_tracks(root: Path, dry_run: bool) -> dict:
         if num is None:
             continue
 
-        width   = folder_width.get(mp3.parent, 2)
-        padded  = str(num).zfill(width)
+        width        = mp3_width.get(mp3, 2) if respect_tpos else folder_width.get(mp3.parent, 2)
+        padded       = str(num).zfill(width)
         padded_total = str(total) if total is not None else None
-        new_val = f"{padded}/{padded_total}" if padded_total else padded
+        new_val      = f"{padded}/{padded_total}" if padded_total else padded
 
         if original != new_val:
             print(f"  {mp3.name}  TRCK: {original}  ->  {new_val}")
@@ -903,34 +955,66 @@ def step_pad_tracks(root: Path, dry_run: bool) -> dict:
 
 # ── Step 7: Set total track counts ────────────────────────────────────────────
 
-def step_set_total_tracks(root: Path, dry_run: bool) -> dict:
+def step_set_total_tracks(root: Path, dry_run: bool, respect_tpos: bool = False) -> dict:
     _header(8, "Set total track counts")
     stats = {"fixed": 0}
 
     for folder in sorted(album_folders(root)):
-        mp3s  = sorted(folder.glob("*.mp3"))
-        total = len(mp3s)
-        width = 3 if total >= 100 else 2
+        mp3s = sorted(folder.glob("*.mp3"))
 
-        for mp3 in mp3s:
-            try:
-                tags = load_id3(mp3)
-            except Exception:
-                continue
-            trck = tags.get("TRCK")
-            if not trck:
-                continue
-            original = str(trck.text[0])
-            num, cur_total = parse_track(original)
-            if num is None:
-                continue
-            new_val = f"{str(num).zfill(width)}/{total}"
-            if original != new_val:
-                print(f"  {mp3.name}  TRCK: {original}  ->  {new_val}")
-                stats["fixed"] += 1
-                if not dry_run:
-                    tags["TRCK"] = TRCK(encoding=1, text=new_val)
-                    tags.save(mp3, v2_version=3, v1=0)
+        if respect_tpos:
+            # Group by disc number; set total per disc rather than per folder.
+            disc_groups: dict[str | None, list[Path]] = defaultdict(list)
+            for mp3 in mp3s:
+                try:
+                    disc = _disc_key(load_id3(mp3))
+                except Exception:
+                    disc = None
+                disc_groups[disc].append(mp3)
+            for disc_mp3s in disc_groups.values():
+                disc_total = len(disc_mp3s)
+                width = 3 if disc_total >= 100 else 2
+                for mp3 in disc_mp3s:
+                    try:
+                        tags = load_id3(mp3)
+                    except Exception:
+                        continue
+                    trck = tags.get("TRCK")
+                    if not trck:
+                        continue
+                    original = str(trck.text[0])
+                    num, _ = parse_track(original)
+                    if num is None:
+                        continue
+                    new_val = f"{str(num).zfill(width)}/{disc_total}"
+                    if original != new_val:
+                        print(f"  {mp3.name}  TRCK: {original}  ->  {new_val}")
+                        stats["fixed"] += 1
+                        if not dry_run:
+                            tags["TRCK"] = TRCK(encoding=1, text=new_val)
+                            tags.save(mp3, v2_version=3, v1=0)
+        else:
+            total = len(mp3s)
+            width = 3 if total >= 100 else 2
+            for mp3 in mp3s:
+                try:
+                    tags = load_id3(mp3)
+                except Exception:
+                    continue
+                trck = tags.get("TRCK")
+                if not trck:
+                    continue
+                original = str(trck.text[0])
+                num, cur_total = parse_track(original)
+                if num is None:
+                    continue
+                new_val = f"{str(num).zfill(width)}/{total}"
+                if original != new_val:
+                    print(f"  {mp3.name}  TRCK: {original}  ->  {new_val}")
+                    stats["fixed"] += 1
+                    if not dry_run:
+                        tags["TRCK"] = TRCK(encoding=1, text=new_val)
+                        tags.save(mp3, v2_version=3, v1=0)
 
     if stats["fixed"] == 0:
         print("  All track totals already correct.")
@@ -1913,6 +1997,7 @@ Examples:
     replace_title_brackets  = sett.get("replace_brackets_with_parentheses", False)
     preserve_replay_gain    = sett.get("preserve_replay_gain", False)
     preserve_tcmp           = sett.get("preserve_tcmp", False)
+    preserve_disc_numbers   = sett.get("preserve_disc_numbers", False)
 
     # Parse optional step filter
     step_filter: set[int] | None = None
@@ -1948,7 +2033,14 @@ Examples:
         if fn is step_strip_tags:
             fn(root, args.dry_run, keep_apic=keep_apic,
                keep_replay_gain=preserve_replay_gain,
-               keep_tcmp=preserve_tcmp)
+               keep_tcmp=preserve_tcmp,
+               keep_tpos=preserve_disc_numbers)
+        elif fn is step_merge_subfolders:
+            fn(root, args.dry_run, preserve_tpos=preserve_disc_numbers)
+        elif fn is step_pad_tracks:
+            fn(root, args.dry_run, respect_tpos=preserve_disc_numbers)
+        elif fn is step_set_total_tracks:
+            fn(root, args.dry_run, respect_tpos=preserve_disc_numbers)
         elif fn is step_normalize_year and replace_title_brackets:
             step_replace_title_brackets(root, args.dry_run)
             fn(root, args.dry_run)
