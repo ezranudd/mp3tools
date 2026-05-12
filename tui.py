@@ -1014,12 +1014,19 @@ class ImportView(AsyncOperationView):
 # ── CD rip view ───────────────────────────────────────────────────────────────
 
 class _CDImportView(ImportView):
-    """ImportView subclass that deletes the (temp) source directory when done."""
+    """ImportView subclass that deletes the (temp) source directory and optionally ejects the disc."""
+    def __init__(self, state: AppState, source: Path, device: Path | None = None) -> None:
+        super().__init__(state, source)
+        self._cd_device = device
+
     def _run(self) -> None:
         try:
             super()._run()
         finally:
             shutil.rmtree(str(self.source), ignore_errors=True)
+            if self._cd_device and self.state.cfg.get("eject_cd_after_import"):
+                import rip_cd as _rip_mod
+                _rip_mod.eject_device(self._cd_device)
 
 
 class RipCDView(AsyncOperationView):
@@ -1119,7 +1126,7 @@ class RipCDView(AsyncOperationView):
               and key in (curses.KEY_ENTER, ord("\n"), ord("\r"))):
             rip_dir = self._rip_dir
             self._rip_dir = None  # prevent double-cleanup in _CDImportView
-            return _PopAndPush(_CDImportView(self.state, source=rip_dir))
+            return _PopAndPush(_CDImportView(self.state, source=rip_dir, device=self.device))
         return self
 
 
@@ -1188,6 +1195,12 @@ class SettingsView(View):
 
         v, a = on(cfg.get("replace_brackets_with_parentheses", False))
         rows.append(("b",   f"  Replace [] with () in titles  [{v}]", a))
+
+        rows.append(("",    "", 0))
+        rows.append(("",    "  CD Import", curses.color_pair(C_ARTIST) | curses.A_BOLD))
+
+        v, a = on(cfg.get("eject_cd_after_import", False))
+        rows.append(("e",   f"  Eject disc after import  [{v}]", a))
 
         rows.append(("",    "", 0))
         rows.append(("",    "  Online Art Fetch", curses.color_pair(C_ARTIST) | curses.A_BOLD))
@@ -1304,6 +1317,9 @@ class SettingsView(View):
         elif key == "b":
             self.cfg["replace_brackets_with_parentheses"] = not self.cfg.get(
                 "replace_brackets_with_parentheses", False)
+        elif key == "e":
+            self.cfg["eject_cd_after_import"] = not self.cfg.get(
+                "eject_cd_after_import", False)
         elif key == "a":
             self._prompt_text("TheAudioDB API key (blank to clear): ",
                               self.cfg.get("theaudiodb_api_key", ""),

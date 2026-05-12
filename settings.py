@@ -14,6 +14,7 @@ DEFAULTS: dict = {
     "enforce_artist_equals_album_artist": False,
     "replace_brackets_with_parentheses":  False,
     "fetch_art_online":     False,     # run step 15 during standardize
+    "eject_cd_after_import": False,   # eject disc when CD import finishes
     "art_sources": {
         "itunes":       True,
         "musicbrainz":  True,
@@ -46,6 +47,8 @@ def load(library_root: Path) -> dict:
                 settings["replace_brackets_with_parentheses"] = data["replace_brackets_with_parentheses"]
             if isinstance(data.get("fetch_art_online"), bool):
                 settings["fetch_art_online"] = data["fetch_art_online"]
+            if isinstance(data.get("eject_cd_after_import"), bool):
+                settings["eject_cd_after_import"] = data["eject_cd_after_import"]
             if isinstance(data.get("art_sources"), dict):
                 for key, value in data["art_sources"].items():
                     if key in _VALID_ART_SOURCES and isinstance(value, bool):

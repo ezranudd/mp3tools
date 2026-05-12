@@ -30,6 +30,14 @@ def detect_cd_devices() -> list[Path]:
     return [Path(d) for d in _CD_DEVICE_PATHS if Path(d).exists()]
 
 
+def eject_device(device: str | Path) -> None:
+    """Eject the disc from `device` using the system eject command."""
+    try:
+        subprocess.run(["eject", str(device)], timeout=10)
+    except Exception:
+        pass
+
+
 # ── Disc TOC (ID + track lengths) ────────────────────────────────────────────
 
 def read_disc_toc(device: str | Path) -> tuple[str | None, dict | None, list[int]]:
