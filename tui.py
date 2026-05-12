@@ -128,6 +128,14 @@ class LogPane:
             if self._follow:
                 self._scroll = len(self.lines)  # clamped to len-view_h in draw()
 
+    def update_last(self, line: str) -> None:
+        """Replace the last line in place (for live progress updates)."""
+        with self._lock:
+            if self.lines:
+                self.lines[-1] = line
+            else:
+                self.lines.append(line)
+
     def add_sep(self, text: str) -> None:
         self.append(["", f"  {'─' * 4}  {text}  {'─' * 4}", ""])
 
@@ -1022,8 +1030,6 @@ class RipCDView(AsyncOperationView):
         self._rip_ok = False
         self._cancelling = False
         self._cancel_event = threading.Event()
-        # (track, total, pct): pct 0-100 = ripping, pct -1 = converting
-        self._rip_track: tuple[int, int, int] = (0, 0, 0)
         self._init_async()
 
     def draw(self, stdscr) -> None:
@@ -1048,19 +1054,7 @@ class RipCDView(AsyncOperationView):
         elif self._cancelling:
             status = " Cancelling..."
         else:
-            track, total, pct = self._rip_track
-            if pct == -1 and track > 0:
-                status = f" Converting {track}/{total}..."
-            elif track > 0:
-                hint    = "  q=Cancel"
-                prefix  = f" Track {track}/{total}  "
-                suffix  = f"  {pct:3d}%{hint}"
-                bar_w   = max(4, w - cell_width(prefix) - cell_width(suffix) - 2)
-                filled  = int(bar_w * pct / 100)
-                bar     = "[" + "█" * filled + "░" * (bar_w - filled) + "]"
-                status  = prefix + bar + suffix
-            else:
-                status = " Reading disc...  q=Cancel"
+            status = " Ripping...  q=Cancel"
 
         _put(stdscr, h - 1, 0, fit_cells(status, w - 1), curses.color_pair(C_BAR))
         stdscr.refresh()
@@ -1073,9 +1067,14 @@ class RipCDView(AsyncOperationView):
         def log(msg: str) -> None:
             self.log.append([msg])
 
+        _bar_w = 24
+
         def progress(track: int, total: int, pct: int) -> None:
-            with self._lock:
-                self._rip_track = (track, total, pct)
+            if pct <= 0:
+                return
+            filled = int(_bar_w * pct / 100)
+            bar = "█" * filled + "░" * (_bar_w - filled)
+            self.log.update_last(f"  Ripping track {track}/{total}... [{bar}] {pct:3d}%")
 
         self._rip_ok = _rip_mod.rip(
             self.device, self._rip_dir,

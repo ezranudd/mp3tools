@@ -6,13 +6,17 @@ The resulting directory can be passed to import_tracks.import_tracks().
 External requirements (all optional — gracefully degraded):
   cdparanoia   sudo apt install cdparanoia
   ffmpeg       sudo apt install ffmpeg
-  python-discid (or cd-discid binary) for disc ID + track lengths
-  musicbrainzngs                       for release metadata
+  cd-discid    sudo apt install cd-discid   (for disc ID + gnudb lookup)
+  python-discid pip install discid          (for MusicBrainz lookup, preferred)
+  musicbrainzngs pip install musicbrainzngs (for MusicBrainz metadata)
 """
 
 import re
 import shutil
 import subprocess
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
 
@@ -28,34 +32,51 @@ def detect_cd_devices() -> list[Path]:
 
 # ── Disc TOC (ID + track lengths) ────────────────────────────────────────────
 
-def read_disc_toc(device: str | Path) -> tuple[str | None, list[int]]:
+def read_disc_toc(device: str | Path) -> tuple[str | None, dict | None, list[int]]:
     """
     Read the disc table of contents.
-    Returns (disc_id, track_lengths_in_sectors).
-    Either value may be empty/None if unavailable.
+    Returns (mb_disc_id, cddb_toc, track_lengths_in_sectors).
+    - mb_disc_id: MusicBrainz disc ID (only available via python-discid)
+    - cddb_toc: dict with 'disc_id', 'offsets', 'total_seconds' for gnudb lookups
+    - track_lengths: list of per-track lengths in sectors
+    Any value may be None/empty if unavailable.
     """
     device = str(device)
 
-    # discid gives us both the MB disc ID and per-track lengths in one shot
+    # python-discid gives us the MB disc ID, CDDB ID, offsets, and track lengths
     try:
         import discid  # type: ignore
         disc = discid.read(device)
         lengths = [t.length for t in disc.tracks]
-        return disc.id, lengths
+        offsets = [t.offset for t in disc.tracks]
+        total_seconds = disc.sectors // 75
+        cddb_toc = {
+            "disc_id": disc.freedb_id,
+            "offsets": offsets,
+            "total_seconds": total_seconds,
+        }
+        return disc.id, cddb_toc, lengths
     except ImportError:
         pass
     except Exception:
         pass
 
-    # No discid — try to get just the disc ID from cd-discid
-    disc_id: str | None = None
+    # No discid — parse the full cd-discid output for CDDB TOC data
+    cddb_toc: dict | None = None
     try:
         result = subprocess.run(
             ["cd-discid", device],
             capture_output=True, text=True, timeout=30,
         )
         if result.returncode == 0 and result.stdout.strip():
-            disc_id = result.stdout.strip().split()[0]
+            parts = result.stdout.strip().split()
+            # format: <discid> <numtracks> <offset1> ... <offsetN> <total_seconds>
+            if len(parts) >= 3:
+                disc_id = parts[0]
+                num_tracks = int(parts[1])
+                offsets = [int(x) for x in parts[2:2 + num_tracks]]
+                total_seconds = int(parts[2 + num_tracks]) if len(parts) > 2 + num_tracks else 0
+                cddb_toc = {"disc_id": disc_id, "offsets": offsets, "total_seconds": total_seconds}
     except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
         pass
 
@@ -74,7 +95,7 @@ def read_disc_toc(device: str | Path) -> tuple[str | None, list[int]]:
     except Exception:
         pass
 
-    return disc_id, track_lengths
+    return None, cddb_toc, track_lengths
 
 
 # ── CD-Text ───────────────────────────────────────────────────────────────────
@@ -87,7 +108,7 @@ def read_cdtext(device: str | Path) -> dict | None:
     """
     try:
         result = subprocess.run(
-            ["cd-info", "--cdtext", "-q", str(device)],
+            ["cd-info", "-q", str(device)],
             capture_output=True, text=True, timeout=30,
         )
         output = result.stdout + result.stderr
@@ -195,6 +216,98 @@ def lookup_musicbrainz(disc_id: str) -> dict | None:
     return {"artist": artist, "album": album, "year": year, "genre": "", "tracks": tracks}
 
 
+# ── gnudb (CDDB) lookup ───────────────────────────────────────────────────────
+
+def lookup_gnudb(cddb_toc: dict) -> dict | None:
+    """
+    Look up disc metadata on gnudb.gnudb.org using the CDDB protocol over HTTP.
+    cddb_toc must have keys: disc_id, offsets (list of ints), total_seconds (int).
+    Returns {"artist", "album", "year", "genre", "tracks": [title, ...]}, or None.
+    """
+    disc_id = cddb_toc.get("disc_id", "")
+    offsets = cddb_toc.get("offsets", [])
+    total_seconds = cddb_toc.get("total_seconds", 0)
+    if not disc_id or not offsets:
+        return None
+
+    base = "https://gnudb.gnudb.org/~cddb/cddb.cgi"
+    hello = "hello=anonymous+localhost+mp3tools+1.0"
+    proto = "proto=6"
+    offset_str = "+".join(str(o) for o in offsets)
+    query_cmd = f"cddb+query+{disc_id}+{len(offsets)}+{offset_str}+{total_seconds}"
+    query_url = f"{base}?cmd={query_cmd}&{hello}&{proto}"
+
+    try:
+        with urllib.request.urlopen(query_url, timeout=10) as resp:
+            query_result = resp.read().decode("utf-8", errors="replace")
+    except Exception:
+        return None
+
+    lines = query_result.splitlines()
+    if not lines:
+        return None
+
+    code = lines[0].split()[0] if lines[0].split() else ""
+    if code == "200":
+        # exact match: "200 category discid dtitle"
+        parts = lines[0].split(None, 3)
+        category, found_id = parts[1], parts[2]
+    elif code in ("210", "211"):
+        # multiple matches: pick first
+        if len(lines) < 2:
+            return None
+        parts = lines[1].split(None, 2)
+        category, found_id = parts[0], parts[1]
+    else:
+        return None
+
+    read_cmd = f"cddb+read+{category}+{found_id}"
+    read_url = f"{base}?cmd={read_cmd}&{hello}&{proto}"
+    try:
+        with urllib.request.urlopen(read_url, timeout=10) as resp:
+            read_result = resp.read().decode("utf-8", errors="replace")
+    except Exception:
+        return None
+
+    dtitle = dyear = dgenre = ""
+    track_titles: list[tuple[int, str]] = []
+    for line in read_result.splitlines():
+        if line.startswith("#") or line.strip() in (".", ""):
+            continue
+        if "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        key = key.strip()
+        val = val.strip()
+        if key == "DTITLE":
+            dtitle = val
+        elif key == "DYEAR":
+            dyear = val
+        elif key == "DGENRE":
+            dgenre = val
+        elif key.startswith("TTITLE"):
+            try:
+                idx = int(key[6:])
+                track_titles.append((idx, val))
+            except ValueError:
+                pass
+
+    if not dtitle:
+        return None
+
+    # DTITLE format is "Artist / Album" (or just "Album" for single-artist)
+    if " / " in dtitle:
+        artist, _, album = dtitle.partition(" / ")
+    else:
+        artist, album = "", dtitle
+
+    track_titles.sort(key=lambda x: x[0])
+    tracks = [t for _, t in track_titles]
+
+    return {"artist": artist.strip(), "album": album.strip(),
+            "year": dyear, "genre": dgenre, "tracks": tracks}
+
+
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
 def _log(log_fn, msg: str) -> None:
@@ -247,8 +360,10 @@ def _wav_to_flac(wav: Path, flac: Path, log_fn=None) -> bool:
 
 # Matches sector-progress lines: "## 1234 [wrote-to-output] @ 0xABC"
 _SECTOR_RE = re.compile(r"##:?\s+(\d+)")
-# Matches track-start lines in batch mode output
-_TRACK_RE  = re.compile(r"track\s*(\d+)", re.IGNORECASE)
+# Matches the file-output announcement cdparanoia makes per track:
+# "outputting to cdda2wav track 01.cdda.wav"  — only fires on the .cdda filename,
+# not on the TOC listing lines like "Track  1: sector 0 to ..."
+_TRACK_START_RE = re.compile(r"track\s*0*(\d+)\.cdda", re.IGNORECASE)
 
 
 # ── Main entry point ──────────────────────────────────────────────────────────
@@ -279,22 +394,33 @@ def rip(device: str | Path, dest_dir: Path, *,
         _log(log_fn, "  Install: sudo apt install ffmpeg")
         return False
 
-    # ── Disc TOC, MusicBrainz, and CD-Text metadata ───────────────────────────
+    # ── Disc TOC, MusicBrainz, gnudb, and CD-Text metadata ───────────────────
     _log(log_fn, "Reading disc...")
-    disc_id, track_lengths = read_disc_toc(device)
+    mb_disc_id, cddb_toc, track_lengths = read_disc_toc(device)
     meta: dict | None = None
 
-    if disc_id:
-        _log(log_fn, f"Disc ID: {disc_id}")
+    if cddb_toc:
+        _log(log_fn, f"Disc ID: {cddb_toc['disc_id']}")
+    elif not mb_disc_id:
+        _log(log_fn, "Disc ID unavailable (install python3-discid or cd-discid)")
+
+    if mb_disc_id:
         _log(log_fn, "Looking up MusicBrainz...")
-        meta = lookup_musicbrainz(disc_id)
+        meta = lookup_musicbrainz(mb_disc_id)
         if meta:
             suffix = f" ({meta['year']})" if meta.get("year") else ""
             _log(log_fn, f"MusicBrainz: {meta['artist']} – {meta['album']}{suffix}")
         else:
             _log(log_fn, "No MusicBrainz match")
-    else:
-        _log(log_fn, "Disc ID unavailable (install python3-discid or cd-discid)")
+
+    if not meta and cddb_toc:
+        _log(log_fn, "Looking up gnudb...")
+        meta = lookup_gnudb(cddb_toc)
+        if meta:
+            suffix = f" ({meta['year']})" if meta.get("year") else ""
+            _log(log_fn, f"gnudb: {meta['artist']} – {meta['album']}{suffix}")
+        else:
+            _log(log_fn, "No gnudb match")
 
     if not meta:
         _log(log_fn, "Trying CD-Text...")
@@ -304,7 +430,7 @@ def rip(device: str | Path, dest_dir: Path, *,
                          if meta.get("artist") or meta.get("album")
                          else "CD-Text: partial data found")
         else:
-            _log(log_fn, "No CD-Text found (install libcdio-utils for CD-Text support)")
+            _log(log_fn, "No CD-Text on disc")
             _log(log_fn, "Tags will be prompted during import")
 
     if track_lengths:
@@ -335,31 +461,25 @@ def rip(device: str | Path, dest_dir: Path, *,
                 if not line:
                     continue
 
-                # Sector-progress counter — parse for the bar, don't log
+                # Sector-progress counter — update log bar, don't emit a new line
                 m = _SECTOR_RE.match(line.lstrip())
                 if m:
-                    if progress_fn and current_track > 0:
-                        sector = int(m.group(1))
-                        if track_lengths and current_track <= len(track_lengths):
-                            total_s = max(1, track_lengths[current_track - 1])
-                            pct = min(100, int(100 * sector / total_s))
-                        else:
-                            pct = 0
-                        progress_fn(current_track,
-                                    len(track_lengths) or current_track,
-                                    pct)
+                    if progress_fn and current_track > 0 and track_lengths:
+                        sector  = int(m.group(1))
+                        total_s = max(1, track_lengths[current_track - 1])
+                        pct     = min(100, int(100 * sector / total_s))
+                        if pct > 0:
+                            progress_fn(current_track,
+                                        len(track_lengths),
+                                        pct)
                     continue
 
-                # Track-start line
-                m = _TRACK_RE.search(line)
+                # Track-start announcement ("outputting to track01.cdda.wav")
+                m = _TRACK_START_RE.search(line)
                 if m:
                     current_track = int(m.group(1))
-                    _log(log_fn, f"  Ripping track {current_track}"
-                         + (f"/{len(track_lengths)}" if track_lengths else "") + "...")
-                    if progress_fn:
-                        progress_fn(current_track,
-                                    len(track_lengths) or current_track,
-                                    0)
+                    total_t = len(track_lengths) or current_track
+                    _log(log_fn, f"  Ripping track {current_track}/{total_t}...")
                     continue
 
                 if "cdparanoia" not in line.lower():
@@ -396,9 +516,6 @@ def rip(device: str | Path, dest_dir: Path, *,
         track_num = int(m.group(1)) if m else i
         flac = dest_dir / f"track{track_num:02d}.flac"
         _log(log_fn, f"  {wav.name} → {flac.name}")
-
-        if progress_fn:
-            progress_fn(i, total, -1)
 
         if _wav_to_flac(wav, flac, log_fn):
             wav.unlink()
