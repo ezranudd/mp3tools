@@ -6,7 +6,7 @@ The resulting directory can be passed to import_tracks.import_tracks().
 External requirements (all optional — gracefully degraded):
   cdparanoia   sudo apt install cdparanoia
   ffmpeg       sudo apt install ffmpeg
-  cd-discid    sudo apt install cd-discid   (for disc ID + gnudb lookup)
+  cd-discid    sudo apt install cd-discid   (for disc ID + CDDB lookup)
   python-discid pip install discid          (for MusicBrainz lookup, preferred)
   musicbrainzngs pip install musicbrainzngs (for MusicBrainz metadata)
 """
@@ -218,24 +218,24 @@ def lookup_musicbrainz(disc_id: str) -> dict | None:
 
 # ── gnudb (CDDB) lookup ───────────────────────────────────────────────────────
 
-def lookup_gnudb(cddb_toc: dict) -> dict | None:
-    """
-    Look up disc metadata on gnudb.gnudb.org using the CDDB protocol over HTTP.
-    cddb_toc must have keys: disc_id, offsets (list of ints), total_seconds (int).
-    Returns {"artist", "album", "year", "genre", "tracks": [title, ...]}, or None.
-    """
-    disc_id = cddb_toc.get("disc_id", "")
-    offsets = cddb_toc.get("offsets", [])
-    total_seconds = cddb_toc.get("total_seconds", 0)
-    if not disc_id or not offsets:
-        return None
+_CDDB_SERVERS = [
+    ("gnudb",       "http://gnudb.gnudb.org/~cddb/cddb.cgi"),
+    ("MusicBrainz", "http://freedb.musicbrainz.org/~cddb/cddb.cgi"),
+]
 
-    base = "https://gnudb.gnudb.org/~cddb/cddb.cgi"
-    hello = "hello=anonymous+localhost+mp3tools+1.0"
-    proto = "proto=6"
+_CDDB_HELLO = "hello=anonymous+localhost+mp3tools+1.0"
+_CDDB_PROTO = "proto=6"
+
+
+def _cddb_query_server(base: str, disc_id: str, offsets: list[int],
+                       total_seconds: int) -> dict | None:
+    """
+    Run a CDDB query+read against a single server base URL.
+    Returns a metadata dict or None if the disc is not found or an error occurs.
+    """
     offset_str = "+".join(str(o) for o in offsets)
-    query_cmd = f"cddb+query+{disc_id}+{len(offsets)}+{offset_str}+{total_seconds}"
-    query_url = f"{base}?cmd={query_cmd}&{hello}&{proto}"
+    query_cmd  = f"cddb+query+{disc_id}+{len(offsets)}+{offset_str}+{total_seconds}"
+    query_url  = f"{base}?cmd={query_cmd}&{_CDDB_HELLO}&{_CDDB_PROTO}"
 
     try:
         with urllib.request.urlopen(query_url, timeout=10) as resp:
@@ -249,11 +249,9 @@ def lookup_gnudb(cddb_toc: dict) -> dict | None:
 
     code = lines[0].split()[0] if lines[0].split() else ""
     if code == "200":
-        # exact match: "200 category discid dtitle"
         parts = lines[0].split(None, 3)
         category, found_id = parts[1], parts[2]
     elif code in ("210", "211"):
-        # multiple matches: pick first
         if len(lines) < 2:
             return None
         parts = lines[1].split(None, 2)
@@ -262,7 +260,7 @@ def lookup_gnudb(cddb_toc: dict) -> dict | None:
         return None
 
     read_cmd = f"cddb+read+{category}+{found_id}"
-    read_url = f"{base}?cmd={read_cmd}&{hello}&{proto}"
+    read_url = f"{base}?cmd={read_cmd}&{_CDDB_HELLO}&{_CDDB_PROTO}"
     try:
         with urllib.request.urlopen(read_url, timeout=10) as resp:
             read_result = resp.read().decode("utf-8", errors="replace")
@@ -295,7 +293,6 @@ def lookup_gnudb(cddb_toc: dict) -> dict | None:
     if not dtitle:
         return None
 
-    # DTITLE format is "Artist / Album" (or just "Album" for single-artist)
     if " / " in dtitle:
         artist, _, album = dtitle.partition(" / ")
     else:
@@ -303,9 +300,28 @@ def lookup_gnudb(cddb_toc: dict) -> dict | None:
 
     track_titles.sort(key=lambda x: x[0])
     tracks = [t for _, t in track_titles]
-
     return {"artist": artist.strip(), "album": album.strip(),
             "year": dyear, "genre": dgenre, "tracks": tracks}
+
+
+def lookup_gnudb(cddb_toc: dict) -> dict | None:
+    """
+    Look up disc metadata via CDDB, trying each server in _CDDB_SERVERS in order.
+    cddb_toc must have keys: disc_id, offsets (list of ints), total_seconds (int).
+    Returns {"artist", "album", "year", "genre", "tracks", "_server"}, or None.
+    """
+    disc_id      = cddb_toc.get("disc_id", "")
+    offsets      = cddb_toc.get("offsets", [])
+    total_seconds = cddb_toc.get("total_seconds", 0)
+    if not disc_id or not offsets:
+        return None
+
+    for label, base in _CDDB_SERVERS:
+        result = _cddb_query_server(base, disc_id, offsets, total_seconds)
+        if result:
+            result["_server"] = label
+            return result
+    return None
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
@@ -414,13 +430,14 @@ def rip(device: str | Path, dest_dir: Path, *,
             _log(log_fn, "No MusicBrainz match")
 
     if not meta and cddb_toc:
-        _log(log_fn, "Looking up gnudb...")
+        _log(log_fn, "Looking up CDDB...")
         meta = lookup_gnudb(cddb_toc)
         if meta:
             suffix = f" ({meta['year']})" if meta.get("year") else ""
-            _log(log_fn, f"gnudb: {meta['artist']} – {meta['album']}{suffix}")
+            server = meta.get("_server", "CDDB")
+            _log(log_fn, f"{server}: {meta['artist']} – {meta['album']}{suffix}")
         else:
-            _log(log_fn, "No gnudb match")
+            _log(log_fn, "No CDDB match")
 
     if not meta:
         _log(log_fn, "Trying CD-Text...")
