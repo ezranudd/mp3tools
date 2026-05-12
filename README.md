@@ -1,5 +1,7 @@
 # MP3 Tools
 
+> **Disclaimer:** This software is intended for managing music you own legally. Do not use it to copy, distribute, or rip media in violation of copyright law or any applicable terms of service.
+
 A terminal-based music library manager for maintaining a locally standardized MP3 collection. Covers everything from tagging and renaming to CD ripping and device sync.
 
 ## Installation
