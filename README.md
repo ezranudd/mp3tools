@@ -72,6 +72,9 @@ Read-only compliance scanner. Reports:
 - Track number padding issues
 - Filename and folder name mismatches
 - Cover image issues (missing, wrong name, multiple images)
+- Non-MP3, non-image files in album folders
+- CD subfolders needing merge
+- Unexpected nested music structure
 - Album artist mismatches and misplaced albums
 
 ### Standardize (`standardize.py`)

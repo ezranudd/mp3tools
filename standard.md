@@ -181,7 +181,7 @@ Finds album folders that contain subfolders with MP3 files (e.g. `CD1`, `CD2`). 
 
 Groups files by album folder. For each folder that has any missing required tags:
 
-- **YEAR**: auto-filled from the album folder name if it matches `DDDD - …`; falls back to `1900`.
+- **YEAR**: auto-filled from the album folder name if it matches `DDDD - …`; if the year cannot be determined, a warning is printed and the tag is left unset (fix manually).
 - **Album Artist**: auto-derived from `Artist` (TPE1).
 - **Album, Genre**: prompted interactively, applied to all files in the folder.
 - **Title**: prompted per file; if the filename contains ` - `, the portion after it is offered as a suggestion.
@@ -288,6 +288,7 @@ These are stored per-library in `{library_root}/.mp3tools` and control condition
 | `fetch_art_online` | Enable step 15 |
 | `enforce_artist_equals_album_artist` | Enable step 12a |
 | `replace_brackets_with_parentheses` | Enable step 5a |
+| `preserve_replay_gain` | Keep `TXXX:REPLAYGAIN_*` frames during step 4 (default: strip them) |
 
 ---
 
@@ -295,7 +296,7 @@ These are stored per-library in `{library_root}/.mp3tools` and control condition
 
 | Command / Script     | Purpose                                                   |
 |----------------------|-----------------------------------------------------------|
-| `mp3tui` / `tui.py`  | TUI — primary entry point; browse, audit, standardize, import, sync, rip |
+| `mp3tools` / `tui.py` | TUI — primary entry point; browse, audit, standardize, import, sync, rip |
 | `audit.py`           | Scan and report all compliance issues (read-only)         |
 | `standardize.py`     | Run all fixes in order; prompts for missing tags          |
 | `browse.py`          | Browse library in an interactive terminal tree (standalone) |

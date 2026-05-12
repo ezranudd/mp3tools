@@ -408,13 +408,14 @@ def step_fix_missing_tags(root: Path, dry_run: bool, *, ask_text=None) -> dict:
         # Collect album-level values once
         album_values: dict[str, str] = {}
 
-        # Auto-fill YEAR from folder name or fall back to 1900
         if "YEAR" in album_missing:
             year_from_folder = extract_year(folder.name)
-            auto_year = year_from_folder or "1900"
-            source = f"from folder name '{folder.name}'" if year_from_folder else "default"
-            album_values["YEAR"] = auto_year
-            print(f"  -- Auto-fill Year: {auto_year} ({source})")
+            if year_from_folder:
+                album_values["YEAR"] = year_from_folder
+                print(f"  -- Auto-fill Year: {year_from_folder} (from folder name '{folder.name}')")
+            else:
+                print(f"  -- WARNING: Year missing and cannot be determined"
+                      f" from '{folder.name}' — skipping (fix manually)")
 
         # Album Artist is required, but it is derived: when absent, use Artist.
         # If Artist is also missing, the prompt below fills TPE1 first.
@@ -575,7 +576,14 @@ def step_enforce_id3v23(root: Path, dry_run: bool) -> dict:
 
 # ── Step 4: Strip extraneous tags ─────────────────────────────────────────────
 
-def step_strip_tags(root: Path, dry_run: bool, keep_apic: bool = False) -> dict:
+def _is_replay_gain_key(key: str) -> bool:
+    if key.startswith("TXXX:"):
+        return key[5:].lower().startswith("replaygain_")
+    return key[:4] == "RVA2"
+
+
+def step_strip_tags(root: Path, dry_run: bool, keep_apic: bool = False,
+                    keep_replay_gain: bool = False) -> dict:
     _header(4, "Strip extraneous tags")
     stats = {"files": 0, "tags_removed": 0, "albumartist_fixed": 0, "covers_extracted": 0}
     keep = KEEP_TAGS | ({"APIC"} if keep_apic else set())
@@ -597,7 +605,11 @@ def step_strip_tags(root: Path, dry_run: bool, keep_apic: bool = False) -> dict:
             or str(tpe2.text[0]) != album_artist
         )
 
-        to_remove = [key for key in tags.keys() if key[:4] not in keep]
+        to_remove = [
+            key for key in tags.keys()
+            if key[:4] not in keep
+            and not (keep_replay_gain and _is_replay_gain_key(key))
+        ]
 
         # Before discarding an APIC frame, save it as cover.jpg if no cover exists.
         apic_being_removed = [k for k in to_remove if k[:4] == "APIC"]
@@ -1864,9 +1876,10 @@ Examples:
     cover_art        = args.cover_art or sett["cover_art"]
     cover_art_size   = (args.cover_art_size if args.cover_art_size is not None
                         else sett["cover_art_embed_size"])
-    fetch_art_online = sett.get("fetch_art_online", False)
-    enforce_track_artist = sett.get("enforce_artist_equals_album_artist", False)
-    replace_title_brackets = sett.get("replace_brackets_with_parentheses", False)
+    fetch_art_online        = sett.get("fetch_art_online", False)
+    enforce_track_artist    = sett.get("enforce_artist_equals_album_artist", False)
+    replace_title_brackets  = sett.get("replace_brackets_with_parentheses", False)
+    preserve_replay_gain    = sett.get("preserve_replay_gain", False)
 
     # Parse optional step filter
     step_filter: set[int] | None = None
@@ -1900,7 +1913,8 @@ Examples:
         if step_filter and idx not in step_filter:
             continue
         if fn is step_strip_tags:
-            fn(root, args.dry_run, keep_apic=keep_apic)
+            fn(root, args.dry_run, keep_apic=keep_apic,
+               keep_replay_gain=preserve_replay_gain)
         elif fn is step_normalize_year and replace_title_brackets:
             step_replace_title_brackets(root, args.dry_run)
             fn(root, args.dry_run)
