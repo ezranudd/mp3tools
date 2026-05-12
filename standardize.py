@@ -42,7 +42,7 @@ from convert_lossless import step_convert_lossless
 from mutagen.id3 import (
     ID3, ID3NoHeaderError,
     TPE1, TIT2, TALB, TYER, TCON, TRCK,
-    TPE2, APIC,
+    TPE2, APIC, TCMP,
 )
 
 
@@ -583,9 +583,11 @@ def _is_replay_gain_key(key: str) -> bool:
 
 
 def step_strip_tags(root: Path, dry_run: bool, keep_apic: bool = False,
-                    keep_replay_gain: bool = False) -> dict:
+                    keep_replay_gain: bool = False,
+                    keep_tcmp: bool = False) -> dict:
     _header(4, "Strip extraneous tags")
-    stats = {"files": 0, "tags_removed": 0, "albumartist_fixed": 0, "covers_extracted": 0}
+    stats = {"files": 0, "tags_removed": 0, "albumartist_fixed": 0,
+             "covers_extracted": 0, "tcmp_set": 0}
     keep = KEEP_TAGS | ({"APIC"} if keep_apic else set())
     # Track folders where we've already checked cover extraction (one cover per folder).
     extracted_folders: set[Path] = set()
@@ -605,10 +607,30 @@ def step_strip_tags(root: Path, dry_run: bool, keep_apic: bool = False,
             or str(tpe2.text[0]) != album_artist
         )
 
+        # Determine desired TCMP state before stripping.
+        # want_tcmp = True when the file already has TCMP=1, or when TPE1 ≠ TPE2
+        # (indicating a compilation track). needs_tcmp_write = True when TCMP=1
+        # must be written (absent or set to a value other than "1").
+        want_tcmp = False
+        needs_tcmp_write = False
+        if keep_tcmp:
+            tcmp = tags.get("TCMP")
+            tcmp_val = (str(tcmp.text[0])
+                        if tcmp and hasattr(tcmp, "text") and tcmp.text else None)
+            tpe1 = tags.get("TPE1")
+            tpe1_val = (str(tpe1.text[0])
+                        if tpe1 and hasattr(tpe1, "text") and tpe1.text else None)
+            already_set = tcmp_val == "1"
+            is_compilation = (tpe1_val is not None and album_artist is not None
+                              and tpe1_val != album_artist)
+            want_tcmp = already_set or is_compilation
+            needs_tcmp_write = want_tcmp and tcmp_val != "1"
+
         to_remove = [
             key for key in tags.keys()
             if key[:4] not in keep
             and not (keep_replay_gain and _is_replay_gain_key(key))
+            and not (want_tcmp and key == "TCMP")
         ]
 
         # Before discarding an APIC frame, save it as cover.jpg if no cover exists.
@@ -632,10 +654,12 @@ def step_strip_tags(root: Path, dry_run: bool, keep_apic: bool = False,
                     else:
                         stats["covers_extracted"] += 1
 
-        if to_remove or needs_albumartist:
+        if to_remove or needs_albumartist or needs_tcmp_write:
             actions = []
             if needs_albumartist:
                 actions.append("write TPE2")
+            if needs_tcmp_write:
+                actions.append("write TCMP=1")
             if to_remove:
                 actions.append(f"remove {', '.join(sorted(to_remove))}")
             print(f"  {mp3.name}: {'; '.join(actions)}")
@@ -645,12 +669,18 @@ def step_strip_tags(root: Path, dry_run: bool, keep_apic: bool = False,
                 if needs_albumartist:
                     set_album_artist(tags, album_artist)
                     stats["albumartist_fixed"] += 1
+                if needs_tcmp_write:
+                    tags["TCMP"] = TCMP(encoding=1, text="1")
+                    stats["tcmp_set"] += 1
                 for key in to_remove:
                     if key in tags:
                         del tags[key]
                 tags.save(mp3, v2_version=3, v1=0)
-            elif needs_albumartist:
-                stats["albumartist_fixed"] += 1
+            else:
+                if needs_albumartist:
+                    stats["albumartist_fixed"] += 1
+                if needs_tcmp_write:
+                    stats["tcmp_set"] += 1
 
     if stats["files"] == 0 and stats["covers_extracted"] == 0:
         print("  No extraneous tags found.")
@@ -658,6 +688,8 @@ def step_strip_tags(root: Path, dry_run: bool, keep_apic: bool = False,
         parts = [f"Files modified: {stats['files']}",
                  f"Tags removed: {stats['tags_removed']}",
                  f"Album artists fixed: {stats['albumartist_fixed']}"]
+        if stats["tcmp_set"]:
+            parts.append(f"TCMP written: {stats['tcmp_set']}")
         if stats["covers_extracted"]:
             parts.append(f"Covers extracted: {stats['covers_extracted']}")
         print("\n  " + "  ".join(parts))
@@ -1880,6 +1912,7 @@ Examples:
     enforce_track_artist    = sett.get("enforce_artist_equals_album_artist", False)
     replace_title_brackets  = sett.get("replace_brackets_with_parentheses", False)
     preserve_replay_gain    = sett.get("preserve_replay_gain", False)
+    preserve_tcmp           = sett.get("preserve_tcmp", False)
 
     # Parse optional step filter
     step_filter: set[int] | None = None
@@ -1914,7 +1947,8 @@ Examples:
             continue
         if fn is step_strip_tags:
             fn(root, args.dry_run, keep_apic=keep_apic,
-               keep_replay_gain=preserve_replay_gain)
+               keep_replay_gain=preserve_replay_gain,
+               keep_tcmp=preserve_tcmp)
         elif fn is step_normalize_year and replace_title_brackets:
             step_replace_title_brackets(root, args.dry_run)
             fn(root, args.dry_run)

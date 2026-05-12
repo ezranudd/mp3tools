@@ -289,6 +289,7 @@ These are stored per-library in `{library_root}/.mp3tools` and control condition
 | `enforce_artist_equals_album_artist` | Enable step 12a |
 | `replace_brackets_with_parentheses` | Enable step 5a |
 | `preserve_replay_gain` | Keep `TXXX:REPLAYGAIN_*` frames during step 4 (default: strip them) |
+| `preserve_tcmp` | Keep/set `TCMP=1` during step 4: preserved when already present; written when `Artist ≠ Album Artist` (iTunes compilation support) |
 
 ---
 

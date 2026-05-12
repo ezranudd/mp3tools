@@ -835,6 +835,7 @@ class StandardizeView(AsyncOperationView):
         enforce_artist       = cfg.get("enforce_artist_equals_album_artist", False)
         replace_brackets     = cfg.get("replace_brackets_with_parentheses", False)
         preserve_replay_gain = cfg.get("preserve_replay_gain", False)
+        preserve_tcmp        = cfg.get("preserve_tcmp", False)
         keep_apic            = cover_art in ("embed", "both")
 
         ask_text   = self._make_ask_text()
@@ -860,7 +861,8 @@ class StandardizeView(AsyncOperationView):
             with StreamingCapture(self.log):
                 if fn is std_mod.step_strip_tags:
                     fn(root, dry_run, keep_apic=keep_apic,
-                       keep_replay_gain=preserve_replay_gain)
+                       keep_replay_gain=preserve_replay_gain,
+                       keep_tcmp=preserve_tcmp)
                 elif fn is std_mod.step_normalize_year and replace_brackets:
                     std_mod.step_replace_title_brackets(root, dry_run)
                     fn(root, dry_run)
@@ -1202,6 +1204,10 @@ class SettingsView(View):
         rows.append(("r",   f"  Preserve replay gain tags  [{v}]  "
                             f"(keeps TXXX:REPLAYGAIN_* during tag strip)", a))
 
+        v, a = on(cfg.get("preserve_tcmp", False))
+        rows.append(("i",   f"  Preserve iTunes compilation flag  [{v}]  "
+                            f"(keeps/sets TCMP=1 when Artist ≠ Album Artist)", a))
+
         rows.append(("",    "", 0))
         rows.append(("",    "  CD Import", curses.color_pair(C_ARTIST) | curses.A_BOLD))
 
@@ -1326,6 +1332,8 @@ class SettingsView(View):
         elif key == "r":
             self.cfg["preserve_replay_gain"] = not self.cfg.get(
                 "preserve_replay_gain", False)
+        elif key == "i":
+            self.cfg["preserve_tcmp"] = not self.cfg.get("preserve_tcmp", False)
         elif key == "e":
             self.cfg["eject_cd_after_import"] = not self.cfg.get(
                 "eject_cd_after_import", False)
