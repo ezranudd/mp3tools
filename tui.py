@@ -762,6 +762,7 @@ _STD_STEP_NAMES = [
     "Strip extraneous tags",
     "Normalize special characters",
     "Normalize years",
+    "Renumber tracks",
     "Zero-pad track numbers",
     "Set total track counts",
     "Rename album folders",
@@ -867,6 +868,8 @@ class StandardizeView(AsyncOperationView):
                        keep_tpos=preserve_disc_numbers)
                 elif fn is std_mod.step_merge_subfolders:
                     fn(root, dry_run, preserve_tpos=preserve_disc_numbers)
+                elif fn is std_mod.step_renumber_tracks:
+                    fn(root, dry_run, respect_tpos=preserve_disc_numbers)
                 elif fn is std_mod.step_pad_tracks:
                     fn(root, dry_run, respect_tpos=preserve_disc_numbers)
                 elif fn is std_mod.step_set_total_tracks:
@@ -886,10 +889,10 @@ class StandardizeView(AsyncOperationView):
                 else:
                     fn(root, dry_run)
 
-        # Step 14: embed art
+        # Step 15: embed art
         if cover_art in ("embed", "both"):
-            self._set_step(14, "Embed cover art")
-            self.log.add_sep("Step 14: Embed cover art")
+            self._set_step(15, "Embed cover art")
+            self.log.add_sep("Step 15: Embed cover art")
             with StreamingCapture(self.log):
                 std_mod.step_embed_cover_art(
                     root, dry_run,
@@ -897,10 +900,10 @@ class StandardizeView(AsyncOperationView):
                     delete_covers=(cover_art == "embed"),
                 )
 
-        # Step 15: fetch art
+        # Step 16: fetch art
         if fetch_art_online:
-            self._set_step(15, "Fetch missing album art online")
-            self.log.add_sep("Step 15: Fetch missing album art online")
+            self._set_step(16, "Fetch missing album art online")
+            self.log.add_sep("Step 16: Fetch missing album art online")
             with StreamingCapture(self.log):
                 std_mod.step_fetch_missing_art(
                     root, dry_run,

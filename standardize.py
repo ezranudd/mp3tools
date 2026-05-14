@@ -881,7 +881,7 @@ def step_normalize_year(root: Path, dry_run: bool) -> dict:
     return stats
 
 
-# ── Step 6: Pad track numbers ─────────────────────────────────────────────────
+# ── Step 7: Renumber tracks to close gaps ────────────────────────────────────
 
 def _disc_key(tags: ID3) -> str | None:
     """Return disc number string from TPOS (e.g. '1' from '1/2'), or None."""
@@ -892,8 +892,82 @@ def _disc_key(tags: ID3) -> str | None:
     return None
 
 
+def step_renumber_tracks(root: Path, dry_run: bool, respect_tpos: bool = False) -> dict:
+    _header(7, "Renumber tracks to close gaps")
+    stats = {"fixed": 0}
+
+    for folder in sorted(album_folders(root)):
+        mp3s = sorted(folder.glob("*.mp3"))
+        if not mp3s:
+            continue
+
+        if respect_tpos:
+            disc_groups: dict[str | None, list[tuple[int, Path]]] = defaultdict(list)
+            for mp3 in mp3s:
+                try:
+                    tags = load_id3(mp3)
+                    trck = tags.get("TRCK")
+                    if not trck:
+                        continue
+                    num, _ = parse_track(str(trck.text[0]))
+                    if num is None:
+                        continue
+                    disc_groups[_disc_key(tags)].append((num, mp3))
+                except Exception:
+                    continue
+            groups = list(disc_groups.values())
+        else:
+            group: list[tuple[int, Path]] = []
+            for mp3 in mp3s:
+                try:
+                    tags = load_id3(mp3)
+                    trck = tags.get("TRCK")
+                    if not trck:
+                        continue
+                    num, _ = parse_track(str(trck.text[0]))
+                    if num is None:
+                        continue
+                    group.append((num, mp3))
+                except Exception:
+                    continue
+            groups = [group]
+
+        for grp in groups:
+            if not grp:
+                continue
+            grp_sorted = sorted(grp, key=lambda x: x[0])
+            old_nums = [n for n, _ in grp_sorted]
+            if len(set(old_nums)) != len(old_nums):
+                continue  # duplicates — skip; not our job to resolve
+            new_nums = list(range(1, len(grp_sorted) + 1))
+            if old_nums == new_nums:
+                continue  # no gaps
+            total = len(grp_sorted)
+            width = 3 if total >= 100 else 2
+            for new_num, (old_num, mp3) in zip(new_nums, grp_sorted):
+                if new_num == old_num:
+                    continue
+                try:
+                    tags = load_id3(mp3)
+                    original = str(tags["TRCK"].text[0])
+                    new_val = f"{str(new_num).zfill(width)}/{total}"
+                    print(f"  {mp3.name}  TRCK: {original}  ->  {new_val}")
+                    stats["fixed"] += 1
+                    if not dry_run:
+                        tags["TRCK"] = TRCK(encoding=1, text=new_val)
+                        tags.save(mp3, v2_version=3, v1=0)
+                except Exception as e:
+                    print(f"  ERROR ({mp3.name}): {e}")
+
+    if stats["fixed"] == 0:
+        print("  No track number gaps found.")
+    else:
+        print(f"\n  Files fixed: {stats['fixed']}")
+    return stats
+
+
 def step_pad_tracks(root: Path, dry_run: bool, respect_tpos: bool = False) -> dict:
-    _header(7, "Pad track numbers")
+    _header(8, "Pad track numbers")
     stats = {"fixed": 0}
 
     # Determine per-file padding width.
@@ -956,7 +1030,7 @@ def step_pad_tracks(root: Path, dry_run: bool, respect_tpos: bool = False) -> di
 # ── Step 7: Set total track counts ────────────────────────────────────────────
 
 def step_set_total_tracks(root: Path, dry_run: bool, respect_tpos: bool = False) -> dict:
-    _header(8, "Set total track counts")
+    _header(9, "Set total track counts")
     stats = {"fixed": 0}
 
     for folder in sorted(album_folders(root)):
@@ -1051,7 +1125,7 @@ def _album_folder_name(folder: Path) -> str | None:
 
 
 def step_rename_album_folders(root: Path, dry_run: bool) -> dict:
-    _header(9, "Rename album folders")
+    _header(10, "Rename album folders")
     stats = {"renamed": 0, "skipped": 0, "errors": 0}
 
     for folder in sorted(album_folders(root)):
@@ -1091,7 +1165,7 @@ def step_rename_album_folders(root: Path, dry_run: bool) -> dict:
 # ── Step 9: Deduplicate album titles ──────────────────────────────────────────
 
 def step_deduplicate_albums(root: Path, dry_run: bool) -> dict:
-    _header(10, "Deduplicate album titles")
+    _header(11, "Deduplicate album titles")
     stats = {"retagged": 0, "renamed": 0, "errors": 0}
 
     artist_candidates: set[Path] = set()
@@ -1196,7 +1270,7 @@ def step_deduplicate_albums(root: Path, dry_run: bool) -> dict:
 # ── Step 10: Rename album artist folders ──────────────────────────────────────
 
 def step_rename_artist_folders(root: Path, dry_run: bool, *, ask_choice=None) -> dict:
-    _header(11, "Rename album artist folders")
+    _header(12, "Rename album artist folders")
     stats = {"renamed": 0, "retagged": 0, "moved": 0, "skipped": 0, "errors": 0}
 
     # Album artist folders: direct children of root that do NOT directly contain MP3s
@@ -1430,7 +1504,7 @@ def step_rename_artist_folders(root: Path, dry_run: bool, *, ask_choice=None) ->
 # ── Step 11: Rename MP3 files ─────────────────────────────────────────────────
 
 def step_rename_files(root: Path, dry_run: bool) -> dict:
-    _header(12, "Rename MP3 files")
+    _header(13, "Rename MP3 files")
     stats = {"renamed": 0, "skipped": 0, "errors": 0}
 
     # Pre-compute width per folder
@@ -1552,7 +1626,7 @@ def _is_image(name: str) -> bool:
 
 def step_clean_files(root: Path, dry_run: bool, cover_art: str = "folder",
                      *, ask_choice=None) -> dict:
-    _header(13, "Clean non-MP3 files and cover images")
+    _header(14, "Clean non-MP3 files and cover images")
     stats = {"deleted": 0, "renamed_covers": 0, "missing_covers": 0, "errors": 0}
     _ask_choice = ask_choice or get_input
 
@@ -1692,7 +1766,7 @@ def _prepare_cover_data(image_path: Path, max_size: int) -> tuple[bytes, str] | 
 
 def step_embed_cover_art(root: Path, dry_run: bool,
                          max_size: int = 500, delete_covers: bool = False) -> dict:
-    _header(14, "Embed cover art")
+    _header(15, "Embed cover art")
     stats = {"embedded": 0, "already_ok": 0, "no_cover": 0, "errors": 0}
 
     for folder in sorted(album_folders(root)):
@@ -1839,7 +1913,7 @@ def step_fetch_missing_art(root: Path, dry_run: bool,
                             settings: dict | None = None,
                             cover_art: str = "folder",
                             max_size: int = 500) -> dict:
-    _header(15, "Fetch missing album art online")
+    _header(16, "Fetch missing album art online")
     from fetch_art import CONFIDENT_MATCH_SCORE, search_art_sources, fetch_artwork
 
     settings = settings or {}
@@ -1932,13 +2006,14 @@ STEPS = [
     step_strip_tags,             # 4
     step_normalize_chars,        # 5
     step_normalize_year,         # 6
-    step_pad_tracks,             # 7
-    step_set_total_tracks,       # 8
-    step_rename_album_folders,   # 9
-    step_deduplicate_albums,     # 10
-    step_rename_artist_folders,  # 11
-    step_rename_files,           # 12
-    step_clean_files,            # 13
+    step_renumber_tracks,        # 7
+    step_pad_tracks,             # 8
+    step_set_total_tracks,       # 9
+    step_rename_album_folders,   # 10
+    step_deduplicate_albums,     # 11
+    step_rename_artist_folders,  # 12
+    step_rename_files,           # 13
+    step_clean_files,            # 14
 ]
 
 
@@ -2037,6 +2112,8 @@ Examples:
                keep_tpos=preserve_disc_numbers)
         elif fn is step_merge_subfolders:
             fn(root, args.dry_run, preserve_tpos=preserve_disc_numbers)
+        elif fn is step_renumber_tracks:
+            fn(root, args.dry_run, respect_tpos=preserve_disc_numbers)
         elif fn is step_pad_tracks:
             fn(root, args.dry_run, respect_tpos=preserve_disc_numbers)
         elif fn is step_set_total_tracks:
@@ -2052,7 +2129,7 @@ Examples:
         else:
             fn(root, args.dry_run)
 
-    if not step_filter or 14 in step_filter:
+    if not step_filter or 15 in step_filter:
         if cover_art in ("embed", "both"):
             step_embed_cover_art(
                 root, args.dry_run,
@@ -2060,7 +2137,7 @@ Examples:
                 delete_covers=(cover_art == "embed"),
             )
 
-    if (not step_filter and fetch_art_online) or (step_filter and 15 in step_filter):
+    if (not step_filter and fetch_art_online) or (step_filter and 16 in step_filter):
             step_fetch_missing_art(
                 root, args.dry_run,
                 settings=sett,

@@ -309,7 +309,7 @@ def _cddb_query_server(base: str, disc_id: str, offsets: list[int],
     track_titles.sort(key=lambda x: x[0])
     tracks = [t for _, t in track_titles]
     return {"artist": artist.strip(), "album": album.strip(),
-            "year": dyear, "genre": dgenre, "tracks": tracks}
+            "year": dyear, "genre": dgenre or category, "tracks": tracks}
 
 
 def lookup_gnudb(cddb_toc: dict) -> dict | None:
