@@ -541,6 +541,7 @@ class PendingEdit:
         self.tag_writes:     list[tuple[Path, dict[str, str]]] = []
         self.file_renames:   list[tuple[Path, Path]]           = []
         self.dir_renames:    list[tuple[Path, Path]]           = []
+        self.dir_removals:   list[Path]                        = []
         self.preview_labels: dict[int, str]                    = {}
 
 
@@ -600,6 +601,14 @@ def _build_album_title(album: Node, raw: str) -> "PendingEdit | None":
     folder = _sanitize(f"{year} - {new_title}") if year else _sanitize(new_title)
     new_dir = album.path.parent / folder
 
+    if new_dir != album.path and new_dir.exists():
+        existing_node = next(
+            (a for a in (album.parent.children if album.parent else [])
+             if a.path == new_dir and a is not album),
+            None,
+        )
+        return _build_album_merge(album, new_title, new_dir, existing_node)
+
     edit = PendingEdit(f"Album title: {album.label!r} → {folder!r}")
     edit.preview_labels[id(album)] = folder
     for track in album.children:
@@ -607,6 +616,63 @@ def _build_album_title(album: Node, raw: str) -> "PendingEdit | None":
             edit.tag_writes.append((track.path, {"TALB": new_title}))
     if new_dir != album.path:
         edit.dir_renames.append((album.path, new_dir))
+    return edit
+
+
+def _build_album_merge(
+    album: Node, new_title: str, new_dir: Path, existing_node: "Node | None"
+) -> PendingEdit:
+    """Append album's tracks after those of the existing album at new_dir."""
+    load_album_tags(album)
+
+    if existing_node is not None:
+        load_album_tags(existing_node)
+        existing_paths = [tr.path for tr in existing_node.children]
+    else:
+        existing_paths = sorted(new_dir.glob("*.mp3"))
+
+    n_existing = len(existing_paths)
+    n_added    = len(album.children)
+    new_total  = n_existing + n_added
+    width      = 3 if new_total >= 100 else 2
+
+    edit = PendingEdit(f"Album merge: {album.label!r} → {new_dir.name!r}")
+    edit.preview_labels[id(album)] = f"{new_dir.name}  [→ merge]"
+
+    # Update TRCK totals for existing album's tracks (positions unchanged)
+    for i, path in enumerate(existing_paths, 1):
+        edit.tag_writes.append((path, {"TRCK": f"{i}/{new_total}"}))
+
+    # Append renamed album's tracks with new sequential numbers
+    for i, track in enumerate(album.children, n_existing + 1):
+        if not track.tags:
+            continue
+        artist_s  = _sanitize(track.tags.get("artist", ""))
+        title_s   = _sanitize(track.tags.get("title", ""))
+        new_fname = _new_track_filename(i, width, artist_s, title_s)
+        new_path  = new_dir / new_fname
+        edit.tag_writes.append((track.path, {"TALB": new_title, "TRCK": f"{i}/{new_total}"}))
+        if new_path != track.path:
+            edit.file_renames.append((track.path, new_path))
+
+    # Move cover art if the target album has none
+    try:
+        has_cover = any(
+            f.is_file() and f.suffix.lower() in _IMAGE_EXTENSIONS
+            for f in new_dir.iterdir()
+        )
+    except OSError:
+        has_cover = True
+    if not has_cover:
+        try:
+            for f in sorted(album.path.iterdir()):
+                if f.is_file() and f.suffix.lower() in _IMAGE_EXTENSIONS:
+                    edit.file_renames.append((f, new_dir / f.name))
+                    break
+        except OSError:
+            pass
+
+    edit.dir_removals.append(album.path)
     return edit
 
 
@@ -758,6 +824,14 @@ def _apply_pending(pending: list[PendingEdit]) -> tuple[bool, str]:
                         shutil.move(str(old), str(new))
             except Exception as exc:
                 errors.append(f"move:{old.name}: {exc}")
+
+        # Remove directories emptied by a merge
+        for path in edit.dir_removals:
+            try:
+                if path.exists():
+                    path.rmdir()
+            except OSError as exc:
+                errors.append(f"rmdir:{path.name}: {exc}")
 
     return (not errors), "  |  ".join(errors)
 
