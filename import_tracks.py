@@ -417,8 +417,35 @@ def _create_placeholder_cover(path: Path) -> bool:
         return False
 
 
+def _try_fetch_art(artist: str, album: str, settings: dict, max_size: int) -> tuple[bytes, str] | None:
+    """Fetch album art online. Returns (data, mime) on a confident match, else None."""
+    try:
+        from fetch_art import CONFIDENT_MATCH_SCORE, search_art_sources, fetch_artwork, resize_artwork
+    except ImportError:
+        return None
+    try:
+        results = [r for r in search_art_sources(artist, album, settings, interactive=False)
+                   if r.get("url")]
+        if not results:
+            return None
+        result = results[0]
+        if result.get("score", 0) < CONFIDENT_MATCH_SCORE:
+            return None
+        source_s = result.get("source_label", result.get("source", "online"))
+        print(f"  Cover       : found via {source_s}: "
+              f"{result.get('artist', '')} - {result.get('album', '')}")
+        data, mime = fetch_artwork(result["url"])
+        if max_size > 0:
+            data, mime = resize_artwork(data, mime, max_size)
+        return data, mime
+    except Exception as e:
+        print(f"  Cover       : art fetch failed: {e}")
+        return None
+
+
 def import_tracks(source: Path, library: Path, dry_run: bool,
                   cover_art: str = "folder", cover_art_size: int = 500,
+                  settings: dict | None = None,
                   *, preview_fn=None, ask_text=None, ask_choice=None,
                   progress=None) -> None:
     print(f"Source  : {source}")
@@ -599,6 +626,14 @@ def import_tracks(source: Path, library: Path, dry_run: bool,
             if cover_apic_data:
                 print(f"  Cover art  : embedding from {cover_src.name}")
 
+        # Fetch art online now (before the copy loop) when no source cover exists,
+        # so fetched data can be embedded during the copy loop for embed/both mode.
+        fetched_art: tuple[bytes, str] | None = None
+        if cover_src is None and not dry_run and settings and settings.get("fetch_art_online"):
+            fetched_art = _try_fetch_art(album_artist_tag, album_tag, settings, cover_art_size)
+            if fetched_art and cover_art in ("embed", "both"):
+                cover_apic_data = fetched_art
+
         # ── Copy new files ─────────────────────────────────────────────────────
         for i, (src, td) in enumerate(group_sorted, offset + 1):
             artist_safe = sanitize_name(td.get("TPE1") or artist_tag)
@@ -708,6 +743,17 @@ def import_tracks(source: Path, library: Path, dry_run: bool,
                                 existing_img.rename(dest_cover)
                             except Exception as e:
                                 print(f"    ERROR renaming cover: {e}")
+                    elif fetched_art:
+                        data, mime = fetched_art
+                        ext = ".jpg" if ("jpeg" in mime or "jpg" in mime) else ".png"
+                        cover_path = dest_folder / f"cover{ext}"
+                        print(f"  Cover       : {cover_path.name}")
+                        try:
+                            cover_path.write_bytes(data)
+                        except Exception as e:
+                            print(f"    ERROR writing cover: {e}")
+                    elif dry_run and settings and settings.get("fetch_art_online"):
+                        print(f"  Cover       : (dry run) would attempt online art fetch")
                     else:
                         placeholder = dest_folder / "cover.jpg"
                         print(f"  Cover       : creating placeholder cover.jpg")
@@ -777,7 +823,8 @@ Examples:
                       else sett["cover_art_embed_size"])
 
     import_tracks(src_resolved, lib_resolved, args.dry_run,
-                  cover_art=cover_art, cover_art_size=cover_art_size)
+                  cover_art=cover_art, cover_art_size=cover_art_size,
+                  settings=sett)
 
 
 if __name__ == "__main__":

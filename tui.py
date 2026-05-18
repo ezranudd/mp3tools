@@ -1002,6 +1002,7 @@ class ImportView(AsyncOperationView):
                 self.source, root, dry_run,
                 cover_art=cfg.get("cover_art", "folder"),
                 cover_art_size=cfg.get("cover_art_embed_size", 500),
+                settings=cfg,
                 preview_fn=preview_fn,
                 ask_text=ask_text,
                 ask_choice=ask_choice,
