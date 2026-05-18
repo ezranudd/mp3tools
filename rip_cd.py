@@ -219,6 +219,8 @@ def lookup_musicbrainz(disc_id: str) -> dict | None:
     tracks: list[str] = []
     for medium in rel.get("medium-list", []):
         for track in medium.get("track-list", []):
+            if str(track.get("position", "1")) == "0":
+                continue
             tracks.append(track.get("recording", {}).get("title", ""))
 
     return {"artist": artist, "album": album, "year": year, "genre": "", "tracks": tracks}
