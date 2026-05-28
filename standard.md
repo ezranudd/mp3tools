@@ -109,27 +109,12 @@ All seven tags must be present on every MP3 file:
 
 ## Character Normalization
 
-All tag values and filenames must use standard ASCII punctuation. The following substitutions are required:
+Tag values and filenames are normalized by replacing typographic quotation marks with their ASCII equivalents:
 
-| Replace           | With  | Examples                          |
-|-------------------|-------|-----------------------------------|
-| Curly apostrophes | `'`   | `'` `'` `‚` `‛` `` ` ``         |
-| Curly quotes      | `"`   | `"` `"` `„` `‟` `«` `»`         |
-| En/em dashes      | `-`   | `–` `—` `−` `‐` `‑` `⁃`        |
-| Ellipsis          | `...` | `…`                               |
-| Non-breaking spaces | ` ` | various Unicode space variants    |
-| Zero-width space  | _(removed)_ | `​`                        |
-| Multiplication sign | `x` | `×`                               |
-| Fraction slashes  | `/`   | `⁄` `∕`                          |
-| Numero sign       | `No.` | `№`                               |
-| Sound recording   | `(P)` | `℗`                               |
-| Degree Celsius/Fahrenheit | `C` / `F` | `℃` `℉`             |
-| Trademark / Registered | _(removed)_ | `™` `®`              |
-| Copyright         | `(C)` | `©`                               |
-| Bullet / middle dot | `-` | `•` `·`                          |
-| Dagger            | `+` / `++` | `†` `‡`                     |
-| Prime / double prime / triple | `'` / `"` / `'''` | `′` `″` `‴` |
-| Tironian et       | `&`   | `⁊`                               |
+| Replace           | With | Examples                  |
+|-------------------|------|---------------------------|
+| Curly apostrophes | `'`  | `'` `'` `‚` `‛`          |
+| Curly quotes      | `"`  | `"` `"` `„` `‟`          |
 
 This table is duplicated in `standardize.py`, `audit.py`, `browse.py`, and `import_tracks.py`. Keep all four in sync when modifying.
 

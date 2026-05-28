@@ -67,7 +67,7 @@ Read-only compliance scanner. Reports:
 - Missing required tags
 - Wrong ID3 version (must be ID3v2.3; no ID3v1, no ID3v2.4)
 - Relic `TDRC` frames
-- Characters that need normalization
+- Curly quotes or apostrophes that need normalization
 - Malformed year tags
 - Track number padding issues
 - Filename and folder name mismatches
@@ -90,7 +90,7 @@ Runs up to 15 sequential fix steps. The core 13 steps always run; optional steps
 | 2    | Fix missing tags | Auto-fills Year from folder name; prompts for Album, Genre, Title |
 | 3    | Enforce ID3v2.3 | Strips ID3v1, downgrades ID3v2.4, converts TDRC→TYER |
 | 4    | Strip extraneous tags | Keeps only the 7 required frames (+ APIC in embed mode) |
-| 5    | Normalize special characters | Curly quotes, en/em dashes, ellipsis, etc. → ASCII equivalents |
+| 5    | Normalize special characters | Curly quotes and apostrophes → ASCII equivalents |
 | 5a   | Replace [] with () in titles | Optional; controlled by library setting |
 | 6    | Normalize year tags | Trims `1999-01-01` → `1999` |
 | 7    | Zero-pad track numbers | `1` → `01`, or `001` for 100+ track albums |
