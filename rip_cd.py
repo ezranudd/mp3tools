@@ -229,11 +229,10 @@ def lookup_musicbrainz(disc_id: str) -> dict | None:
 # ── gnudb (CDDB) lookup ───────────────────────────────────────────────────────
 
 _CDDB_SERVERS = [
-    ("gnudb",       "http://gnudb.gnudb.org/~cddb/cddb.cgi"),
-    ("MusicBrainz", "http://freedb.musicbrainz.org/~cddb/cddb.cgi"),
+    ("gnudb", "http://gnudb.gnudb.org/~cddb/cddb.cgi"),
 ]
 
-_CDDB_HELLO = "hello=anonymous+localhost+mp3tools+1.0"
+_CDDB_HELLO = "hello=anonymous+localhost+cdparanoia+3.10"
 _CDDB_PROTO = "proto=6"
 
 
