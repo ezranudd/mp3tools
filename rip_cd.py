@@ -505,6 +505,8 @@ def rip(device: str | Path, dest_dir: Path, *,
                 m = _TRACK_START_RE.search(line)
                 if m:
                     current_track = int(m.group(1))
+                    if current_track == 0:
+                        continue  # pregap — not a real track
                     total_t = len(track_lengths) or current_track
                     _log(log_fn, f"  Ripping track {current_track}/{total_t}...")
                     continue
@@ -525,7 +527,15 @@ def rip(device: str | Path, dest_dir: Path, *,
         _log(log_fn, f"WARNING: cdparanoia exited {rc} (some sectors may be damaged)")
 
     # ── Convert WAV → FLAC and write tags ─────────────────────────────────────
-    wavs = sorted(dest_dir.glob("*.wav"))
+    all_wavs = sorted(dest_dir.glob("*.wav"))
+    wavs = []
+    for w in all_wavs:
+        m = re.search(r"(\d+)", w.stem)
+        if m and int(m.group(1)) == 0:
+            w.unlink()  # pregap audio — not a music track
+            continue
+        wavs.append(w)
+
     if not wavs:
         _log(log_fn, "ERROR: no WAV files produced by cdparanoia")
         return False
