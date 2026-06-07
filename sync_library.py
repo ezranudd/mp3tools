@@ -77,7 +77,7 @@ def file_matches(src: Path, dst: Path) -> bool:
         s2 = dst.stat()
     except OSError:
         return False
-    return s1.st_size == s2.st_size and int(s1.st_mtime) == int(s2.st_mtime)
+    return s1.st_size == s2.st_size and abs(s1.st_mtime - s2.st_mtime) <= 2
 
 
 def artist_dirs(library: Path) -> list[Path]:
