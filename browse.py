@@ -329,9 +329,9 @@ def _draw(stdscr, items: list[Node], sel: int, scroll: int, root_str: str,
 
     # ── Header bar ────────────────────────────────────────────────────────────
     if in_preview:
-        keys = " [PREVIEW]  a=Apply  e=Edit more  Esc=Discard "
+        keys = " Preview  a=Apply  e=Edit more  Esc=Discard "
     else:
-        keys = " ↑↓ j/k  PgUp/PgDn  g/G  →/Enter Expand  ← Collapse  e Edit  r Art  x RemoveArt  q Quit "
+        keys = " j/k=Move  g/G=Top/Bottom  →/Enter=Expand  ←=Collapse  e=Edit  r=Art  x=RemoveArt  q=Back "
     path_str = f" {root_str}"
     gap    = max(0, w - cell_width(keys))
     header = fit_cells(path_str, gap) + keys
@@ -963,7 +963,7 @@ def _pick_artwork(stdscr, results: list[dict], label: str) -> int:
             _put(stdscr, start + 1 + i, 0, fit_cells(line, w - 1), curses.A_NORMAL)
 
         _put(stdscr, h - 1, 0,
-             fit_cells(f"  Select 1-{n}  |  [Esc] Cancel", w - 1),
+             fit_cells(f" 1-{n}=Select  Esc=Cancel", w - 1),
              curses.color_pair(C_BAR))
         stdscr.refresh()
 

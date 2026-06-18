@@ -16,7 +16,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from termtext import cell_width, clip_cells, fit_cells
-from ui import C_HDR, C_BAR, C_SEL, C_DIM, C_OK, C_WARN, init_colors as _init_colors
+from ui import (
+    C_SEL, C_DIM, C_WARN,
+    init_colors as _init_colors, header_bar, status_bar, keyhints,
+)
 
 
 @dataclass
@@ -401,9 +404,8 @@ def draw_artist_menu(
     usage = shutil.disk_usage(device)
     n_artists, n_albums = selection_summary(artists)
 
-    mode = "DRY RUN" if dry_run else "LIVE"
-    header = f" SYNC  {mode}  Library: {library}  Device: {device} "
-    _put(stdscr, 0, 0, fit_cells(header, w - 1), curses.color_pair(C_HDR) | curses.A_BOLD)
+    mode = "Dry Run" if dry_run else "Live"
+    header_bar(stdscr, f"Sync ({mode})", f"{library}  ->  {device}")
 
     summary = (
         f"Free {format_size(usage.free)} / {format_size(usage.total)}   "
@@ -453,10 +455,13 @@ def draw_artist_menu(
     for i, line in enumerate(_existing_lines(existing, right_h)):
         _put(stdscr, 4 + i, right_x, clip_cells(line, max(10, w - right_x - 1)), curses.color_pair(C_DIM))
 
-    footer = " j/k Move  Space Toggle  ←/→ Collapse/Expand  a All  n None  s Sync  q Cancel "
     if flash:
-        footer = " " + flash
-    _put(stdscr, h - 1, 0, fit_cells(footer, w - 1), curses.color_pair(C_BAR))
+        status_bar(stdscr, flash)
+    else:
+        status_bar(stdscr, keyhints([
+            ("j/k", "Move"), ("Space", "Toggle"), ("→/←", "Expand/Collapse"),
+            ("a", "All"), ("n", "None"), ("s", "Sync"), ("q", "Back"),
+        ]))
     stdscr.refresh()
 
 
@@ -464,7 +469,7 @@ def draw_plan(stdscr, plan: SyncPlan, selected_count: int, free_space: int, dry_
     h, w = stdscr.getmaxyx()
     stdscr.erase()
     net_needed = max(0, plan.bytes_to_copy - plan.bytes_to_remove)
-    _put(stdscr, 0, 0, fit_cells(" SYNC PLAN ", w - 1), curses.color_pair(C_HDR) | curses.A_BOLD)
+    header_bar(stdscr, "Sync Plan")
     rows = [
         f"Artists selected : {selected_count}",
         f"Files to copy    : {len(plan.copy_files)} ({format_size(plan.bytes_to_copy)})",
@@ -478,8 +483,9 @@ def draw_plan(stdscr, plan: SyncPlan, selected_count: int, free_space: int, dry_
     if message:
         _put(stdscr, 8, 2, message, curses.color_pair(C_WARN) | curses.A_BOLD)
 
-    key_line = " Enter Apply dry-run preview " if dry_run else " Type YES then Enter to apply, Esc to cancel "
-    _put(stdscr, h - 1, 0, fit_cells(key_line, w - 1), curses.color_pair(C_BAR))
+    key_line = ("Enter=Run preview" if dry_run
+                else "Type YES then Enter=Apply  Esc=Cancel")
+    status_bar(stdscr, key_line)
     stdscr.refresh()
 
 
@@ -516,15 +522,14 @@ def draw_progress(
 ) -> None:
     h, w = stdscr.getmaxyx()
     stdscr.erase()
-    title = " SYNC PREVIEW " if dry_run else " SYNC IN PROGRESS "
-    _put(stdscr, 0, 0, fit_cells(title, w - 1), curses.color_pair(C_HDR) | curses.A_BOLD)
+    header_bar(stdscr, "Sync Preview" if dry_run else "Syncing")
     _put(stdscr, 2, 2, f"Action : {action}")
     _put(stdscr, 3, 2, f"File   : {clip_cells(current, max(10, w - 11), chr(0x2026))}")
     _put(stdscr, 5, 2, f"Files  : {done_files}/{total_files}")
     _put(stdscr, 6, 2, _bar(done_files, total_files, max(10, w - 6)))
     _put(stdscr, 8, 2, f"Bytes  : {format_size(done_bytes)} / {format_size(total_bytes)}")
     _put(stdscr, 9, 2, _bar(done_bytes, total_bytes, max(10, w - 6)))
-    _put(stdscr, h - 1, 0, fit_cells(" Working... ", w - 1), curses.color_pair(C_BAR))
+    status_bar(stdscr, "Working...")
     stdscr.refresh()
 
 
@@ -606,7 +611,7 @@ def apply_plan(stdscr, plan: SyncPlan, dry_run: bool) -> tuple[int, int, int]:
 
     if not dry_run and (copied or removed_files):
         # Flush OS write buffers to the card before reporting done, so the
-        # device is safe to unmount the moment "SYNC COMPLETE" appears.
+        # device is safe to unmount the moment "Sync Complete" appears.
         draw_progress(stdscr, "Flushing buffers to device", "", total_files, total_files,
                       total_bytes, total_bytes, dry_run)
         os.sync()
@@ -617,13 +622,13 @@ def apply_plan(stdscr, plan: SyncPlan, dry_run: bool) -> tuple[int, int, int]:
 def draw_result(stdscr, copied: int, removed_files: int, removed_dirs: int, dry_run: bool) -> None:
     h, w = stdscr.getmaxyx()
     stdscr.erase()
-    _put(stdscr, 0, 0, fit_cells(" SYNC COMPLETE ", w - 1), curses.color_pair(C_HDR) | curses.A_BOLD)
+    header_bar(stdscr, "Sync Complete")
     _put(stdscr, 2, 2, f"Copied files    : {copied}")
     _put(stdscr, 3, 2, f"Deleted files   : {removed_files}")
     _put(stdscr, 4, 2, f"Removed folders : {removed_dirs}")
     if dry_run:
         _put(stdscr, 6, 2, "Dry run complete. Run in live mode to apply changes.", curses.color_pair(C_WARN))
-    _put(stdscr, h - 1, 0, fit_cells(" Press any key to exit ", w - 1), curses.color_pair(C_BAR))
+    status_bar(stdscr, "Press any key to continue")
     stdscr.refresh()
     stdscr.getch()
 

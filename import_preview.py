@@ -239,14 +239,12 @@ def _draw(stdscr, items: list[Node], sel: int, scroll: int,
     stdscr.erase()
     list_h = max(1, h - 2)
 
-    # ── Header ────────────────────────────────────────────────────────────────
-    if has_lossless:
-        br_part = f"  [b] Lossless bitrate per album"
-    else:
-        br_part = ""
-    hdr = (f" IMPORT PREVIEW  {total_files} file(s){br_part}"
-           f"  ↑↓ j/k  →/← Expand  c/C Collapse  x Expand All  e Edit  p Proceed  q Abort ")
-    _put(stdscr, 0, 0, hdr[:w - 1].ljust(w - 1),
+    # ── Header (tree view: title + key hints) ───────────────────────────────────
+    br_part = "  b=Bitrate" if has_lossless else ""
+    hdr = (f" Import Preview  {total_files} file(s){br_part}"
+           f"  j/k=Move  →/←=Expand/Collapse  x=Expand all  c/C=Collapse"
+           f"  e=Edit  p=Proceed  q=Cancel")
+    _put(stdscr, 0, 0, fit_cells(hdr, w - 1),
          curses.color_pair(C_HDR) | curses.A_BOLD)
 
     if not items:

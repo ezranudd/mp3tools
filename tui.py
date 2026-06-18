@@ -333,7 +333,7 @@ class MainMenuView(View):
             row += 2
 
         if row + 1 < h - 1:
-            _put(stdscr, row + 1, 2, "↑↓ j/k  Enter=Launch   [d] Directory   [m] Mode   [q] Quit",
+            _put(stdscr, row + 1, 2, "j/k=Move  Enter=Launch  d=Directory  m=Mode  q=Quit",
                  curses.color_pair(C_DIM))
 
         bar = fit_cells(" " + self._flash if self._flash else "", w - 1)
@@ -418,16 +418,16 @@ class DirPickerView(View):
 
     def _title(self) -> str:
         titles = {
-            "library": " SELECT LIBRARY ",
-            "source":  " SELECT IMPORT SOURCE ",
+            "library": " Select Library ",
+            "source":  " Select Import Source ",
         }
-        return titles.get(self.purpose, " SELECT DIRECTORY ")
+        return titles.get(self.purpose, " Select Directory ")
 
     def draw(self, stdscr) -> None:
         h, w = stdscr.getmaxyx()
         stdscr.erase()
 
-        keys = " ↑↓ j/k  Enter/→=Enter dir  .=Use this dir  u/←=Up  q=Cancel "
+        keys = " j/k=Move  →/Enter=Open  ←/u=Up  .=Use this dir  q=Cancel "
         gap = max(0, w - cell_width(keys))
         header = fit_cells(f" {self._cwd}", gap) + keys
         _put(stdscr, 0, 0, clip_cells(header, w),
@@ -586,7 +586,7 @@ class DevicePickerView(View):
     def draw(self, stdscr) -> None:
         h, w = stdscr.getmaxyx()
         stdscr.erase()
-        _put(stdscr, 0, 0, fit_cells(" SELECT DEVICE ", w),
+        _put(stdscr, 0, 0, fit_cells(" Select Device ", w),
              curses.color_pair(C_HDR) | curses.A_BOLD)
 
         row = 2
@@ -610,7 +610,7 @@ class DevicePickerView(View):
 
         row += 1
         if row < h - 1:
-            _put(stdscr, row, 2, "[b] Browse for directory   [q] Cancel",
+            _put(stdscr, row, 2, "j/k=Move  Enter=Select  b=Browse  q=Cancel",
                  curses.color_pair(C_DIM))
         bar = fit_cells(" " + self._flash if self._flash else "", w - 1)
         _put(stdscr, h - 1, 0, bar, curses.color_pair(C_BAR))
@@ -709,7 +709,7 @@ class AuditView(AsyncOperationView):
         hdr = fit_cells(f" Audit  {self.state.library}", w)
         _put(stdscr, 0, 0, hdr, curses.color_pair(C_HDR) | curses.A_BOLD)
         self.log.draw(stdscr, 1, h - 1)
-        status = " ↑↓ j/k scroll   q=Return" if self._done else " Scanning..."
+        status = " j/k=Scroll  q=Back" if self._done else " Scanning..."
         _put(stdscr, h - 1, 0, fit_cells(status, w - 1), curses.color_pair(C_BAR))
         stdscr.refresh()
 
@@ -787,7 +787,7 @@ class StandardizeView(AsyncOperationView):
         self.log.draw(stdscr, 1, h - 1)
         detail = self._status_detail()
         if self._done:
-            bar = " ↑↓ j/k scroll   q=Return to menu"
+            bar = " j/k=Scroll  q=Back"
         elif detail:
             bar = detail
         else:
@@ -941,7 +941,7 @@ class ImportView(AsyncOperationView):
         self.log.draw(stdscr, 1, h - 1)
         detail = self._status_detail()
         if self._done:
-            status = " ↑↓ j/k scroll   q=Return"
+            status = " j/k=Scroll  q=Back"
         else:
             status = detail or " Importing..."
         _put(stdscr, h - 1, 0, fit_cells(status, w - 1), curses.color_pair(C_BAR))
@@ -1055,11 +1055,11 @@ class RipCDView(AsyncOperationView):
 
         if self._done:
             if self._cancelling:
-                status = " Cancelled — q=Return"
+                status = " Cancelled — q=Back"
             elif self._rip_ok:
-                status = " Rip complete — Enter=Import  q=Cancel"
+                status = " Rip complete — Enter=Import  q=Back"
             else:
-                status = " Rip failed — q=Return"
+                status = " Rip failed — q=Back"
         elif self._cancelling:
             status = " Cancelling..."
         else:
@@ -1270,7 +1270,7 @@ class SettingsView(View):
             else:
                 _put(stdscr, row, 0, clip_cells(text, w - 1), attr)
 
-        bar_hint = " ↑↓ j/k  Enter=Select   Esc=Cancel"
+        bar_hint = " j/k=Move  Enter=Select  Esc=Cancel"
         bar = fit_cells(" " + self._flash if self._flash else bar_hint, w - 1)
         _put(stdscr, h - 1, 0, bar, curses.color_pair(C_BAR))
         stdscr.refresh()
