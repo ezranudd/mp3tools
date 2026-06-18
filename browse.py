@@ -41,6 +41,7 @@ from fetch_art import (
     search_art_sources,
 )
 from termtext import cell_width, clip_cells, fit_cells
+from chars import CHAR_REPLACEMENTS as _CHAR_MAP
 
 os.environ.setdefault("ESCDELAY", "25")
 
@@ -57,11 +58,6 @@ from mutagen.id3 import (
 
 
 # ── Character normalization ───────────────────────────────────────────────────
-
-_CHAR_MAP: dict[str, str] = {
-    "‘": "'", "’": "'", "‚": "'", "‛": "'",
-    "“": '"', "”": '"', "„": '"', "‟": '"',
-}
 
 _YEAR_RE       = re.compile(r"\b(19\d{2}|20\d{2})\b")
 _ALBUM_YEAR_RE = re.compile(r"^\d{4}\s*-\s*(.+)$")
@@ -301,23 +297,15 @@ def _track_width(album: Node) -> int:
     return 3 if len(album.children) >= 100 else 2
 
 
-# ── Color pairs ───────────────────────────────────────────────────────────────
-# Canonical palette lives in ui.py; imported here (and re-exported) so callers
-# and this module's drawing code share one set of pair numbers.
+# ── Color pairs & UI primitives ───────────────────────────────────────────────
+# Canonical palette and drawing/input primitives live in ui.py; imported here
+# (and re-exported) so this module and its callers share one implementation.
 
 from ui import (
     C_ARTIST, C_ALBUM, C_TRACK, C_HDR, C_BAR, C_DIM, C_EDIT,
     init_colors as _init_colors,
+    put as _put, text_input as _text_input, choose as _choose,
 )
-
-
-# ── Drawing ───────────────────────────────────────────────────────────────────
-
-def _put(win, y: int, x: int, s: str, attr: int = 0) -> None:
-    try:
-        win.addstr(y, x, s, attr)
-    except curses.error:
-        pass
 
 
 def _draw(stdscr, items: list[Node], sel: int, scroll: int, root_str: str,
@@ -413,97 +401,6 @@ def _draw(stdscr, items: list[Node], sel: int, scroll: int, root_str: str,
 
     _put(stdscr, h - 1, 0, fit_cells(info, w - 1), curses.color_pair(C_BAR))
     stdscr.refresh()
-
-
-# ── Text-input widgets ────────────────────────────────────────────────────────
-
-def _text_input(stdscr, row: int, prompt: str, prefill: str = "") -> "str | None":
-    """Inline single-line editor on *row*. Returns stripped text or None on Esc."""
-    curses.curs_set(1)
-    _, w = stdscr.getmaxyx()
-    buf = list(prefill)
-    pos = len(buf)
-    pw  = cell_width(prompt)
-
-    while True:
-        content = prompt + "".join(buf)
-        clipped = clip_cells(content, w - 1)
-        pad     = max(0, w - 1 - cell_width(clipped))
-        _put(stdscr, row, 0, clipped + " " * pad, curses.A_REVERSE)
-        cursor_col = min(pw + cell_width("".join(buf[:pos])), w - 2)
-        try:
-            stdscr.move(row, cursor_col)
-        except curses.error:
-            pass
-        stdscr.refresh()
-
-        try:
-            key = stdscr.get_wch()
-        except curses.error:
-            continue
-
-        if isinstance(key, str):
-            if key in ("\n", "\r"):
-                break
-            if key == "\x1b":
-                curses.curs_set(0)
-                return None
-            if key in ("\x7f", "\b"):
-                if pos > 0:
-                    buf.pop(pos - 1)
-                    pos -= 1
-            elif ord(key) >= 32:
-                buf.insert(pos, key)
-                pos += 1
-        else:
-            if key == curses.KEY_ENTER:
-                break
-            if key == 27:
-                curses.curs_set(0)
-                return None
-            if key in (curses.KEY_BACKSPACE, 127, 8):
-                if pos > 0:
-                    buf.pop(pos - 1)
-                    pos -= 1
-            elif key == curses.KEY_DC:
-                if pos < len(buf):
-                    buf.pop(pos)
-            elif key == curses.KEY_LEFT:
-                pos = max(0, pos - 1)
-            elif key == curses.KEY_RIGHT:
-                pos = min(len(buf), pos + 1)
-            elif key == curses.KEY_HOME:
-                pos = 0
-            elif key == curses.KEY_END:
-                pos = len(buf)
-
-    curses.curs_set(0)
-    result = "".join(buf).strip()
-    return result if result else None
-
-
-def _choose(stdscr, row: int, prompt: str, options: list[tuple[str, str]]) -> "str | None":
-    """Key-choice menu on *row*. Returns chosen key (lowercase) or None on Esc."""
-    _, w = stdscr.getmaxyx()
-    parts = "  ".join(f"[{k.upper()}] {lbl}" for k, lbl in options)
-    line  = f" {prompt}:  {parts}  [Esc] Cancel"
-    _put(stdscr, row, 0, line[:w - 1].ljust(w - 1),
-         curses.color_pair(C_HDR) | curses.A_BOLD)
-    stdscr.refresh()
-    while True:
-        try:
-            key = stdscr.get_wch()
-        except curses.error:
-            continue
-        ch = key if isinstance(key, str) else (chr(key) if 0 < key < 256 else "")
-        if ch == "\x1b" or key == 27:
-            return None
-        ch = ch.lower()
-        for k, _ in options:
-            if ch == k.lower():
-                return ch
-        if key == curses.KEY_RESIZE:
-            curses.update_lines_cols()
 
 
 # ── Pending-edit model ────────────────────────────────────────────────────────

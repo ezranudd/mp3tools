@@ -25,6 +25,7 @@ from convert_lossless import (
     LOSSLESS_EXTENSIONS, find_lossless, read_lossless_tags,
     read_cue_tracks,
 )
+from chars import CHAR_REPLACEMENTS
 from import_preview import run_preview
 from mutagen.mp3 import MP3 as _MP3Info
 from mutagen.id3 import (
@@ -48,11 +49,6 @@ ALBUM_ARTIST_KEYS = (
     "TXXX:Album Artist",
 )
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
-
-CHAR_REPLACEMENTS: dict[str, str] = {
-    "‘": "'", "’": "'", "‚": "'", "‛": "'",
-    "“": '"', "”": '"', "„": '"', "‟": '"',
-}
 
 TAG_NAMES = {
     "TPE1": "Artist", "ALBUMARTIST": "Album Artist", "TIT2": "Title", "TALB": "Album",

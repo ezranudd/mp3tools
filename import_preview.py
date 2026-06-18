@@ -21,11 +21,11 @@ from termtext import cell_width, clip_cells, fit_cells
 from browse import (
     Node, ARTIST, ALBUM, TRACK,
     visible,
-    _put, _text_input, _choose,
     _normalize, _extract_year,
 )
 from ui import (
     init_colors as _init_colors,
+    put as _put, text_input as _text_input, choose as _choose,
     C_ARTIST, C_ALBUM, C_TRACK, C_HDR, C_BAR, C_DIM, C_FMT,
 )
 from convert_lossless import LOSSLESS_EXTENSIONS

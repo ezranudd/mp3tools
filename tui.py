@@ -17,14 +17,12 @@ from termtext import cell_width, clip_cells, fit_cells
 os.environ.setdefault("ESCDELAY", "25")
 
 import browse as _browse_mod
-from browse import (
-    _put, _text_input, _choose,
-    build_tree,
-)
+from browse import build_tree
 from ui import (
     C_HDR, C_BAR, C_DIM, C_ARTIST, C_ALBUM, C_TRACK, C_EDIT,
     C_SEL, C_OK, C_WARN, C_ERR,
     init_colors as _init_colors,
+    put as _put, text_input as _text_input, choose as _choose,
 )
 
 

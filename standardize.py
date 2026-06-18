@@ -38,6 +38,7 @@ from pathlib import Path
 
 import settings as settings_mod
 from convert_lossless import step_convert_lossless
+from chars import CHAR_REPLACEMENTS
 
 from mutagen.id3 import (
     ID3, ID3NoHeaderError,
@@ -65,11 +66,6 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
 _ALBUM_NAME_RE = re.compile(r'^\d{4}\s*-\s*')
 _CD_NUM_RE     = re.compile(r'\d+')
 
-# Character replacements (mirrors normalize_characters.py)
-CHAR_REPLACEMENTS = {
-    "‘": "'", "’": "'", "‚": "'", "‛": "'",
-    "“": '"', "”": '"', "„": '"', "‟": '"',
-}
 
 REQUIRED_TAG_NAMES = {
     "TPE1": "Artist",

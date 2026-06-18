@@ -31,14 +31,9 @@ from pathlib import Path
 
 from mutagen.id3 import ID3, ID3NoHeaderError
 import settings as settings_mod
+from chars import CHAR_REPLACEMENTS
 
 # ─── Constants ────────────────────────────────────────────────────────────────
-
-# From normalize_characters.py
-CHAR_REPLACEMENTS: dict[str, str] = {
-    "‘": "'", "’": "'", "‚": "'", "‛": "'",
-    "“": '"', "”": '"', "„": '"', "‟": '"',
-}
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
 CD_PATTERN = re.compile(r"^CD(\d+)$")

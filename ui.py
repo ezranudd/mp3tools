@@ -10,7 +10,7 @@ that had to be re-initialized before every use. All of them now import from here
 
 import curses
 
-from termtext import fit_cells
+from termtext import fit_cells, clip_cells, cell_width
 
 # ── Canonical color pairs ─────────────────────────────────────────────────────
 C_ARTIST = 1   # bold yellow
@@ -45,6 +45,23 @@ def init_colors() -> None:
         curses.init_pair(C_WARN,   curses.COLOR_YELLOW,  -1)
         curses.init_pair(C_ERR,    curses.COLOR_RED,     -1)
         curses.init_pair(C_FMT,    curses.COLOR_GREEN,   -1)
+    except curses.error:
+        pass
+
+
+# ── Drawing primitive ─────────────────────────────────────────────────────────
+
+def put(win, y: int, x: int, s: str, attr: int = 0) -> None:
+    """Write *s* at (y, x), clipped to the remaining width and bounds-checked.
+
+    Replaces the per-module `_put` helpers (browse drew without clipping and
+    relied on callers to pre-clip; sync clipped internally). Clipping to w-x
+    plus the curses.error guard reproduces both behaviors safely.
+    """
+    try:
+        h, w = win.getmaxyx()
+        if 0 <= y < h and 0 <= x < w:
+            win.addstr(y, x, clip_cells(s, w - x), attr)
     except curses.error:
         pass
 
@@ -112,3 +129,97 @@ def confirm_key(win, prompt: str, *, default: bool = False) -> bool:
             return False
         if key in (curses.KEY_ENTER, ord("\n"), ord("\r")):
             return default
+
+
+# ── Input primitives ──────────────────────────────────────────────────────────
+
+def text_input(win, row: int, prompt: str, prefill: str = "") -> "str | None":
+    """Inline single-line editor on *row*. Returns stripped text or None on Esc."""
+    curses.curs_set(1)
+    _, w = win.getmaxyx()
+    buf = list(prefill)
+    pos = len(buf)
+    pw  = cell_width(prompt)
+
+    while True:
+        content = prompt + "".join(buf)
+        clipped = clip_cells(content, w - 1)
+        pad     = max(0, w - 1 - cell_width(clipped))
+        put(win, row, 0, clipped + " " * pad, curses.A_REVERSE)
+        cursor_col = min(pw + cell_width("".join(buf[:pos])), w - 2)
+        try:
+            win.move(row, cursor_col)
+        except curses.error:
+            pass
+        win.refresh()
+
+        try:
+            key = win.get_wch()
+        except curses.error:
+            continue
+
+        if isinstance(key, str):
+            if key in ("\n", "\r"):
+                break
+            if key == "\x1b":
+                curses.curs_set(0)
+                return None
+            if key in ("\x7f", "\b"):
+                if pos > 0:
+                    buf.pop(pos - 1)
+                    pos -= 1
+            elif ord(key) >= 32:
+                buf.insert(pos, key)
+                pos += 1
+        else:
+            if key == curses.KEY_ENTER:
+                break
+            if key == 27:
+                curses.curs_set(0)
+                return None
+            if key in (curses.KEY_BACKSPACE, 127, 8):
+                if pos > 0:
+                    buf.pop(pos - 1)
+                    pos -= 1
+            elif key == curses.KEY_DC:
+                if pos < len(buf):
+                    buf.pop(pos)
+            elif key == curses.KEY_LEFT:
+                pos = max(0, pos - 1)
+            elif key == curses.KEY_RIGHT:
+                pos = min(len(buf), pos + 1)
+            elif key == curses.KEY_HOME:
+                pos = 0
+            elif key == curses.KEY_END:
+                pos = len(buf)
+
+    curses.curs_set(0)
+    result = "".join(buf).strip()
+    return result if result else None
+
+
+def choose(win, row: int, prompt: str, options: "list[tuple[str, str]]") -> "str | None":
+    """Key-choice menu on *row*. Returns chosen key (lowercase) or None on Esc.
+
+    Uses the `[K] Label` idiom (distinct from the `key=Action` footer notation).
+    """
+    _, w = win.getmaxyx()
+    parts = "  ".join(f"[{k.upper()}] {lbl}" for k, lbl in options)
+    line  = f" {prompt}:  {parts}  [Esc] Cancel"
+    put(win, row, 0, fit_cells(line, w - 1),
+        curses.color_pair(C_HDR) | curses.A_BOLD)
+    win.refresh()
+    while True:
+        try:
+            key = win.get_wch()
+        except curses.error:
+            continue
+        ch = key if isinstance(key, str) else (chr(key) if 0 < key < 256 else "")
+        if ch == "\x1b" or key == 27:
+            return None
+        ch = ch.lower()
+        for k, _ in options:
+            if ch == k.lower():
+                return ch
+        if key == curses.KEY_RESIZE:
+            curses.update_lines_cols()

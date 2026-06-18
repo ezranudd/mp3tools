@@ -15,10 +15,11 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from termtext import cell_width, clip_cells, fit_cells
+from termtext import clip_cells, fit_cells
 from ui import (
     C_SEL, C_DIM, C_WARN,
     init_colors as _init_colors, header_bar, status_bar, keyhints, confirm_key,
+    put as _put,
 )
 
 
@@ -334,15 +335,6 @@ def combined_plan(library: Path, device: Path, artists: list[ArtistInfo]) -> Syn
                 add(make_plan(album.path, device / artist.path.name / album.path.name))
 
     return SyncPlan(all_copy, all_remove_files, all_remove_dirs, copy_bytes, remove_bytes)
-
-
-def _put(win, y: int, x: int, text: str, attr: int = 0) -> None:
-    try:
-        h, w = win.getmaxyx()
-        if 0 <= y < h and 0 <= x < w:
-            win.addstr(y, x, clip_cells(text, max(0, w - x - 1)), attr)
-    except curses.error:
-        pass
 
 
 def _bar(done: int, total: int, width: int) -> str:
