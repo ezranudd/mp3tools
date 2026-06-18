@@ -90,3 +90,25 @@ def status_bar(win, text: str, attr: int | None = None) -> None:
                    curses.color_pair(C_BAR) if attr is None else attr)
     except curses.error:
         pass
+
+
+def confirm_key(win, prompt: str, *, default: bool = False) -> bool:
+    """Single-key confirm drawn on the bottom bar. Returns True/False.
+
+    `y` → True, `n`/Esc → False, Enter → *default*. The `[y/N]` / `[Y/n]`
+    idiom (capital marks the default) is the standard confirm gesture across
+    all screens; bulk/typed confirmations are intentionally not used.
+    """
+    status_bar(win, f"{prompt}  [{'Y/n' if default else 'y/N'}]")
+    win.refresh()
+    while True:
+        try:
+            key = win.getch()
+        except KeyboardInterrupt:
+            return False
+        if key in (ord("y"), ord("Y")):
+            return True
+        if key in (ord("n"), ord("N"), 27):
+            return False
+        if key in (curses.KEY_ENTER, ord("\n"), ord("\r")):
+            return default

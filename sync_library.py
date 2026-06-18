@@ -18,7 +18,7 @@ from pathlib import Path
 from termtext import cell_width, clip_cells, fit_cells
 from ui import (
     C_SEL, C_DIM, C_WARN,
-    init_colors as _init_colors, header_bar, status_bar, keyhints,
+    init_colors as _init_colors, header_bar, status_bar, keyhints, confirm_key,
 )
 
 
@@ -466,8 +466,7 @@ def draw_artist_menu(
     stdscr.refresh()
 
 
-def draw_plan(stdscr, plan: SyncPlan, selected_count: int, free_space: int, dry_run: bool, message: str = "") -> None:
-    h, w = stdscr.getmaxyx()
+def draw_plan(stdscr, plan: SyncPlan, selected_count: int, free_space: int, footer: str = "") -> None:
     stdscr.erase()
     net_needed = max(0, plan.bytes_to_copy - plan.bytes_to_remove)
     header_bar(stdscr, "Sync Plan")
@@ -481,34 +480,19 @@ def draw_plan(stdscr, plan: SyncPlan, selected_count: int, free_space: int, dry_
     for i, row in enumerate(rows, 2):
         _put(stdscr, i, 2, row)
 
-    if message:
-        _put(stdscr, 8, 2, message, curses.color_pair(C_WARN) | curses.A_BOLD)
-
-    key_line = ("Enter=Run preview" if dry_run
-                else "Type YES then Enter=Apply  Esc=Cancel")
-    status_bar(stdscr, key_line)
+    if footer:
+        status_bar(stdscr, footer)
     stdscr.refresh()
 
 
 def confirm_live(stdscr, plan: SyncPlan, selected_count: int, free_space: int, dry_run: bool) -> bool:
     if dry_run:
-        draw_plan(stdscr, plan, selected_count, free_space, dry_run)
+        draw_plan(stdscr, plan, selected_count, free_space, "Press any key to run preview")
         stdscr.getch()
         return True
 
-    buf: list[str] = []
-    while True:
-        draw_plan(stdscr, plan, selected_count, free_space, dry_run, "Confirm: " + "".join(buf))
-        key = stdscr.get_wch()
-        if key == "\x1b" or key == 27:
-            return False
-        if key in ("\n", "\r") or key == curses.KEY_ENTER:
-            return "".join(buf) == "YES"
-        if key in ("\x7f", "\b") or key == curses.KEY_BACKSPACE:
-            if buf:
-                buf.pop()
-        elif isinstance(key, str) and len(key) == 1 and key.isprintable():
-            buf.append(key)
+    draw_plan(stdscr, plan, selected_count, free_space)
+    return confirm_key(stdscr, "Apply this sync to the device?")
 
 
 def draw_progress(
