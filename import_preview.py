@@ -534,7 +534,7 @@ def _run(stdscr, entries: list[tuple[Path, dict]],
                     if sel + 1 < len(visible(artists)):
                         sel += 1
 
-        elif key == curses.KEY_RIGHT:
+        elif key in (curses.KEY_RIGHT, ord("l")):
             node = items[sel]
             if node.kind != TRACK:
                 if not node.expanded:
@@ -544,7 +544,7 @@ def _run(stdscr, entries: list[tuple[Path, dict]],
                 elif sel + 1 < n and items[sel + 1].parent is node:
                     sel += 1
 
-        elif key == curses.KEY_LEFT:
+        elif key in (curses.KEY_LEFT, ord("h")):
             node = items[sel]
             if node.kind in (ARTIST, ALBUM) and node.expanded:
                 node.expanded = False

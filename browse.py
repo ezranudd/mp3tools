@@ -1276,7 +1276,7 @@ def _run(stdscr, artists: list[Node], root: Path, root_str: str) -> None:
                 else:
                     sel = _expand(node, artists, sel)
 
-        elif key == curses.KEY_RIGHT:
+        elif key in (curses.KEY_RIGHT, ord("l")):
             node = items[sel]
             if node.kind != TRACK:
                 if not node.expanded:
@@ -1284,7 +1284,7 @@ def _run(stdscr, artists: list[Node], root: Path, root_str: str) -> None:
                 elif sel + 1 < total and items[sel + 1].parent is node:
                     sel += 1
 
-        elif key == curses.KEY_LEFT:
+        elif key in (curses.KEY_LEFT, ord("h")):
             node = items[sel]
             if node.kind in (ARTIST, ALBUM) and node.expanded:
                 node.expanded = False

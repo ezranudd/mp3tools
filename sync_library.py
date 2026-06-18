@@ -459,8 +459,9 @@ def draw_artist_menu(
         status_bar(stdscr, flash)
     else:
         status_bar(stdscr, keyhints([
-            ("j/k", "Move"), ("Space", "Toggle"), ("→/←", "Expand/Collapse"),
-            ("a", "All"), ("n", "None"), ("s", "Sync"), ("q", "Back"),
+            ("j/k", "Move"), ("g/G", "Top/Bottom"), ("Space", "Toggle"),
+            ("→/←", "Expand/Collapse"), ("a", "All"), ("n", "None"),
+            ("s", "Sync"), ("q", "Back"),
         ]))
     stdscr.refresh()
 
@@ -673,6 +674,10 @@ def _run_curses(stdscr, library: Path, device: Path, dry_run: bool, artists: lis
             sel = max(0, sel - list_h)
         elif key == curses.KEY_NPAGE:
             sel = min(len(rows) - 1, sel + list_h)
+        elif key in (ord("g"), curses.KEY_HOME):
+            sel = 0
+        elif key in (ord("G"), curses.KEY_END):
+            sel = len(rows) - 1
         elif key in (curses.KEY_RIGHT, ord("l")):
             if bi is None:
                 ensure_albums(artist)
