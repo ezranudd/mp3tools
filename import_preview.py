@@ -21,15 +21,17 @@ from termtext import cell_width, clip_cells, fit_cells
 from browse import (
     Node, ARTIST, ALBUM, TRACK,
     visible,
-    _init_colors, _put, _text_input, _choose,
+    _put, _text_input, _choose,
     _normalize, _extract_year,
-    C_ARTIST, C_ALBUM, C_TRACK, C_HDR, C_BAR, C_DIM,
+)
+from ui import (
+    init_colors as _init_colors,
+    C_ARTIST, C_ALBUM, C_TRACK, C_HDR, C_BAR, C_DIM, C_FMT,
 )
 from convert_lossless import LOSSLESS_EXTENSIONS
 
 BITRATES       = [192, 256, 320]
 _DEFAULT_RATE  = 320
-C_FMT          = 8   # green — format badge [FLAC] etc.
 
 
 # ── Key helpers ───────────────────────────────────────────────────────────────
@@ -461,10 +463,6 @@ def _edit(stdscr, node: Node, entries: list[tuple[Path, dict]]) -> bool:
 def _run(stdscr, entries: list[tuple[Path, dict]],
          has_lossless: bool) -> bool:
     _init_colors()
-    try:
-        curses.init_pair(C_FMT, curses.COLOR_GREEN, -1)
-    except curses.error:
-        pass
     curses.curs_set(0)
     stdscr.keypad(True)
 

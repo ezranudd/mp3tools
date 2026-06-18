@@ -16,14 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from termtext import cell_width, clip_cells, fit_cells
-
-
-C_HDR = 1
-C_BAR = 2
-C_SEL = 3
-C_DIM = 4
-C_OK  = 5
-C_WARN = 6
+from ui import C_HDR, C_BAR, C_SEL, C_DIM, C_OK, C_WARN, init_colors as _init_colors
 
 
 @dataclass
@@ -338,20 +331,6 @@ def combined_plan(library: Path, device: Path, artists: list[ArtistInfo]) -> Syn
                 add(make_plan(album.path, device / artist.path.name / album.path.name))
 
     return SyncPlan(all_copy, all_remove_files, all_remove_dirs, copy_bytes, remove_bytes)
-
-
-def _init_colors() -> None:
-    try:
-        curses.start_color()
-        curses.use_default_colors()
-        curses.init_pair(C_HDR, curses.COLOR_WHITE, curses.COLOR_BLUE)
-        curses.init_pair(C_BAR, curses.COLOR_BLACK, curses.COLOR_CYAN)
-        curses.init_pair(C_SEL, curses.COLOR_BLACK, curses.COLOR_WHITE)
-        curses.init_pair(C_DIM, curses.COLOR_WHITE, -1)
-        curses.init_pair(C_OK, curses.COLOR_GREEN, -1)
-        curses.init_pair(C_WARN, curses.COLOR_YELLOW, -1)
-    except curses.error:
-        pass
 
 
 def _put(win, y: int, x: int, text: str, attr: int = 0) -> None:

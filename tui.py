@@ -18,28 +18,14 @@ os.environ.setdefault("ESCDELAY", "25")
 
 import browse as _browse_mod
 from browse import (
-    C_HDR, C_BAR, C_DIM, C_ARTIST, C_ALBUM, C_TRACK, C_EDIT,
-    _init_colors as _init_browse_colors,
     _put, _text_input, _choose,
     build_tree,
 )
-
-# TUI-only color pairs (8+, no conflict with browse's 1-7)
-C_SEL  = 8    # selected row: black on white
-C_OK   = 9    # green
-C_WARN = 10   # yellow
-C_ERR  = 11   # red
-
-
-def _init_colors() -> None:
-    _init_browse_colors()
-    try:
-        curses.init_pair(C_SEL,  curses.COLOR_BLACK,  curses.COLOR_WHITE)
-        curses.init_pair(C_OK,   curses.COLOR_GREEN,  -1)
-        curses.init_pair(C_WARN, curses.COLOR_YELLOW, -1)
-        curses.init_pair(C_ERR,  curses.COLOR_RED,    -1)
-    except curses.error:
-        pass
+from ui import (
+    C_HDR, C_BAR, C_DIM, C_ARTIST, C_ALBUM, C_TRACK, C_EDIT,
+    C_SEL, C_OK, C_WARN, C_ERR,
+    init_colors as _init_colors,
+)
 
 
 # ── App state ─────────────────────────────────────────────────────────────────
@@ -269,7 +255,7 @@ class AsyncOperationView(View):
             from import_preview import run_preview_in_session
             stdscr.timeout(-1)
             try:
-                _init_browse_colors()
+                _init_colors()
                 req.response = run_preview_in_session(
                     stdscr,
                     req.entries,  # type: ignore[arg-type]

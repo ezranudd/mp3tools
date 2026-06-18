@@ -302,29 +302,13 @@ def _track_width(album: Node) -> int:
 
 
 # ── Color pairs ───────────────────────────────────────────────────────────────
+# Canonical palette lives in ui.py; imported here (and re-exported) so callers
+# and this module's drawing code share one set of pair numbers.
 
-C_ARTIST = 1   # bold yellow
-C_ALBUM  = 2   # cyan
-C_TRACK  = 3   # default fg
-C_HDR    = 4   # white on blue   (header bar)
-C_BAR    = 5   # black on cyan   (status bar)
-C_DIM    = 6   # dim white       (aside counts)
-C_EDIT   = 7   # magenta         (pending-edit preview nodes)
-
-
-def _init_colors() -> None:
-    try:
-        curses.start_color()
-        curses.use_default_colors()
-        curses.init_pair(C_ARTIST, curses.COLOR_YELLOW,  -1)
-        curses.init_pair(C_ALBUM,  curses.COLOR_CYAN,    -1)
-        curses.init_pair(C_TRACK,  -1,                   -1)
-        curses.init_pair(C_HDR,    curses.COLOR_WHITE,   curses.COLOR_BLUE)
-        curses.init_pair(C_BAR,    curses.COLOR_BLACK,   curses.COLOR_CYAN)
-        curses.init_pair(C_DIM,    curses.COLOR_WHITE,   -1)
-        curses.init_pair(C_EDIT,   curses.COLOR_MAGENTA, -1)
-    except curses.error:
-        pass
+from ui import (
+    C_ARTIST, C_ALBUM, C_TRACK, C_HDR, C_BAR, C_DIM, C_EDIT,
+    init_colors as _init_colors,
+)
 
 
 # ── Drawing ───────────────────────────────────────────────────────────────────
