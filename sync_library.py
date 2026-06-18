@@ -9,6 +9,7 @@ skipped, missing or changed files are copied, and stale device files are removed
 
 import argparse
 import curses
+import os
 import shutil
 import sys
 from dataclasses import dataclass
@@ -26,12 +27,25 @@ C_WARN = 6
 
 
 @dataclass
+class AlbumInfo:
+    path: Path
+    size: int | None = None         # None until computed (lazy, local walk)
+    files: int | None = None
+    device_status: str | None = None  # None until computed (lazy, device walk)
+    selected: bool = False
+
+
+@dataclass
 class ArtistInfo:
     path: Path
-    size: int
-    files: int
-    device_status: str
-    selected: bool = False
+    size: int | None = None           # None until computed (lazy, local walk)
+    files: int | None = None
+    device_status: str | None = None  # None until computed (lazy, device walk)
+    albums: list[AlbumInfo] | None = None  # None until enumerated
+    expanded: bool = False
+    # Used only for artists with no album subfolders (loose tracks): the whole
+    # artist folder is the syncable unit.
+    whole_selected: bool = False
 
 
 @dataclass
@@ -91,6 +105,13 @@ def artist_dirs(library: Path) -> list[Path]:
     return sorted(seen)
 
 
+def album_dirs(artist: Path) -> list[Path]:
+    return sorted(
+        d for d in artist.iterdir()
+        if d.is_dir() and not d.name.startswith(".") and any(d.rglob("*.mp3"))
+    )
+
+
 def synced_albums(device_artist: Path) -> list[str]:
     if not device_artist.is_dir():
         return []
@@ -127,21 +148,111 @@ def compare_artist(src_artist: Path, dst_artist: Path) -> str:
     return ", ".join(parts)
 
 
-def build_artist_info(library: Path, device: Path) -> list[ArtistInfo]:
-    infos = []
-    for artist in artist_dirs(library):
-        size, files = folder_size(artist)
-        infos.append(ArtistInfo(
-            path=artist,
-            size=size,
-            files=files,
-            device_status=compare_artist(artist, device / artist.name),
-        ))
-    return infos
+def build_artist_info(library: Path) -> list[ArtistInfo]:
+    """List artist folders only. Sizes and device status are computed lazily,
+    so opening the sync screen stays fast even on a slow SD card."""
+    return [ArtistInfo(path=artist) for artist in artist_dirs(library)]
+
+
+def ensure_artist_size(artist: ArtistInfo) -> None:
+    if artist.size is None:
+        artist.size, artist.files = folder_size(artist.path)
+
+
+def ensure_artist_status(artist: ArtistInfo, device: Path) -> None:
+    if artist.device_status is None:
+        artist.device_status = compare_artist(artist.path, device / artist.path.name)
+
+
+def ensure_albums(artist: ArtistInfo) -> None:
+    if artist.albums is None:
+        artist.albums = [AlbumInfo(path=d) for d in album_dirs(artist.path)]
+
+
+def ensure_album_size(album: AlbumInfo) -> None:
+    if album.size is None:
+        album.size, album.files = folder_size(album.path)
+
+
+def ensure_album_status(album: AlbumInfo, artist: ArtistInfo, device: Path) -> None:
+    if album.device_status is None:
+        album.device_status = compare_artist(
+            album.path, device / artist.path.name / album.path.name
+        )
+
+
+def artist_sel_state(artist: ArtistInfo) -> str:
+    """'all', 'some', or 'none' selected — drives the [x]/[~]/[ ] marker."""
+    if artist.albums is None:
+        return "none"
+    if not artist.albums:
+        return "all" if artist.whole_selected else "none"
+    sels = [a.selected for a in artist.albums]
+    if all(sels):
+        return "all"
+    if any(sels):
+        return "some"
+    return "none"
+
+
+def toggle_artist(artist: ArtistInfo) -> None:
+    """Toggle every album of an artist on/off (select-all unless already all)."""
+    ensure_albums(artist)
+    if not artist.albums:
+        artist.whole_selected = not artist.whole_selected
+        return
+    target = artist_sel_state(artist) != "all"
+    for album in artist.albums:
+        album.selected = target
+
+
+def set_all_selected(artists: list[ArtistInfo], selected: bool) -> None:
+    for artist in artists:
+        ensure_albums(artist)
+        if not artist.albums:
+            artist.whole_selected = selected
+        else:
+            for album in artist.albums:
+                album.selected = selected
+
+
+def selection_summary(artists: list[ArtistInfo]) -> tuple[int, int]:
+    """Return (artists with a selection, total albums selected)."""
+    n_artists = 0
+    n_albums = 0
+    for artist in artists:
+        if artist.albums is None:
+            continue
+        if not artist.albums:
+            if artist.whole_selected:
+                n_artists += 1
+        else:
+            sel = sum(1 for a in artist.albums if a.selected)
+            if sel:
+                n_artists += 1
+                n_albums += sel
+    return n_artists, n_albums
 
 
 def selected_size(artists: list[ArtistInfo]) -> int:
-    return sum(a.size for a in artists if a.selected)
+    total = 0
+    for artist in artists:
+        if artist.albums is None:
+            continue
+        if not artist.albums:
+            if artist.whole_selected:
+                ensure_artist_size(artist)
+                total += artist.size or 0
+            continue
+        sel = [a for a in artist.albums if a.selected]
+        if sel and len(sel) == len(artist.albums):
+            ensure_artist_size(artist)
+            total += artist.size or 0
+        else:
+            for album in sel:
+                ensure_album_size(album)
+                total += album.size or 0
+    return total
 
 
 def existing_device_artists(device: Path) -> list[tuple[str, list[str]]]:
@@ -195,15 +306,36 @@ def combined_plan(library: Path, device: Path, artists: list[ArtistInfo]) -> Syn
     copy_bytes = 0
     remove_bytes = 0
 
-    for artist in artists:
-        if not artist.selected:
-            continue
-        plan = make_plan(artist.path, device / artist.path.name)
+    def add(plan: SyncPlan) -> None:
+        nonlocal copy_bytes, remove_bytes
         all_copy.extend(plan.copy_files)
         all_remove_files.extend(plan.remove_files)
         all_remove_dirs.extend(plan.remove_dirs)
         copy_bytes += plan.bytes_to_copy
         remove_bytes += plan.bytes_to_remove
+
+    for artist in artists:
+        if artist.albums is None:
+            continue
+        if not artist.albums:
+            # Loose tracks directly under the artist folder: mirror the whole
+            # artist folder when selected.
+            if artist.whole_selected:
+                add(make_plan(artist.path, device / artist.path.name))
+            continue
+
+        selected = [a for a in artist.albums if a.selected]
+        if not selected:
+            continue
+        if len(selected) == len(artist.albums):
+            # Whole artist selected: mirror the artist folder so albums removed
+            # from the library are also pruned from the device.
+            add(make_plan(artist.path, device / artist.path.name))
+        else:
+            # Partial selection: mirror only the chosen album folders. Unselected
+            # albums already on the device are left untouched.
+            for album in selected:
+                add(make_plan(album.path, device / artist.path.name / album.path.name))
 
     return SyncPlan(all_copy, all_remove_files, all_remove_dirs, copy_bytes, remove_bytes)
 
@@ -254,11 +386,31 @@ def _existing_lines(existing: list[tuple[str, list[str]]], limit: int) -> list[s
     return lines[:limit]
 
 
+def build_rows(artists: list[ArtistInfo]) -> list[tuple[int, int | None]]:
+    """Flatten artists (and expanded albums) into navigable display rows.
+
+    Each row is (artist_index, album_index) where album_index is None for an
+    artist row and an int for an album row under an expanded artist.
+    """
+    rows: list[tuple[int, int | None]] = []
+    for ai, artist in enumerate(artists):
+        rows.append((ai, None))
+        if artist.expanded and artist.albums:
+            for bi in range(len(artist.albums)):
+                rows.append((ai, bi))
+    return rows
+
+
+def _mark(state: str) -> str:
+    return {"all": "x", "some": "~", "none": " "}.get(state, " ")
+
+
 def draw_artist_menu(
     stdscr,
     library: Path,
     device: Path,
     artists: list[ArtistInfo],
+    rows: list[tuple[int, int | None]],
     existing: list[tuple[str, list[str]]],
     dry_run: bool,
     sel: int,
@@ -268,7 +420,7 @@ def draw_artist_menu(
     h, w = stdscr.getmaxyx()
     stdscr.erase()
     usage = shutil.disk_usage(device)
-    selected_count = sum(1 for a in artists if a.selected)
+    n_artists, n_albums = selection_summary(artists)
 
     mode = "DRY RUN" if dry_run else "LIVE"
     header = f" SYNC  {mode}  Library: {library}  Device: {device} "
@@ -276,7 +428,9 @@ def draw_artist_menu(
 
     summary = (
         f"Free {format_size(usage.free)} / {format_size(usage.total)}   "
-        f"Selected {selected_count}/{len(artists)} artists, {format_size(selected_size(artists))}"
+        f"Selected {n_artists} artist{'s' if n_artists != 1 else ''}"
+        f"/{n_albums} album{'s' if n_albums != 1 else ''}, "
+        f"{format_size(selected_size(artists))}"
     )
     _put(stdscr, 1, 1, summary, curses.A_BOLD)
 
@@ -285,22 +439,33 @@ def draw_artist_menu(
     list_w = max(20, right_x - 2)
     list_h = max(4, h - 5)
 
-    _put(stdscr, 3, 1, "Artists", curses.A_BOLD)
+    _put(stdscr, 3, 1, "Artists / albums", curses.A_BOLD)
     _put(stdscr, 3, right_x, "Already on device", curses.A_BOLD)
 
-    visible = artists[scroll:scroll + list_h]
-    for i, artist in enumerate(visible):
+    name_w = max(12, list_w - 55)
+    status_w = max(0, list_w - 35 - name_w)
+    for i, (ai, bi) in enumerate(rows[scroll:scroll + list_h]):
         idx = scroll + i
         y = 4 + i
-        mark = "x" if artist.selected else " "
-        name_w = max(12, list_w - 55)
-        status_w = max(0, list_w - 33 - name_w)
-        prefix = f"[{mark}] {idx + 1:>3}. "
-        name_col = fit_cells(artist.path.name, name_w)
-        status_col = clip_cells(artist.device_status, status_w)
+        artist = artists[ai]
+        if bi is None:
+            ensure_artist_size(artist)
+            ensure_artist_status(artist, device)
+            glyph = "v" if artist.expanded else ">"
+            prefix = f"{glyph} [{_mark(artist_sel_state(artist))}] "
+            name_col = fit_cells(artist.path.name, name_w)
+            size, files, status = artist.size, artist.files, artist.device_status
+        else:
+            album = artist.albums[bi]
+            ensure_album_size(album)
+            ensure_album_status(album, artist, device)
+            prefix = f"    [{'x' if album.selected else ' '}] "
+            name_col = fit_cells(album.path.name, name_w)
+            size, files, status = album.size, album.files, album.device_status
         row = (
             f"{prefix}{name_col} "
-            f"{format_size(artist.size):>9} {artist.files:>5} files  {status_col}"
+            f"{format_size(size or 0):>9} {files or 0:>5} files  "
+            f"{clip_cells(status or '', status_w)}"
         )
         attr = curses.color_pair(C_SEL) if idx == sel else 0
         _put(stdscr, y, 1, fit_cells(row, list_w), attr)
@@ -309,7 +474,7 @@ def draw_artist_menu(
     for i, line in enumerate(_existing_lines(existing, right_h)):
         _put(stdscr, 4 + i, right_x, clip_cells(line, max(10, w - right_x - 1)), curses.color_pair(C_DIM))
 
-    footer = " ↑↓/j/k Move  Space Toggle  a All  n None  s Sync  q Cancel "
+    footer = " j/k Move  Space Toggle  ←/→ Collapse/Expand  a All  n None  s Sync  q Cancel "
     if flash:
         footer = " " + flash
     _put(stdscr, h - 1, 0, fit_cells(footer, w - 1), curses.color_pair(C_BAR))
@@ -460,6 +625,13 @@ def apply_plan(stdscr, plan: SyncPlan, dry_run: bool) -> tuple[int, int, int]:
         draw_progress(stdscr, "Copy", label, done_files, total_files, done_bytes, total_bytes, dry_run)
         copied += 1
 
+    if not dry_run and (copied or removed_files):
+        # Flush OS write buffers to the card before reporting done, so the
+        # device is safe to unmount the moment "SYNC COMPLETE" appears.
+        draw_progress(stdscr, "Flushing buffers to device", "", total_files, total_files,
+                      total_bytes, total_bytes, dry_run)
+        os.sync()
+
     return copied, removed_files, removed_dirs
 
 
@@ -492,39 +664,56 @@ def _run_curses(stdscr, library: Path, device: Path, dry_run: bool, artists: lis
     while True:
         h, _ = stdscr.getmaxyx()
         list_h = max(4, h - 5)
-        sel = max(0, min(sel, len(artists) - 1))
+        rows = build_rows(artists)
+        sel = max(0, min(sel, len(rows) - 1))
         if sel < scroll:
             scroll = sel
         elif sel >= scroll + list_h:
             scroll = sel - list_h + 1
         scroll = max(0, scroll)
 
-        draw_artist_menu(stdscr, library, device, artists, existing, dry_run, sel, scroll, flash)
+        draw_artist_menu(stdscr, library, device, artists, rows, existing, dry_run, sel, scroll, flash)
         flash = ""
         key = stdscr.getch()
+
+        ai, bi = rows[sel]
+        artist = artists[ai]
 
         if key in (ord("q"), ord("Q"), 27):
             return 0
         if key in (curses.KEY_UP, ord("k")):
             sel = max(0, sel - 1)
         elif key in (curses.KEY_DOWN, ord("j")):
-            sel = min(len(artists) - 1, sel + 1)
+            sel = min(len(rows) - 1, sel + 1)
         elif key == curses.KEY_PPAGE:
             sel = max(0, sel - list_h)
         elif key == curses.KEY_NPAGE:
-            sel = min(len(artists) - 1, sel + list_h)
+            sel = min(len(rows) - 1, sel + list_h)
+        elif key in (curses.KEY_RIGHT, ord("l")):
+            if bi is None:
+                ensure_albums(artist)
+                if artist.albums:
+                    artist.expanded = True
+        elif key in (curses.KEY_LEFT, ord("h")):
+            if bi is None:
+                artist.expanded = False
+            else:
+                # Collapse back to the parent artist row.
+                artist.expanded = False
+                sel = next((i for i, r in enumerate(build_rows(artists)) if r == (ai, None)), sel)
         elif key in (ord(" "), 10, 13):
-            artists[sel].selected = not artists[sel].selected
+            if bi is None:
+                toggle_artist(artist)
+            else:
+                artist.albums[bi].selected = not artist.albums[bi].selected
         elif key in (ord("a"), ord("A")):
-            for artist in artists:
-                artist.selected = True
+            set_all_selected(artists, True)
         elif key in (ord("n"), ord("N")):
-            for artist in artists:
-                artist.selected = False
+            set_all_selected(artists, False)
         elif key in (ord("s"), ord("S")):
-            selected_count = sum(1 for a in artists if a.selected)
-            if selected_count == 0:
-                flash = "No artists selected."
+            n_artists, _ = selection_summary(artists)
+            if n_artists == 0:
+                flash = "Nothing selected."
                 continue
             plan = combined_plan(library, device, artists)
             usage = shutil.disk_usage(device)
@@ -532,7 +721,7 @@ def _run_curses(stdscr, library: Path, device: Path, dry_run: bool, artists: lis
             if net_needed > usage.free:
                 flash = f"Not enough free space: need {format_size(net_needed)}, free {format_size(usage.free)}."
                 continue
-            if not confirm_live(stdscr, plan, selected_count, usage.free, dry_run):
+            if not confirm_live(stdscr, plan, n_artists, usage.free, dry_run):
                 flash = "Sync cancelled."
                 continue
             copied, removed_files, removed_dirs = apply_plan(stdscr, plan, dry_run)
@@ -556,7 +745,7 @@ def run_sync(library: Path, device: Path, dry_run: bool) -> int:
         print("ERROR: device cannot be the library directory or inside it", file=sys.stderr)
         return 1
 
-    artists = build_artist_info(library, device)
+    artists = build_artist_info(library)
     if not artists:
         print("No artist folders found in library.")
         return 0
@@ -569,7 +758,7 @@ def run_sync(library: Path, device: Path, dry_run: bool) -> int:
 
 def run_in_session(stdscr, library: Path, device: Path, dry_run: bool) -> None:
     """Enter sync view using an already-active curses session."""
-    artists = build_artist_info(library, device)
+    artists = build_artist_info(library)
     if not artists:
         return
     _init_colors()
