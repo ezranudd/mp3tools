@@ -9,6 +9,14 @@
           --muted:#9aa0b5; --accent:#7aa2f7; --ok:#9ece6a; --err:#f7768e;
           --warn:#e0af68; }
   * { box-sizing: border-box; }
+  /* Themed scrollbars (Firefox) */
+  * { scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+  /* Themed scrollbars (WebKit/Blink) */
+  ::-webkit-scrollbar { width:10px; height:10px; }
+  ::-webkit-scrollbar-track { background:transparent; }
+  ::-webkit-scrollbar-thumb { background:var(--line); border-radius:5px; }
+  ::-webkit-scrollbar-thumb:hover { background:var(--muted); }
+  ::-webkit-scrollbar-corner { background:transparent; }
   body { margin:0; font:14px/1.4 system-ui, sans-serif; color:var(--fg);
          background:var(--bg); height:100vh; display:flex; flex-direction:column; }
   header { padding:10px 16px; background:var(--panel); border-bottom:1px solid var(--line);
