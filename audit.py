@@ -486,6 +486,65 @@ def scan(root: Path) -> list[tuple[Path, list[Issue], list[tuple]]]:
     return results
 
 
+def scan_json(root: Path) -> dict:
+    """JSON-safe view of scan() for the web UI.
+
+    {
+      "root": str,
+      "category_labels": {cat: label, ...},
+      "albums": [
+        {
+          "path": str, "name": str,
+          "album_issues": [{"cat", "label", "msg"}, ...],
+          "files": [{"path", "name", "issues": [{"cat","label","msg"}, ...]}, ...]
+        }, ...
+      ],
+      "totals": {"albums", "albums_with_issues", "files", "files_with_issues"}
+    }
+    """
+    def issue_json(iss: "Issue") -> dict:
+        return {"cat": iss.cat,
+                "label": CATEGORY_LABELS.get(iss.cat, iss.cat),
+                "msg": iss.msg}
+
+    results = scan(root)
+    albums = []
+    albums_with_issues = files = files_with_issues = 0
+    for album_folder, album_issues, file_results in results:
+        files += len(file_results)
+        file_entries = []
+        any_file_issue = False
+        for mp3_path, _tags, issues in file_results:
+            if issues:
+                files_with_issues += 1
+                any_file_issue = True
+            file_entries.append({
+                "path": str(mp3_path),
+                "name": mp3_path.name,
+                "issues": [issue_json(i) for i in issues],
+            })
+        if album_issues or any_file_issue:
+            albums_with_issues += 1
+        albums.append({
+            "path": str(album_folder),
+            "name": album_folder.name,
+            "album_issues": [issue_json(i) for i in album_issues],
+            "files": file_entries,
+        })
+
+    return {
+        "root": str(root),
+        "category_labels": dict(CATEGORY_LABELS),
+        "albums": albums,
+        "totals": {
+            "albums": len(results),
+            "albums_with_issues": albums_with_issues,
+            "files": files,
+            "files_with_issues": files_with_issues,
+        },
+    }
+
+
 # ─── Report ───────────────────────────────────────────────────────────────────
 
 def print_report(results: list, root: Path, show_ok: bool) -> None:

@@ -262,6 +262,36 @@ def _write_tags(path: Path, updates: dict[str, str]) -> None:
     tags.save(path, v2_version=3, v1=0)
 
 
+# ── Public API (stable surface for non-curses consumers, e.g. server.py) ──────
+# These names are part of the supported interface; the leading-underscore
+# originals stay as the TUI's internal call sites. Keep behaviour identical.
+
+def read_tags(path: Path) -> dict[str, str]:
+    """Read ID3 tags from *path* as a plain dict (see _read_tags)."""
+    return _read_tags(path)
+
+
+def track_label(tags: dict[str, str], fallback: str) -> str:
+    """Human label for a track given its tag dict (see _track_label)."""
+    return _track_label(tags, fallback)
+
+
+def write_tags(path: Path, updates: dict[str, str]) -> None:
+    """Write tag *updates* (frame ids; ``ALBUMARTIST`` special) to *path*."""
+    _write_tags(path, updates)
+
+
+def album_search_terms(album: Node) -> tuple[str, str]:
+    """Return (artist, album_title) for an art search from an ALBUM node."""
+    return _album_search_terms(album)
+
+
+def apply_art_to_album(album: Node, data: bytes, mime: str,
+                       cover_art: str, cover_art_size: int) -> tuple[int, int]:
+    """Write/embed art for *album*. Returns (updated, errors)."""
+    return _apply_art_to_album(album, data, mime, cover_art, cover_art_size)
+
+
 # ── Visible flat list ─────────────────────────────────────────────────────────
 
 def visible(artists: list[Node]) -> list[Node]:
@@ -704,6 +734,53 @@ def _apply_pending(pending: list[PendingEdit]) -> tuple[bool, str]:
                 errors.append(f"rmdir:{path.name}: {exc}")
 
     return (not errors), "  |  ".join(errors)
+
+
+# ── Public edit API (curses-free; for server.py) ──────────────────────────────
+# Maps an (op, value) request to the matching pure _build_* function and applies
+# it via _apply_pending. The TUI's _do_edit dispatcher stays as the curses path.
+
+_EDIT_BUILDERS = {
+    "artist_rename": (ARTIST, _build_artist_rename),
+    "artist_genre":  (ARTIST, _build_artist_genre),
+    "album_title":   (ALBUM,  _build_album_title),
+    "album_year":    (ALBUM,  _build_album_year),
+    "album_genre":   (ALBUM,  _build_album_genre),
+    "album_artist":  (ALBUM,  _build_album_artist),
+    "track_title":   (TRACK,  _build_track_title),
+    "track_artist":  (TRACK,  _build_track_artist),
+}
+
+
+def find_node(root: Path, path: Path) -> "Node | None":
+    """Locate the Node whose .path == *path* within build_tree(root)."""
+    path = Path(path)
+    stack = list(build_tree(root))
+    while stack:
+        node = stack.pop()
+        if node.path == path:
+            return node
+        stack.extend(node.children)
+    return None
+
+
+def build_edit(root: Path, node_path: Path, op: str, value: str) -> "PendingEdit | None":
+    """Build a PendingEdit for *op* on the node at *node_path* (nothing written)."""
+    spec = _EDIT_BUILDERS.get(op)
+    if spec is None:
+        raise ValueError(f"unknown edit op: {op!r}")
+    expected_kind, builder = spec
+    node = find_node(root, node_path)
+    if node is None or node.kind != expected_kind:
+        return None
+    if node.kind == TRACK and not node.tags and node.parent:
+        load_album_tags(node.parent)
+    return builder(node, value)
+
+
+def apply_edits(edits: "list[PendingEdit]") -> tuple[bool, str]:
+    """Apply a list of PendingEdits to disk. Returns (ok, error_string)."""
+    return _apply_pending(edits)
 
 
 # ── Edit dispatcher ───────────────────────────────────────────────────────────

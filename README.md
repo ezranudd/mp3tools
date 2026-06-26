@@ -45,6 +45,52 @@ python standardize.py -n ~/Music   # dry run
 | `ffmpeg`                | WAV→FLAC and lossless→MP3 conversion               | `sudo apt install ffmpeg`                            |
 | `cd-discid`             | CDDB disc ID fallback (when discid unavailable)    | `sudo apt install cd-discid`                         |
 | `cd-info`               | CD-Text reading                                    | `sudo apt install libcdio-utils`                     |
+| `fastapi` + `uvicorn`   | Optional web UI (see below)                        | `pip install -e ".[web]" --break-system-packages`    |
+| `pywebview`             | `--desktop` native-window mode for the web UI      | `pip install -e ".[desktop]" --break-system-packages`|
+
+## Web UI
+
+An optional browser interface for previewing cover art and editing track tags.
+It is a thin [FastAPI](https://fastapi.tiangolo.com/) shell over the same library
+modules the TUI uses — no business logic is duplicated.
+
+```bash
+# install the web extra (pulls in fastapi + uvicorn)
+pip install -e ".[web]" --break-system-packages
+
+# serve a library, then open the printed URL
+python server.py ~/Music          # or: mp3tools-web ~/Music
+# → http://127.0.0.1:8765
+```
+
+The left nav switches between views:
+
+- **Browse** — artist/album tree; click an album to edit track titles/artists
+  inline (**Save tags**), rename the album, change year/genre, move it to a
+  different album artist, **Find artwork** (search online sources and apply a
+  cover), or **Remove art**. Edit an artist (rename / set genre) from the ✎ on
+  its row. All structural edits go through the same builders the TUI uses.
+- **Audit** — read-only compliance scan, grouped by album with category labels.
+- **Standardize** — runs the full pipeline using your saved Settings. Interactive
+  steps (fill missing tags, confirm deletions, choose lossless bitrate) prompt
+  right in the browser.
+- **Import** — copy tracks from a source folder into the library; review an
+  editable preview, then answer any prompts.
+- **Settings** — edit every option (cover-art mode, preserve flags, art sources,
+  API keys) and save to `{root}/.mp3tools`.
+
+Standardize and Import run as background **jobs** with a live log; the browser
+polls each job and surfaces its prompts as dialogs (the same callback contract
+the TUI uses). Only one operation runs at a time. Tag rules (ID3v2.3, `TPE2`
+album-artist, etc.) are enforced by the shared modules exactly as in the TUI.
+
+Pass `--host`/`--port` to change the bind address, or `--desktop` (requires the
+`desktop` extra) to open in a native window instead of a browser tab.
+
+> **Heads-up:** edits, standardize, and import all write to disk. Point the
+> server at a copy of your library if you want to experiment safely.
+>
+> CD ripping and device sync are not in the web UI yet — use the TUI for those.
 
 ## Features
 
