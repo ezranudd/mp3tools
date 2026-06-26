@@ -1,14 +1,35 @@
-// Browse view: library tree (left) + album detail (right) with inline + structural edits.
+// Browse view: library tree (left) + detail (right).
+// Selecting an album shows that album; selecting an artist shows ALL its albums.
+// Read-only in Browse mode; inline auto-saving fields in Edit mode.
 import { jget, jpost, toast, escapeHtml, escapeAttr } from "./util.js";
+import { isEdit, onModeChange } from "./mode.js";
 import * as edit from "./edit.js";
 
-let CURRENT = null;   // { path, tracks, artist, album }
+let CURRENT = null;   // { kind: "album" | "artist", path }
+let TREE = [];        // artist nodes from /api/tree
 let treeEl, detailEl;
+let subscribed = false;
 
 export async function show(container) {
-  container.innerHTML = `<nav id="tree"></nav><section id="detail"><p class="muted">Select an album.</p></section>`;
+  container.innerHTML = `<nav id="tree"></nav><section id="detail"><p class="muted">Select an artist or album.</p></section>`;
   treeEl = container.querySelector("#tree");
   detailEl = container.querySelector("#detail");
+  if (!subscribed) {
+    subscribed = true;
+    // Re-render when the mode flips (only matters while the Browse view is mounted).
+    onModeChange(() => {
+      if (!treeEl || !treeEl.isConnected) return;
+      loadTree().then(() => {
+        if (!CURRENT) return;
+        if (CURRENT.kind === "album") {
+          highlightAlbum(CURRENT.path);
+          selectAlbum(CURRENT.path, albumNodeEl(CURRENT.path));
+        } else {
+          selectArtist(CURRENT.path);
+        }
+      });
+    });
+  }
   await loadTree();
 }
 
@@ -16,11 +37,32 @@ async function loadTree() {
   treeEl.innerHTML = `<p class="muted" style="padding:10px">Loading…</p>`;
   try {
     const data = await jget("/api/tree");
+    TREE = data.artists;
     treeEl.innerHTML = "";
-    for (const artist of data.artists) treeEl.appendChild(artistEl(artist));
-    if (!data.artists.length) treeEl.innerHTML = `<p class="muted" style="padding:10px">Empty library.</p>`;
+    for (const artist of TREE) treeEl.appendChild(artistEl(artist));
+    if (!TREE.length) treeEl.innerHTML = `<p class="muted" style="padding:10px">Empty library.</p>`;
   } catch (e) {
     treeEl.innerHTML = `<p class="err" style="padding:10px">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+// ── Tree nodes ────────────────────────────────────────────────────────────────
+
+function clearSel() {
+  treeEl.querySelectorAll(".node.sel").forEach(n => n.classList.remove("sel"));
+}
+function albumNodeEl(path) {
+  return path ? treeEl.querySelector(`.node.album[data-path="${CSS.escape(path)}"]`) : null;
+}
+function artistNodeEl(path) {
+  return path ? treeEl.querySelector(`.node.artist[data-path="${CSS.escape(path)}"]`) : null;
+}
+function expandArtist(headEl) {
+  const kids = headEl && headEl.nextElementSibling;
+  if (kids && kids.style.display === "none") {
+    kids.style.display = "block";
+    const c = headEl.querySelector(".caret");
+    if (c) c.textContent = "▾";
   }
 }
 
@@ -28,21 +70,25 @@ function artistEl(artist) {
   const wrap = document.createElement("div");
   const head = document.createElement("div");
   head.className = "node artist";
+  head.dataset.path = artist.path;
   head.innerHTML =
-    `<span class="nodeact" title="Edit artist">✎</span>` +
+    (isEdit() ? `<span class="nodeact" title="Edit artist">✎</span>` : "") +
     `<span class="caret">▸</span>${escapeHtml(artist.label)}`;
   const kids = document.createElement("div");
   kids.style.display = "none";
   for (const album of artist.children) kids.appendChild(albumEl(album));
-  head.querySelector(".caret").parentElement.onclick = null;
-  head.onclick = (e) => {
-    if (e.target.classList.contains("nodeact")) {
-      edit.editArtist(artist, loadTree);
-      return;
-    }
+
+  const caret = head.querySelector(".caret");
+  caret.onclick = (e) => {                 // caret toggles expand without changing the view
+    e.stopPropagation();
     const open = kids.style.display === "none";
     kids.style.display = open ? "block" : "none";
-    head.querySelector(".caret").textContent = open ? "▾" : "▸";
+    caret.textContent = open ? "▾" : "▸";
+  };
+  head.onclick = (e) => {
+    if (e.target.classList.contains("nodeact")) { edit.editArtist(artist, loadTree); return; }
+    expandArtist(head);
+    selectArtist(artist.path, head);
   };
   wrap.append(head, kids);
   return wrap;
@@ -52,17 +98,28 @@ function albumEl(album) {
   const el = document.createElement("div");
   el.className = "node album";
   el.textContent = album.label;
-  el.onclick = () => selectAlbum(album.path, el);
+  el.dataset.path = album.path;
+  el.onclick = (e) => { e.stopPropagation(); selectAlbum(album.path, el); };
   return el;
 }
 
-async function selectAlbum(path, el) {
-  document.querySelectorAll(".node.album.sel").forEach(n => n.classList.remove("sel"));
-  if (el) el.classList.add("sel");
+// Expand the owning artist and mark an album .sel by its path (after a tree reload).
+function highlightAlbum(path) {
+  clearSel();
+  const el = albumNodeEl(path);
+  if (!el) return;
+  expandArtist(el.parentElement.previousElementSibling);
+  el.classList.add("sel");
+  el.scrollIntoView({ block: "nearest" });
+}
+
+// ── Selection ─────────────────────────────────────────────────────────────────
+
+async function fetchAlbumState(path) {
   try {
     const data = await jget("/api/album?path=" + encodeURIComponent(path));
     const first = data.tracks[0] || {};
-    CURRENT = {
+    return {
       path,
       tracks: data.tracks,
       artist: first.albumartist || first.artist || "",
@@ -70,13 +127,95 @@ async function selectAlbum(path, el) {
       year: first.year || "",
       genre: first.genre || "",
     };
-    renderAlbum();
-  } catch (e) { toast(e.message, true); }
+  } catch (e) { toast(e.message, true); return null; }
 }
 
-function renderAlbum() {
-  const { path, tracks, artist, album, year, genre } = CURRENT;
-  const cover = "/api/cover?path=" + encodeURIComponent(path) + "&t=" + Date.now();
+async function selectAlbum(path, el) {
+  CURRENT = { kind: "album", path };
+  clearSel();
+  if (el) el.classList.add("sel");
+  const st = await fetchAlbumState(path);
+  if (!st || !isCurrent("album", path)) return;
+  detailEl.innerHTML = "";
+  const wrap = document.createElement("div");
+  detailEl.appendChild(wrap);
+  renderAlbumInto(wrap, st);
+}
+
+async function selectArtist(path, headEl) {
+  CURRENT = { kind: "artist", path };
+  clearSel();
+  headEl = headEl || artistNodeEl(path);
+  if (headEl) { headEl.classList.add("sel"); expandArtist(headEl); }
+  const artist = TREE.find(a => a.path === path);
+  if (!artist) { detailEl.innerHTML = `<p class="muted">Artist not found.</p>`; return; }
+  detailEl.innerHTML = `
+    <div class="artisthead">
+      <h2>${escapeHtml(artist.label)}</h2>
+      <div class="sub">${artist.children.length} album${artist.children.length === 1 ? "" : "s"}</div>
+    </div>
+    <div id="artistAlbums"></div>`;
+  const host = detailEl.querySelector("#artistAlbums");
+  if (!artist.children.length) { host.innerHTML = `<p class="muted">No albums.</p>`; return; }
+
+  const states = await Promise.all(artist.children.map(a => fetchAlbumState(a.path)));
+  if (!isCurrent("artist", path)) return;     // a newer selection won the race
+  host.innerHTML = "";
+  for (const st of states) {
+    if (!st) continue;
+    const sec = document.createElement("section");
+    sec.className = "albumsection";
+    host.appendChild(sec);
+    renderAlbumInto(sec, st);
+  }
+}
+
+function isCurrent(kind, path) {
+  return CURRENT && CURRENT.kind === kind && CURRENT.path === path;
+}
+
+async function refreshCurrent() {
+  if (!CURRENT) return;
+  if (CURRENT.kind === "album") selectAlbum(CURRENT.path, albumNodeEl(CURRENT.path));
+  else selectArtist(CURRENT.path);
+}
+
+// ── Album rendering (into an arbitrary container, bound to a state object) ─────
+
+function renderAlbumInto(container, st) {
+  return isEdit() ? renderAlbumEditInto(container, st) : renderAlbumBrowseInto(container, st);
+}
+
+function albumHead(st, innerMeta) {
+  const cover = "/api/cover?path=" + encodeURIComponent(st.path) + "&t=" + Date.now();
+  return `<div class="albumhead">
+      <img class="cover" src="${cover}" onerror="this.style.visibility='hidden'">
+      <div class="albummeta">${innerMeta}</div>
+    </div>`;
+}
+
+function renderAlbumBrowseInto(container, st) {
+  const { tracks, artist, album, year, genre } = st;
+  const sub = [artist || "(unknown artist)", year, genre].filter(Boolean).map(escapeHtml).join(" · ");
+  const rows = tracks.map(t => `
+    <tr>
+      <td class="num">${escapeHtml((t.track || "").split("/")[0])}</td>
+      <td>${escapeHtml(t.title || "")}</td>
+      <td>${escapeHtml(t.artist || "")}</td>
+      <td class="muted">${escapeHtml(t.bitrate ? t.bitrate + " kbps" : "")}</td>
+    </tr>`).join("");
+  container.innerHTML = albumHead(st, `
+      <h2>${escapeHtml(album || "(untitled)")}</h2>
+      <div class="sub">${sub}</div>
+      <div class="sub">${tracks.length} track${tracks.length === 1 ? "" : "s"}</div>`) + `
+    <table>
+      <thead><tr><th>#</th><th>Title</th><th>Artist</th><th>Rate</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
+function renderAlbumEditInto(container, st) {
+  const { tracks, artist, album, year, genre } = st;
   const rows = tracks.map(t => `
     <tr>
       <td class="num">${escapeHtml((t.track || "").split("/")[0])}</td>
@@ -86,64 +225,81 @@ function renderAlbum() {
                  value="${escapeAttr(t.artist || "")}"></td>
       <td class="muted">${escapeHtml(t.bitrate ? t.bitrate + " kbps" : "")}</td>
     </tr>`).join("");
-  detailEl.innerHTML = `
-    <div class="albumhead">
-      <img class="cover" src="${cover}" onerror="this.style.visibility='hidden'">
-      <div class="albummeta">
-        <h2>${escapeHtml(album || "(untitled)")}</h2>
-        <div class="sub">${escapeHtml(artist || "(unknown artist)")}${year ? " · " + escapeHtml(year) : ""}${genre ? " · " + escapeHtml(genre) : ""}</div>
-        <div class="sub">${tracks.length} track${tracks.length === 1 ? "" : "s"}</div>
-        <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
-          <button class="btn primary" data-act="save">Save tags</button>
-          <button class="btn" data-act="title">Rename</button>
-          <button class="btn" data-act="year">Year</button>
-          <button class="btn" data-act="genre">Genre</button>
-          <button class="btn" data-act="aartist">Album artist</button>
-          <button class="btn" data-act="art">Find artwork</button>
-          <button class="btn danger" data-act="rmart">Remove art</button>
-        </div>
+  container.innerHTML = albumHead(st, `
+      <input class="hdr title" data-op="album_title" value="${escapeAttr(album)}" placeholder="Album title">
+      <div class="sub" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+        <input class="hdr sub" data-op="album_artist" value="${escapeAttr(artist)}" placeholder="Album artist" style="width:200px"> ·
+        <input class="hdr sub year" data-op="album_year" value="${escapeAttr(year)}" placeholder="Year"> ·
+        <input class="hdr sub genre" data-op="album_genre" value="${escapeAttr(genre)}" placeholder="Genre">
       </div>
-    </div>
+      <div class="sub">${tracks.length} track${tracks.length === 1 ? "" : "s"}</div>
+      <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn" data-act="art">Find artwork</button>
+        <button class="btn danger" data-act="rmart">Remove art</button>
+      </div>`) + `
     <table>
       <thead><tr><th>#</th><th>Title</th><th>Artist</th><th>Rate</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>`;
 
-  detailEl.querySelectorAll("input.tag").forEach(inp => {
+  // Track tag inputs — auto-save on commit (frame-only write).
+  container.querySelectorAll("input.tag").forEach(inp => {
     inp._orig = inp.value;
     inp.oninput = () => inp.classList.toggle("dirty", inp.value !== inp._orig);
+    bindCommit(inp, () => commitTrackField(inp.dataset.path, inp.dataset.frame, inp.value, inp));
   });
 
-  const reload = () => selectAlbum(CURRENT.path, document.querySelector(".node.album.sel"));
-  const reloadTree = () => { loadTree(); detailEl.innerHTML = `<p class="muted">Select an album.</p>`; };
-  const acts = {
-    save: saveTags,
-    title: () => edit.runEdit(path, "album_title", "Rename album", album, reloadTree),
-    year: () => edit.runEdit(path, "album_year", "Album year", year, reloadTree),
-    genre: () => edit.runEdit(path, "album_genre", "Album genre", genre, reload),
-    aartist: () => edit.runEdit(path, "album_artist", "Move to album artist", artist, reloadTree),
-    art: findArt,
-    rmart: () => edit.removeArt(path, reload),
-  };
-  detailEl.querySelectorAll("[data-act]").forEach(b => b.onclick = () => acts[b.dataset.act]());
+  // Album header inputs — auto-save on commit (structural edit).
+  const orig = { album_title: album, album_artist: artist, album_year: year, album_genre: genre };
+  container.querySelectorAll("input.hdr[data-op]").forEach(inp => {
+    const op = inp.dataset.op;
+    bindCommit(inp, () => commitAlbumField(st, op, inp.value, orig[op]));
+  });
+
+  container.querySelector('[data-act="art"]').onclick = () => findArt(st);
+  container.querySelector('[data-act="rmart"]').onclick = () => edit.removeArt(st.path, refreshCurrent);
 }
 
-async function saveTags() {
-  const dirty = [...detailEl.querySelectorAll("input.tag.dirty")];
-  if (!dirty.length) { toast("No changes."); return; }
-  const byPath = {};
-  for (const inp of dirty) (byPath[inp.dataset.path] ||= {})[inp.dataset.frame] = inp.value;
+// Commit on blur or Enter (Enter blurs to fire the change once).
+function bindCommit(inp, fn) {
+  inp.addEventListener("change", fn);
+  inp.addEventListener("keydown", e => { if (e.key === "Enter") inp.blur(); });
+}
+
+async function commitTrackField(path, frame, value, inp) {
+  if (value === inp._orig) return;
   try {
-    for (const [path, updates] of Object.entries(byPath)) await jpost("/api/tags", { path, updates });
-    toast(`Saved ${dirty.length} change${dirty.length === 1 ? "" : "s"}.`);
-    selectAlbum(CURRENT.path, document.querySelector(".node.album.sel"));
+    await jpost("/api/tags", { path, updates: { [frame]: value } });
+    inp._orig = value;
+    inp.classList.remove("dirty");
+    toast("Saved.");
+  } catch (e) { toast(e.message, true); }
+}
+
+async function commitAlbumField(st, op, value, current) {
+  value = value.trim();
+  if (value === (current || "") || !value) return;
+  try {
+    const res = await jpost("/api/edit/apply", { path: st.path, op, value });
+    if (!res.ok || res.error) { toast(res.error || "Edit failed", true); return; }
+    toast(res.desc || "Saved.");
+    if (CURRENT.kind === "artist") {
+      await loadTree();
+      selectArtist(CURRENT.path);
+    } else if (op === "album_genre" || res.new_path === st.path) {
+      selectAlbum(st.path, albumNodeEl(st.path));
+    } else {
+      await loadTree();
+      highlightAlbum(res.new_path);
+      selectAlbum(res.new_path, albumNodeEl(res.new_path));
+    }
   } catch (e) { toast(e.message, true); }
 }
 
 // ── Artwork search/apply (uses the shared modal) ──────────────────────────────
-async function findArt() {
-  if (!CURRENT) return;
-  const { artist, album } = CURRENT;
+
+async function findArt(st) {
+  const { artist, album } = st;
   const { openModal, closeModal } = await import("./util.js");
   openModal(`<h3>Artwork — ${escapeHtml(artist)} / ${escapeHtml(album)}</h3>
     <div id="artBody" class="grid"><p class="muted">Searching…</p></div>
@@ -153,6 +309,7 @@ async function findArt() {
     const data = await jget(`/api/art/search?artist=${encodeURIComponent(artist)}&album=${encodeURIComponent(album)}`);
     const results = data.results || [];
     const body = document.getElementById("artBody");
+    if (!body) return;
     if (!results.length) { body.innerHTML = `<p class="muted">No results.</p>`; return; }
     body.innerHTML = "";
     for (const r of results) {
@@ -160,7 +317,7 @@ async function findArt() {
       card.className = "art";
       card.innerHTML = `<img src="${escapeAttr(r.url)}" loading="lazy">
         <div class="cap">${escapeHtml(r.source_label || r.source || "")}${r.size ? " · " + escapeHtml(r.size) : ""} · ${r.score ?? ""}</div>`;
-      card.onclick = () => applyArt(r.url, closeModal);
+      card.onclick = () => applyArt(st, r.url, closeModal);
       body.appendChild(card);
     }
   } catch (e) {
@@ -169,11 +326,11 @@ async function findArt() {
   }
 }
 
-async function applyArt(url, close) {
+async function applyArt(st, url, close) {
   try {
-    const res = await jpost("/api/art/apply", { path: CURRENT.path, url });
+    const res = await jpost("/api/art/apply", { path: st.path, url });
     close();
     toast(`Artwork applied (${res.updated} file${res.updated === 1 ? "" : "s"}).`);
-    renderAlbum();
+    refreshCurrent();
   } catch (e) { toast(e.message, true); }
 }

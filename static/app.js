@@ -1,5 +1,6 @@
 // Entry point: top nav + view router.
 import { jget, toast } from "./util.js";
+import { getMode, setMode, onModeChange } from "./mode.js";
 import * as browse from "./tree.js";
 import * as audit from "./audit.js";
 import * as standardize from "./standardize.js";
@@ -41,8 +42,26 @@ function buildNav() {
   }
 }
 
+function buildModeToggle() {
+  const wrap = document.getElementById("modeToggle");
+  const mk = (name, label) => {
+    const b = document.createElement("button");
+    b.textContent = label;
+    b.dataset.mode = name;
+    b.onclick = () => setMode(name);
+    return b;
+  };
+  wrap.append(mk("browse", "Browse"), mk("edit", "Edit"));
+  const reflect = () => {
+    for (const b of wrap.children) b.classList.toggle("active", b.dataset.mode === getMode());
+  };
+  reflect();
+  onModeChange(reflect);
+}
+
 async function init() {
   buildNav();
+  buildModeToggle();
   try {
     const data = await jget("/api/tree");
     document.getElementById("rootLabel").textContent = data.root;

@@ -137,10 +137,27 @@ def test_edit_album_year_moves_folder(client, tmp_path):
     album_path = tree["artists"][0]["children"][0]["path"]
     resp = client.post("/api/edit/apply",
                        json={"path": album_path, "op": "album_year", "value": "1999"})
-    assert resp.json()["ok"]
+    body = resp.json()
+    assert body["ok"]
+    # new_path reports the moved folder and it exists on disk.
+    assert body["new_path"] != album_path
+    assert body["new_path"].endswith("1999 - Test Album")
+    from pathlib import Path
+    assert Path(body["new_path"]).is_dir()
     artist_dir = tmp_path / "Test Artist"
     names = sorted(p.name for p in artist_dir.iterdir())
     assert any(n.startswith("1999 - ") for n in names)
+
+
+def test_edit_album_genre_keeps_path(client):
+    tree = client.get("/api/tree").json()
+    album_path = tree["artists"][0]["children"][0]["path"]
+    resp = client.post("/api/edit/apply",
+                       json={"path": album_path, "op": "album_genre", "value": "Jazz"})
+    body = resp.json()
+    assert body["ok"]
+    # genre is a tag-only edit — folder does not move.
+    assert body["new_path"] == album_path
 
 
 def test_edit_unknown_op_400(client):

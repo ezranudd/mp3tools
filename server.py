@@ -217,8 +217,20 @@ def api_edit_apply(body: EditRequest) -> JSONResponse:
         raise HTTPException(status_code=400, detail=str(e))
     if edit is None:
         raise HTTPException(status_code=400, detail="invalid or empty edit")
+    new_path = _edit_new_path(edit, node)
     ok, error = browse.apply_edits([edit])
-    return JSONResponse({"ok": ok, "desc": edit.desc, "error": error})
+    return JSONResponse({"ok": ok, "desc": edit.desc, "error": error,
+                         "new_path": str(new_path)})
+
+
+def _edit_new_path(edit, node: Path) -> Path:
+    """Best-effort path of *node* after the edit (album folder moves)."""
+    for old, new in edit.dir_renames:
+        if old == node:
+            return new
+    if node in edit.dir_removals and edit.file_renames:   # merge: tracks move out
+        return edit.file_renames[0][1].parent
+    return node
 
 
 # ── Art removal ───────────────────────────────────────────────────────────────
