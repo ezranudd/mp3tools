@@ -227,10 +227,10 @@ function renderAlbumEditInto(container, st) {
     </tr>`).join("");
   container.innerHTML = albumHead(st, `
       <input class="hdr title" data-op="album_title" value="${escapeAttr(album)}" placeholder="Album title">
-      <div class="sub" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
-        <input class="hdr sub" data-op="album_artist" value="${escapeAttr(artist)}" placeholder="Album artist" style="width:200px"> ·
-        <input class="hdr sub year" data-op="album_year" value="${escapeAttr(year)}" placeholder="Year"> ·
-        <input class="hdr sub genre" data-op="album_genre" value="${escapeAttr(genre)}" placeholder="Genre">
+      <div class="sub albumsub">
+        <input class="hdr sub" data-op="album_artist" value="${escapeAttr(artist)}" placeholder="Album artist"> ·
+        <input class="hdr sub" data-op="album_year" value="${escapeAttr(year)}" placeholder="Year"> ·
+        <input class="hdr sub" data-op="album_genre" value="${escapeAttr(genre)}" placeholder="Genre">
       </div>
       <div class="sub">${tracks.length} track${tracks.length === 1 ? "" : "s"}</div>
       <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
@@ -256,6 +256,12 @@ function renderAlbumEditInto(container, st) {
     bindCommit(inp, () => commitAlbumField(st, op, inp.value, orig[op]));
   });
 
+  // Size the sub-line fields to their content so the " · " separators stay tight.
+  container.querySelectorAll(".albumsub input.hdr").forEach(inp => {
+    autosizeField(inp);
+    inp.addEventListener("input", () => autosizeField(inp));
+  });
+
   container.querySelector('[data-act="art"]').onclick = () => findArt(st);
   container.querySelector('[data-act="rmart"]').onclick = () => edit.removeArt(st.path, refreshCurrent);
 }
@@ -264,6 +270,26 @@ function renderAlbumEditInto(container, st) {
 function bindCommit(inp, fn) {
   inp.addEventListener("change", fn);
   inp.addEventListener("keydown", e => { if (e.key === "Enter") inp.blur(); });
+}
+
+// Width an input to fit its value (or placeholder) using a hidden measuring span,
+// so inline header fields hug their content like the read-only text does.
+let _measureEl = null;
+function autosizeField(inp) {
+  if (!_measureEl) {
+    _measureEl = document.createElement("span");
+    _measureEl.style.cssText =
+      "position:absolute;left:-9999px;top:-9999px;visibility:hidden;white-space:pre;";
+    document.body.appendChild(_measureEl);
+  }
+  const cs = getComputedStyle(inp);
+  _measureEl.style.fontSize = cs.fontSize;
+  _measureEl.style.fontFamily = cs.fontFamily;
+  _measureEl.style.fontWeight = cs.fontWeight;
+  _measureEl.style.fontStyle = cs.fontStyle;
+  _measureEl.style.letterSpacing = cs.letterSpacing;
+  _measureEl.textContent = inp.value || inp.placeholder || "";
+  inp.style.width = (_measureEl.offsetWidth + 4) + "px";   // +4 for the caret
 }
 
 async function commitTrackField(path, frame, value, inp) {
