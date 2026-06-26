@@ -79,24 +79,29 @@
   .albumhead { display:flex; gap:18px; align-items:flex-start; margin-bottom:16px; }
   .cover { width:200px; height:200px; object-fit:cover; background:var(--panel);
            border:1px solid var(--line); border-radius:6px; }
-  .albummeta h2 { margin:0 0 4px; font-size:18px; }
-  .albummeta .sub { color:var(--muted); }
-  table { width:100%; border-collapse:collapse; }
+  .albummeta h2 { margin:0 0 4px; font-size:18px; font-weight:600; }
+  .albummeta .sub { color:var(--muted); min-height:20px; }
+  /* Fixed layout so columns line up across every album section. */
+  table { width:100%; border-collapse:collapse; table-layout:fixed; }
   th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line);
-           vertical-align:top; }
+           vertical-align:middle; overflow:hidden; text-overflow:ellipsis;
+           white-space:nowrap; }
+  th:first-child, td:first-child { width:46px; }
+  th:last-child, td:last-child { width:84px; }
   th { color:var(--muted); font-weight:500; font-size:12px; }
   td .num { color:var(--muted); }
-  input.tag { width:100%; border-color:transparent; background:transparent; }
-  input.tag:hover { border-color:var(--line); }
-  input.tag.dirty { border-color:var(--ok); }
-  /* inline header fields (edit mode) */
-  input.hdr { border-color:transparent; background:transparent; color:var(--fg); }
-  input.hdr:hover { border-color:var(--line); }
-  input.hdr:focus { border-color:var(--accent); outline:none; background:var(--bg); }
-  input.hdr.title { font-size:18px; font-weight:600; width:100%; margin:0 0 4px;
-                    padding:2px 6px; }
-  input.hdr.sub { font-size:14px; color:var(--muted); padding:2px 6px; }
-  input.hdr.sub.year { width:70px; } input.hdr.sub.genre { width:140px; }
+  /* Inline editable fields reuse the metrics of the static text they replace,
+     using outline (no layout shift) instead of border, so Edit ≈ Browse. */
+  input.tag, input.hdr { padding:0; border:0; border-radius:3px; line-height:inherit;
+                         background:transparent; color:var(--fg); }
+  input.tag { width:100%; }
+  input.tag:hover, input.hdr:hover { outline:1px solid var(--line); outline-offset:-1px; }
+  input.tag:focus, input.hdr:focus { outline:1px solid var(--accent); outline-offset:-1px;
+                                     background:var(--bg); }
+  input.tag.dirty { outline:1px solid var(--ok); outline-offset:-1px; }
+  input.hdr.title { font-size:18px; font-weight:600; width:100%; margin:0 0 4px; }
+  input.hdr.sub { font-size:14px; color:var(--muted); }
+  input.hdr.sub.year { width:64px; } input.hdr.sub.genre { width:140px; }
 
   /* generic page (audit, settings, job views) */
   .page { flex:1; overflow:auto; padding:16px 20px; }
