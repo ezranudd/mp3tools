@@ -1,6 +1,7 @@
 // Entry point: top nav + view router.
 import { jget, toast } from "./util.js";
 import { getMode, setMode, onModeChange } from "./mode.js";
+import { getTheme, toggleTheme } from "./theme.js";
 import * as browse from "./tree.js";
 import * as audit from "./audit.js";
 import * as standardize from "./standardize.js";
@@ -59,9 +60,18 @@ function buildModeToggle() {
   onModeChange(reflect);
 }
 
+function buildThemeToggle() {
+  const btn = document.getElementById("themeToggle");
+  // Show the icon for the theme you'd switch TO.
+  const reflect = () => { btn.textContent = getTheme() === "dark" ? "☀" : "☾"; };
+  reflect();
+  btn.onclick = () => { toggleTheme(); reflect(); };
+}
+
 async function init() {
   buildNav();
   buildModeToggle();
+  buildThemeToggle();
   try {
     const data = await jget("/api/tree");
     document.getElementById("rootLabel").textContent = data.root;
