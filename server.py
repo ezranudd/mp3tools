@@ -133,6 +133,13 @@ def api_album(path: str = Query(...)) -> JSONResponse:
     return JSONResponse({"path": str(album), "tracks": tracks})
 
 
+# ── Search ────────────────────────────────────────────────────────────────────
+
+@app.get("/api/search")
+def api_search(q: str = Query(""), limit: int = Query(20)) -> JSONResponse:
+    return JSONResponse(browse.search(ROOT, q, limit))
+
+
 # ── Audio streaming ───────────────────────────────────────────────────────────
 
 @app.get("/api/track")

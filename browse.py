@@ -752,6 +752,42 @@ _EDIT_BUILDERS = {
 }
 
 
+def search(root: Path, query: str, limit: int = 20) -> dict:
+    """Case-insensitive search of the library for albums and tracks.
+
+    Albums match on the album folder label or the artist name; tracks match on
+    the track filename (which encodes Artist - Title in a standardized library).
+    Matched tracks are enriched with read_tags() for a clean title/artist.
+    Returns {"albums": [...], "tracks": [...]} capped at *limit* each.
+    """
+    q = query.strip().lower()
+    albums: list[dict] = []
+    tracks: list[dict] = []
+    if not q:
+        return {"albums": albums, "tracks": tracks}
+
+    for artist in build_tree(root):
+        artist_match = q in artist.label.lower()
+        for album in artist.children:
+            if len(albums) < limit and (artist_match or q in album.label.lower()):
+                albums.append({
+                    "artist": artist.label, "album": album.label,
+                    "path": str(album.path), "artist_path": str(artist.path),
+                })
+            for track in album.children:
+                if len(tracks) < limit and q in track.label.lower():
+                    tags = read_tags(track.path)
+                    tracks.append({
+                        "title": tags.get("title") or track.path.stem,
+                        "artist": tags.get("artist", ""),
+                        "album": album.label,
+                        "path": str(track.path),
+                        "album_path": str(album.path),
+                        "artist_path": str(artist.path),
+                    })
+    return {"albums": albums, "tracks": tracks}
+
+
 def find_node(root: Path, path: Path) -> "Node | None":
     """Locate the Node whose .path == *path* within build_tree(root)."""
     path = Path(path)

@@ -133,6 +133,28 @@ def test_track_rejects_outside_root(client):
     assert client.get("/api/track", params={"path": "/etc/passwd"}).status_code == 403
 
 
+# ── Search ────────────────────────────────────────────────────────────────────
+
+def test_search_finds_track(client):
+    data = client.get("/api/search", params={"q": "silent"}).json()
+    assert len(data["tracks"]) == 1
+    t = data["tracks"][0]
+    assert t["title"] == "Silent Night"
+    assert t["path"].endswith("Silent Night.mp3")
+    assert t["album_path"].endswith("2024 - Test Album")
+    assert t["artist_path"].endswith("Test Artist")
+
+
+def test_search_finds_album_case_insensitive(client):
+    data = client.get("/api/search", params={"q": "TEST ALBUM"}).json()
+    assert any(a["path"].endswith("2024 - Test Album") for a in data["albums"])
+
+
+def test_search_empty_query(client):
+    data = client.get("/api/search", params={"q": ""}).json()
+    assert data == {"albums": [], "tracks": []}
+
+
 def test_settings_roundtrip(client):
     client.post("/api/settings", json={"cover_art": "both"})
     assert client.get("/api/settings").json()["cover_art"] == "both"

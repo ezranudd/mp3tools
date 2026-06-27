@@ -4,6 +4,7 @@ import { getMode, setMode, onModeChange } from "./mode.js";
 import { getTheme, toggleTheme } from "./theme.js";
 import { subscribeJob, cancelJob, jobLabel, initJobs } from "./jobs.js";
 import { initPlayer } from "./player.js";
+import { initSearch } from "./search.js";
 import { escapeHtml } from "./util.js";
 import * as browse from "./tree.js";
 import * as audit from "./audit.js";
@@ -93,6 +94,7 @@ async function init() {
   buildThemeToggle();
   buildJobIndicator();
   initPlayer();
+  initSearch(activate);
   try {
     const data = await jget("/api/tree");
     document.getElementById("rootLabel").textContent = data.root;

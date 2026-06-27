@@ -11,6 +11,10 @@ let CURRENT = null;   // selected artist: { kind: "artist", path }
 let TREE = [];        // artist nodes from /api/tree
 let treeEl, detailEl;
 let subscribed = false;
+let pendingReveal = null;   // { artist_path, album_path, track_path? } from search
+
+// Ask Browse to jump to an album/track once it's (re)mounted.
+export function requestReveal(target) { pendingReveal = target; }
 
 export async function show(container) {
   container.innerHTML = `<nav id="tree"></nav><section id="detail"><p class="muted">Select an artist or album.</p></section>`;
@@ -28,6 +32,28 @@ export async function show(container) {
     subscribePlayer(updatePlayingHighlight);
   }
   await loadTree();
+  if (pendingReveal) {
+    const target = pendingReveal;
+    pendingReveal = null;
+    applyReveal(target);
+  }
+}
+
+async function applyReveal({ artist_path, album_path, track_path }) {
+  await selectArtist(artist_path);
+  if (!isCurrent("artist", artist_path)) return;
+  const sec = album_path
+    ? detailEl.querySelector(`.albumsection[data-path="${CSS.escape(album_path)}"]`) : null;
+  if (track_path) {
+    const tr = detailEl.querySelector(`tr[data-path="${CSS.escape(track_path)}"]`);
+    if (tr) {
+      tr.scrollIntoView({ block: "center" });
+      tr.classList.add("flash");
+      setTimeout(() => tr.classList.remove("flash"), 1500);
+      return;
+    }
+  }
+  if (sec) sec.scrollIntoView({ block: "start" });
 }
 
 // Mark the row(s) whose data-path matches the currently playing track.
@@ -119,6 +145,7 @@ async function selectArtist(path, headEl) {
     if (!st) continue;
     const sec = document.createElement("section");
     sec.className = "albumsection";
+    sec.dataset.path = st.path;
     host.appendChild(sec);
     renderAlbumInto(sec, st);
   }

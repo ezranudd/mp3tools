@@ -42,6 +42,25 @@
   .iconbtn { background:transparent; border:1px solid var(--line); border-radius:6px;
              color:var(--fg); cursor:pointer; padding:5px 10px; font-size:14px; line-height:1; }
   .iconbtn:hover { border-color:var(--accent); }
+  /* Header search box + results dropdown */
+  .search { position:relative; }
+  .search #searchInput { width:240px; }
+  .searchresults { position:absolute; top:100%; left:0; margin-top:6px; min-width:320px;
+                   max-width:440px; max-height:64vh; overflow:auto; display:none; z-index:35;
+                   background:var(--bg); border:1px solid var(--line); border-radius:8px;
+                   box-shadow:0 8px 24px rgba(0,0,0,.35); }
+  .searchresults.show { display:block; }
+  .searchgroup { font-size:11px; color:var(--muted); padding:7px 12px 2px;
+                 text-transform:uppercase; letter-spacing:.04em; }
+  .searchrow { display:flex; align-items:center; gap:8px; padding:5px 12px; cursor:pointer; }
+  .searchrow:hover { background:var(--panel); }
+  .searchrow > span:first-of-type { flex:1; overflow:hidden; text-overflow:ellipsis;
+                                    white-space:nowrap; }
+  .searchrow > span.muted { flex:0 1 auto; max-width:45%; overflow:hidden;
+                            text-overflow:ellipsis; white-space:nowrap; }
+  .searchempty { padding:8px 12px; }
+  tr.flash { animation:flashrow 1.5s ease; }
+  @keyframes flashrow { 0% { background:var(--accent); } 100% { background:transparent; } }
   /* Global running-operation indicator (header) */
   .jobIndicator { display:none; align-items:center; gap:8px; margin-left:18px;
                   font-size:13px; background:var(--panel); border:1px solid var(--line);
@@ -191,6 +210,10 @@
 <header>
   <h1>mp3tools</h1>
   <span class="root" id="rootLabel"></span>
+  <div class="search" id="search">
+    <input id="searchInput" type="search" placeholder="Search albums &amp; tracks…" autocomplete="off">
+    <div class="searchresults" id="searchResults"></div>
+  </div>
   <div class="jobIndicator" id="jobIndicator"></div>
   <div class="modeToggle" id="modeToggle"></div>
   <button class="iconbtn" id="themeToggle" title="Toggle light/dark"></button>
