@@ -761,21 +761,28 @@ _EDIT_BUILDERS = {
 
 
 def search(root: Path, query: str, limit: int = 20) -> dict:
-    """Case-insensitive search of the library for albums and tracks.
+    """Case-insensitive search of the library for artists, albums and tracks.
 
-    Albums match on the album folder label or the artist name; tracks match on
-    the track filename (which encodes Artist - Title in a standardized library).
-    Matched tracks are enriched with read_tags() for a clean title/artist.
-    Returns {"albums": [...], "tracks": [...]} capped at *limit* each.
+    Artists match on the artist name; albums match on the album folder label or
+    the artist name; tracks match on the track filename (which encodes
+    Artist - Title in a standardized library). Matched tracks are enriched with
+    read_tags() for a clean title/artist. Returns
+    {"artists": [...], "albums": [...], "tracks": [...]} capped at *limit* each.
     """
     q = query.strip().lower()
+    artists: list[dict] = []
     albums: list[dict] = []
     tracks: list[dict] = []
     if not q:
-        return {"albums": albums, "tracks": tracks}
+        return {"artists": artists, "albums": albums, "tracks": tracks}
 
     for artist in build_tree(root):
         artist_match = q in artist.label.lower()
+        if artist_match and len(artists) < limit:
+            artists.append({
+                "artist": artist.label, "artist_path": str(artist.path),
+                "n_albums": len(artist.children),
+            })
         for album in artist.children:
             if len(albums) < limit and (artist_match or q in album.label.lower()):
                 albums.append({
@@ -793,7 +800,7 @@ def search(root: Path, query: str, limit: int = 20) -> dict:
                         "album_path": str(album.path),
                         "artist_path": str(artist.path),
                     })
-    return {"albums": albums, "tracks": tracks}
+    return {"artists": artists, "albums": albums, "tracks": tracks}
 
 
 def find_node(root: Path, path: Path) -> "Node | None":

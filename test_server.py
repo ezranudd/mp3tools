@@ -153,9 +153,17 @@ def test_search_finds_album_case_insensitive(client):
     assert any(a["path"].endswith("2024 - Test Album") for a in data["albums"])
 
 
+def test_search_finds_artist(client):
+    data = client.get("/api/search", params={"q": "test artist"}).json()
+    assert any(a["artist_path"].endswith("Test Artist") for a in data["artists"])
+    match = next(a for a in data["artists"] if a["artist_path"].endswith("Test Artist"))
+    assert match["artist"] == "Test Artist"
+    assert match["n_albums"] >= 1
+
+
 def test_search_empty_query(client):
     data = client.get("/api/search", params={"q": ""}).json()
-    assert data == {"albums": [], "tracks": []}
+    assert data == {"artists": [], "albums": [], "tracks": []}
 
 
 # ── Local artwork upload ──────────────────────────────────────────────────────

@@ -85,6 +85,11 @@
                  text-transform:uppercase; letter-spacing:.04em; }
   .searchrow { display:flex; align-items:center; gap:8px; padding:5px 12px; cursor:pointer; }
   .searchrow:hover { background:var(--panel); }
+  .searchthumb { width:28px; height:28px; flex:0 0 auto; object-fit:cover;
+                 border-radius:4px; background:var(--panel); }
+  .searchthumb.noart { visibility:hidden; }
+  .searchthumb.glyph { display:flex; align-items:center; justify-content:center;
+                       color:var(--muted); font-size:15px; }
   .searchrow > span:first-of-type { flex:1; overflow:hidden; text-overflow:ellipsis;
                                     white-space:nowrap; }
   .searchrow > span.muted { flex:0 1 auto; max-width:45%; overflow:hidden;

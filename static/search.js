@@ -35,18 +35,33 @@ async function run() {
   render(data);
 }
 
-function render({ albums, tracks }) {
-  if (!albums.length && !tracks.length) {
+const coverThumb = (albumPath) =>
+  `<img class="searchthumb" src="/api/cover?path=${encodeURIComponent(albumPath)}"
+        onerror="this.classList.add('noart')">`;
+
+function render({ artists, albums, tracks }) {
+  artists = artists || [];
+  if (!artists.length && !albums.length && !tracks.length) {
     panelEl.innerHTML = `<div class="searchempty muted">No matches.</div>`;
     panelEl.classList.add("show");
     return;
   }
   let html = "";
+  if (artists.length) {
+    html += `<div class="searchgroup">Artists</div>`;
+    html += artists.map(a => `
+      <div class="searchrow" data-kind="artist" data-artist="${escapeAttr(a.artist_path)}">
+        <span class="searchthumb glyph">♪</span>
+        <span>${escapeHtml(a.artist)}</span>
+        <span class="muted">${a.n_albums} album${a.n_albums === 1 ? "" : "s"}</span>
+      </div>`).join("");
+  }
   if (albums.length) {
     html += `<div class="searchgroup">Albums</div>`;
     html += albums.map(a => `
       <div class="searchrow" data-kind="album" data-artist="${escapeAttr(a.artist_path)}"
            data-album="${escapeAttr(a.path)}">
+        ${coverThumb(a.path)}
         <span>${escapeHtml(a.album)}</span>
         <span class="muted">${escapeHtml(a.artist)}</span>
       </div>`).join("");
@@ -56,6 +71,7 @@ function render({ albums, tracks }) {
     html += tracks.map(t => `
       <div class="searchrow" data-kind="track" data-artist="${escapeAttr(t.artist_path)}"
            data-album="${escapeAttr(t.album_path)}" data-track="${escapeAttr(t.path)}">
+        ${coverThumb(t.album_path)}
         <button class="rowplay" data-play title="Play">▶</button>
         <span>${escapeHtml(t.title)}</span>
         <span class="muted">${escapeHtml(t.artist)}${t.album ? " · " + escapeHtml(t.album) : ""}</span>
