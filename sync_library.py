@@ -10,6 +10,7 @@ skipped, missing or changed files are copied, and stale device files are removed
 import argparse
 import curses
 import os
+import re
 import shutil
 import sys
 from dataclasses import dataclass
@@ -344,30 +345,86 @@ _SKIP_FS = {
     "pstore", "bpf", "autofs", "mqueue", "hugetlbfs", "debugfs", "tracefs",
     "fusectl", "configfs", "securityfs", "efivarfs", "overlay", "nsfs",
     "ramfs", "squashfs",
+    "iso9660", "udf",                       # optical discs (cdrom/dvd)
 }
-_SKIP_PREFIXES = ("/sys", "/proc", "/dev", "/run")
+# /boot covers /boot and the EFI System Partition at /boot/efi.
+_SKIP_PREFIXES = ("/sys", "/proc", "/dev", "/run", "/boot")
 _DEVICE_BASES = (Path("/media"), Path("/mnt"), Path("/run/media"))
+
+
+def _is_syncable_mount(mount: str, fstype: str) -> bool:
+    """A real, user-facing volume — not system/virtual/optical/boot plumbing."""
+    if fstype in _SKIP_FS or mount == "/":
+        return False
+    return not any(mount == p or mount.startswith(p + "/") for p in _SKIP_PREFIXES)
+
+
+def _partition_base(node: str) -> str:
+    """Block-device base of a partition node: /dev/sdb1->sdb, /dev/mmcblk0p1->mmcblk0,
+    /dev/nvme0n1p1->nvme0n1."""
+    name = node.rsplit("/", 1)[-1]
+    if name.startswith(("mmcblk", "nvme")):
+        return re.sub(r"p\d+$", "", name)
+    return name.rstrip("0123456789")
+
+
+def classify_device(source: str | None, sysblock: Path = Path("/sys/block")) -> str:
+    """Best-effort device category from its source node: 'sd' | 'usb' | 'drive' |
+    'generic'. (An SD card in a USB reader reads as a removable sd* → 'usb'.)"""
+    if not source or not source.startswith("/dev/"):
+        return "generic"
+    if source.startswith(("/dev/mapper/", "/dev/dm-")):
+        return "drive"          # LUKS/LVM volume — treat as a fixed drive
+    base = _partition_base(source)
+    if base.startswith("mmcblk"):
+        return "sd"
+    if base.startswith("nvme"):
+        return "drive"
+    if base.startswith("sd"):
+        try:
+            removable = (sysblock / base / "removable").read_text().strip()
+        except OSError:
+            removable = "0"
+        return "usb" if removable == "1" else "drive"
+    return "generic"
+
+
+def _source_for(path: str, mounts_map: dict[str, str]) -> str | None:
+    """Source device for a path: exact mountpoint, else the longest enclosing one."""
+    if path in mounts_map:
+        return mounts_map[path]
+    best = None
+    for mp, src in mounts_map.items():
+        if path == mp or path.startswith(mp.rstrip("/") + "/"):
+            if best is None or len(mp) > len(best[0]):
+                best = (mp, src)
+    return best[1] if best else None
 
 
 def detect_devices() -> list[dict]:
     """Detect mounted volumes to sync to: real filesystems plus the per-user
     mount points under /media, /mnt and /run/media. Returns
-    [{"path": Path, "free": int|None, "total": int|None}]."""
+    [{"path": Path, "free": int|None, "total": int|None, "type": str}]."""
     seen: set[Path] = set()
+    mounts_map: dict[str, str] = {}
+    mount_fs: dict[str, str] = {}
     try:
         with open("/proc/mounts") as f:
             for line in f:
                 parts = line.split()
                 if len(parts) < 3:
                     continue
-                mount = Path(parts[1])
-                if (parts[2] not in _SKIP_FS
-                        and mount != Path("/")
-                        and not any(str(mount).startswith(p) for p in _SKIP_PREFIXES)
+                source, mount = parts[0], Path(parts[1])
+                mounts_map[str(mount)] = source
+                mount_fs[str(mount)] = parts[2]
+                if (_is_syncable_mount(str(mount), parts[2])
                         and mount.is_dir() and mount not in seen):
                     seen.add(mount)
     except OSError:
         pass
+    # The /media,/mnt,/run/media bases catch devices the loop above skipped via the
+    # /run prefix — but only ones that are actually mounted (a real, non-optical fs),
+    # so stale mountpoint dirs like /media/cdrom don't show up.
     for base in _DEVICE_BASES:
         if not base.is_dir():
             continue
@@ -379,14 +436,18 @@ def detect_devices() -> list[dict]:
             except OSError:
                 subs = []
             for sub in (sorted(subs) if subs else [item]):
-                seen.add(sub)
+                fs = mount_fs.get(str(sub))
+                if fs is not None and fs not in _SKIP_FS:
+                    seen.add(sub)
     devices = []
     for path in sorted(seen):
+        dev_type = classify_device(_source_for(str(path), mounts_map))
         try:
             usage = shutil.disk_usage(path)
-            devices.append({"path": path, "free": usage.free, "total": usage.total})
+            devices.append({"path": path, "free": usage.free,
+                            "total": usage.total, "type": dev_type})
         except OSError:
-            devices.append({"path": path, "free": None, "total": None})
+            devices.append({"path": path, "free": None, "total": None, "type": dev_type})
     return devices
 
 
@@ -399,6 +460,7 @@ def device_rows(exclude: Path | None = None) -> list[dict]:
             continue
         rows.append({
             "path": str(p), "name": p.name or str(p),
+            "type": d.get("type", "generic"),
             "free": d["free"], "total": d["total"],
             "free_h": format_size(d["free"]) if d["free"] is not None else "?",
             "total_h": format_size(d["total"]) if d["total"] is not None else "?",

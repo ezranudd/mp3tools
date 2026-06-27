@@ -512,6 +512,53 @@ def test_device_rows_excludes_library(tmp_path, monkeypatch):
     assert str(inside) not in paths
     assert "/run/media/x/USB" in paths
     assert rows[0]["name"] == "USB" and rows[0]["free_h"]
+    assert rows[0]["type"] == "generic"   # no "type" in the fake → defaulted
+
+
+def test_device_rows_passes_type(tmp_path, monkeypatch):
+    import sync_library
+    monkeypatch.setattr(sync_library, "detect_devices",
+                        lambda: [{"path": Path("/run/media/x/SD"), "free": 1,
+                                  "total": 2, "type": "sd"}])
+    rows = sync_library.device_rows()
+    assert rows[0]["type"] == "sd"
+
+
+def test_partition_base():
+    from sync_library import _partition_base
+    assert _partition_base("/dev/sdb1") == "sdb"
+    assert _partition_base("/dev/mmcblk0p1") == "mmcblk0"
+    assert _partition_base("/dev/nvme0n1p1") == "nvme0n1"
+
+
+def test_classify_device(tmp_path):
+    from sync_library import classify_device
+    sysblock = tmp_path / "block"
+    for name, removable in (("sdb", "1"), ("sda", "0")):
+        (sysblock / name).mkdir(parents=True)
+        (sysblock / name / "removable").write_text(removable + "\n")
+    assert classify_device("/dev/mmcblk0p1", sysblock) == "sd"
+    assert classify_device("/dev/sdb1", sysblock) == "usb"      # removable
+    assert classify_device("/dev/sda1", sysblock) == "drive"    # fixed
+    assert classify_device("/dev/nvme0n1p1", sysblock) == "drive"
+    assert classify_device("/dev/mapper/luks-abc", sysblock) == "drive"   # LUKS/LVM
+    assert classify_device(None, sysblock) == "generic"
+    assert classify_device("//phone:mtp", sysblock) == "generic"
+
+
+def test_is_syncable_mount():
+    from sync_library import _is_syncable_mount
+    assert _is_syncable_mount("/media/u/CARD", "vfat")
+    assert _is_syncable_mount("/mnt/usb", "ext4")
+    assert not _is_syncable_mount("/", "ext4")
+    assert not _is_syncable_mount("/boot/efi", "vfat")
+    assert not _is_syncable_mount("/boot", "ext4")
+    assert not _is_syncable_mount("/mnt/dvd", "iso9660")
+    assert not _is_syncable_mount("/tmp", "tmpfs")
+    assert not _is_syncable_mount("/sys/fs/cgroup", "cgroup2")
+    # /run/media devices are excluded from the /proc/mounts loop (the /run prefix)
+    # and instead enumerated via the _DEVICE_BASES scan.
+    assert not _is_syncable_mount("/run/media/u/USB", "ext4")
 
 
 def test_edits_blocked_while_job_active(client, tmp_path):

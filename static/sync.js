@@ -2,6 +2,16 @@
 import { jget, jpost, toast, escapeHtml, escapeAttr } from "./util.js";
 import { startJob, mountJobPane } from "./jobs.js";
 
+// Device-type icons (inline SVG, currentColor) — matches d.type from the server.
+const _svg = (body) => `<svg viewBox="0 0 24 24" aria-hidden="true">${body}</svg>`;
+const DEVICE_ICON = {
+  drive: _svg(`<rect x="3" y="6" width="18" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="17" cy="12" r="1.6"/>`),
+  usb: _svg(`<rect x="9" y="2" width="6" height="14" rx="1" fill="none" stroke="currentColor" stroke-width="2"/><path stroke="currentColor" stroke-width="2" d="M12 16v6M9 6h6"/>`),
+  sd: _svg(`<path fill="none" stroke="currentColor" stroke-width="2" d="M7 3h7l4 4v14H7z"/><path stroke="currentColor" stroke-width="1.6" d="M10 6v3M13 6v3M16 8v1"/>`),
+  generic: _svg(`<path fill="none" stroke="currentColor" stroke-width="2" d="M3 7h6l2 2h10v10H3z"/>`),
+};
+const deviceIcon = (type) => DEVICE_ICON[type] || DEVICE_ICON.generic;
+
 let el;
 let device = "";
 let artists = [];   // {path,name,size_h,status,mode,expanded,loaded,albums:[{path,name,size_h,status,selected}]}
@@ -50,9 +60,9 @@ async function loadDevices() {
     for (const d of data.devices) {
       const b = document.createElement("button");
       b.className = "btn devbtn" + (d.path === device ? " primary" : "");
-      b.innerHTML = `${escapeHtml(d.name)}
+      b.innerHTML = `${deviceIcon(d.type)}<span>${escapeHtml(d.name)}</span>
         <span class="muted">${escapeHtml(d.free_h)} free / ${escapeHtml(d.total_h)}</span>`;
-      b.title = d.path;
+      b.title = `${d.type} · ${d.path}`;
       b.onclick = () => { el.querySelector("#devPath").value = d.path; load(d.path); };
       host.appendChild(b);
     }
