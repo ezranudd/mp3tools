@@ -283,7 +283,7 @@ function autosizeField(inp) {
   _measureEl.style.fontStyle = cs.fontStyle;
   _measureEl.style.letterSpacing = cs.letterSpacing;
   _measureEl.textContent = inp.value || inp.placeholder || "";
-  inp.style.width = (_measureEl.offsetWidth + 4) + "px";   // +4 for the caret
+  inp.style.width = (_measureEl.offsetWidth + 1) + "px";   // +1 for the caret
 }
 
 async function commitTrackField(path, frame, value, inp) {

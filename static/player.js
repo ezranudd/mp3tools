@@ -18,9 +18,9 @@ export function initPlayer() {
   audio = new Audio();
 
   bar.innerHTML = `
-    <button class="pbtn" data-prev title="Previous">⏮</button>
-    <button class="pbtn play" data-play title="Play/Pause">▶</button>
-    <button class="pbtn" data-next title="Next">⏭</button>
+    <button class="pbtn" data-prev title="Previous">⏮︎</button>
+    <button class="pbtn play" data-play title="Play/Pause">▶︎</button>
+    <button class="pbtn" data-next title="Next">⏭︎</button>
     <span class="ptitle" data-title></span>
     <span class="ptime" data-cur>0:00</span>
     <input type="range" class="pseek" data-seek min="0" max="1000" value="0">
@@ -46,8 +46,8 @@ export function initPlayer() {
     els.cur.textContent = fmt(audio.currentTime);
   });
   audio.addEventListener("loadedmetadata", () => { els.dur.textContent = fmt(audio.duration); });
-  audio.addEventListener("play", () => { els.play.textContent = "⏸"; });
-  audio.addEventListener("pause", () => { els.play.textContent = "▶"; });
+  audio.addEventListener("play", () => { els.play.textContent = "⏸︎"; });
+  audio.addEventListener("pause", () => { els.play.textContent = "▶︎"; });
   audio.addEventListener("ended", next);
 }
 
@@ -79,7 +79,7 @@ export function toggle() {
 }
 export function next() {
   if (index < queue.length - 1) playIndex(index + 1);
-  else els.play.textContent = "▶";   // end of album
+  else els.play.textContent = "▶︎";   // end of album
 }
 export function prev() {
   if (audio.currentTime > 3 || index <= 0) audio.currentTime = 0;

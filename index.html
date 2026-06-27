@@ -57,7 +57,7 @@
   .modeToggle { margin-left:auto; display:flex; border:1px solid var(--line);
                 border-radius:6px; overflow:hidden; }
   .modeToggle button { border:0; background:transparent; color:var(--muted);
-                       font:inherit; padding:5px 14px; cursor:pointer; }
+                       font:inherit; line-height:1; padding:5px 14px; cursor:pointer; }
   .modeToggle button.active { background:var(--accent); color:var(--on-accent); font-weight:600; }
   .iconbtn { background:transparent; border:1px solid var(--line); border-radius:6px;
              color:var(--fg); cursor:pointer; padding:5px 10px; font-size:14px; line-height:1; }
@@ -105,25 +105,27 @@
             padding:8px 16px; background:var(--panel); border-top:1px solid var(--line); }
   .player.show { display:flex; }
   .player .pbtn { background:transparent; border:0; color:var(--fg); cursor:pointer;
-                  font-size:16px; line-height:1; padding:4px 6px; }
+                  font-size:16px; line-height:1; padding:0; width:32px; height:32px;
+                  display:inline-flex; align-items:center; justify-content:center;
+                  border-radius:6px; }
   .player .pbtn:hover { color:var(--accent); }
-  .player .pbtn.play { font-size:18px; }
   .player .ptitle { min-width:160px; max-width:38vw; overflow:hidden; text-overflow:ellipsis;
                     white-space:nowrap; }
   .player .ptime { color:var(--muted); font-size:12px; width:38px; text-align:center;
                    font-variant-numeric:tabular-nums; }
   .player .pseek { flex:1; accent-color:var(--accent); cursor:pointer; }
   .layout { flex:1; display:flex; min-height:0; }
-  nav.sidebar { width:140px; flex:0 0 auto; background:var(--panel);
+  nav.sidebar { width:150px; flex:0 0 auto; background:var(--panel);
                 border-right:1px solid var(--line); padding:8px 0; }
-  nav.sidebar button { display:block; width:100%; text-align:left; border:0;
-                       background:transparent; color:var(--fg); padding:8px 16px;
-                       cursor:pointer; font:inherit; border-left:3px solid transparent; }
+  nav.sidebar button { display:flex; align-items:center; gap:8px; width:100%;
+                       text-align:left; border:0; background:transparent;
+                       color:var(--fg); padding:8px 14px; cursor:pointer; font:inherit;
+                       border-left:3px solid transparent; }
   nav.sidebar button:hover { background:var(--bg); }
   nav.sidebar button.active { border-left-color:var(--accent); color:var(--accent);
                               font-weight:600; }
-  .navicon { display:inline-block; width:1.4em; margin-right:8px; text-align:center;
-             opacity:.75; }
+  .navicon { flex:0 0 auto; width:1.4em; text-align:center; opacity:.75; }
+  .navlabel { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   nav.sidebar button.active .navicon { opacity:1; }
   #view { flex:1; min-width:0; display:flex; }
 
@@ -194,14 +196,18 @@
   input.tag.dirty { outline:1px solid var(--ok); outline-offset:-1px; }
   input.hdr.title { display:block; font-size:18px; font-weight:600; width:100%; margin:0 0 4px; }
   input.hdr.sub { display:inline-block; vertical-align:baseline; font-size:14px;
-                  color:var(--muted); min-width:2ch; }
+                  color:var(--muted); min-width:1ch; }
   /* Track playback affordances */
   tr.browserow { cursor:pointer; }
   tr.browserow:hover { background:var(--panel); }
   tr.playing td { color:var(--accent); }
-  .rowplay { cursor:pointer; background:transparent; border:0; color:var(--muted);
-             font:inherit; padding:0; }
+  .rowplay { display:none; cursor:pointer; background:transparent; border:0;
+             color:var(--muted); font:inherit; padding:0; }
   .rowplay:hover { color:var(--accent); }
+  /* Reveal the play icon (swapping out the number) on hover and on the playing row. */
+  tr:hover .rowplay, tr.playing .rowplay { display:inline; }
+  tr:hover .num,     tr.playing .num     { display:none; }
+  tr.playing .rowplay { color:var(--accent); }
 
   /* generic page (audit, settings, job views) */
   .page { flex:1; overflow:auto; padding:16px 20px; }

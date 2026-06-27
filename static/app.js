@@ -43,7 +43,7 @@ function activate(name) {
 function buildNav() {
   for (const [name, label, , icon] of VIEWS) {
     const btn = document.createElement("button");
-    btn.innerHTML = `<span class="navicon">${icon}</span>${escapeHtml(label)}`;
+    btn.innerHTML = `<span class="navicon">${icon}</span><span class="navlabel">${escapeHtml(label)}</span>`;
     btn.dataset.name = name;
     btn.onclick = () => activate(name);
     sidebar.appendChild(btn);
