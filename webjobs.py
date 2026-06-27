@@ -50,6 +50,7 @@ class _Prompt:
     options: list[dict] | None = None           # [{key,label}, ...] for choice
     entries: list | None = None                 # serialized rows for preview
     has_lossless: bool = False
+    default_bitrate: int = 320                   # preview: default lossless→MP3 bitrate
     event: threading.Event = field(default_factory=threading.Event)
     response: object | None = None
 
@@ -60,6 +61,7 @@ class _Prompt:
             "options": self.options or [],
             "entries": self.entries or [],
             "has_lossless": self.has_lossless,
+            "default_bitrate": self.default_bitrate,
         }
 
 
@@ -129,8 +131,9 @@ class Job:
     def preview_fn(self, entries, has_lossless) -> bool:
         if self.cancelled:
             return False
-        rows = _serialize_entries(entries)
-        res = self._ask(_Prompt(kind="preview", entries=rows, has_lossless=bool(has_lossless)))
+        rows = _serialize_entries(entries, getattr(self, "library_root", None))
+        res = self._ask(_Prompt(kind="preview", entries=rows, has_lossless=bool(has_lossless),
+                                default_bitrate=getattr(self, "import_bitrate", 320)))
         if not isinstance(res, dict):
             return bool(res)
         _apply_entry_edits(entries, res.get("entries"))
@@ -207,7 +210,18 @@ class _Capture:
 
 # ── entry (import preview) serialization ──────────────────────────────────────
 
-def _serialize_entries(entries) -> list[dict]:
+def _dest_exists(root, td) -> bool:
+    """Would this entry's tag-derived destination album already exist in the library?"""
+    if root is None or not (td.get("ALBUMARTIST") and td.get("YEAR") and td.get("TALB")):
+        return False
+    from import_tracks import sanitize_name
+    dest = Path(root) / sanitize_name(td["ALBUMARTIST"]) / \
+        sanitize_name(f"{td['YEAR']} - {td['TALB']}")
+    return dest.is_dir() and any(dest.glob("*.mp3"))
+
+
+def _serialize_entries(entries, root=None) -> list[dict]:
+    from convert_lossless import LOSSLESS_EXTENSIONS
     rows = []
     for i, (path, td) in enumerate(entries):
         rows.append({
@@ -222,12 +236,16 @@ def _serialize_entries(entries) -> list[dict]:
             "year": td.get("YEAR", ""),
             "track": td.get("TRCK", ""),
             "bitrate": td.get("_MP3_BITRATE", ""),
+            "lossless": Path(path).suffix.lower() in LOSSLESS_EXTENSIONS,
+            "conflict": _dest_exists(root, td),
         })
     return rows
 
 
 def _apply_entry_edits(entries, edited) -> None:
-    """Apply browser-edited fields back onto the in-place (Path, tagdict) list."""
+    """Apply browser-edited fields back onto the in-place (Path, tagdict) list.
+    Tags map to ID3 frames; bitrate/art/conflict ride in private (underscore) keys
+    that import_tracks consumes (lossless bitrate, cover choice, conflict add/skip)."""
     if not edited:
         return
     by_i = {row.get("i"): row for row in edited if isinstance(row, dict)}
@@ -240,6 +258,17 @@ def _apply_entry_edits(entries, edited) -> None:
         for key, frame in field_map.items():
             if key in row:
                 td[frame] = row[key]
+        if row.get("bitrate"):
+            try:
+                td["_LOSSLESS_BITRATE"] = int(row["bitrate"])
+            except (TypeError, ValueError):
+                pass
+        if row.get("art_none"):
+            td["_ART_NONE"] = True
+        elif row.get("art_url"):
+            td["_ART_URL"] = row["art_url"]
+        if row.get("conflict") in ("add", "skip"):
+            td["_CONFLICT"] = row["conflict"]
 
 
 # ── Runners ───────────────────────────────────────────────────────────────────
@@ -336,6 +365,9 @@ def _run_import(job: Job, params: dict) -> None:
     source = Path(params["source"])
     dry_run = bool(params.get("dry_run", False))
     cfg = settings_mod.load(root)
+    # Used by preview_fn to compute conflicts and the default lossless bitrate.
+    job.library_root = root
+    job.import_bitrate = cfg.get("import_bitrate", 320)
 
     try:
         import_tracks(
@@ -343,9 +375,7 @@ def _run_import(job: Job, params: dict) -> None:
             cover_art=cfg.get("cover_art", "folder"),
             cover_art_size=cfg.get("cover_art_embed_size", 500),
             settings=cfg,
-            preview_fn=job.preview_fn,
-            ask_text=job.ask_text,
-            ask_choice=job.ask_choice,
+            preview_fn=job.preview_fn,   # all editing is graphical; no text/choice prompts
             progress=job.progress_fn,
         )
         print("\nDone.")

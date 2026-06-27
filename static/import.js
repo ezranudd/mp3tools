@@ -1,7 +1,11 @@
 // Import view: drag-and-drop folders into the browser (uploaded to a temp dir on
 // the server) OR point at a server-side path; preview + prompts via the global tracker.
 import { startJob, mountJobPane, setPreviewRenderer } from "./jobs.js";
-import { toast, escapeHtml, escapeAttr } from "./util.js";
+import { toast, escapeHtml, escapeAttr, openModal, closeModal } from "./util.js";
+
+const CONFIDENT_SCORE = 140;                 // mirrors fetch_art.CONFIDENT_MATCH_SCORE
+const BITRATES = [128, 160, 192, 256, 320];
+const REQUIRED_ALBUM = ["album", "albumartist", "year"];
 
 const AUDIO_EXTS = [".mp3", ".flac", ".m4a", ".alac"];
 const IMAGE_EXTS = [".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"];
@@ -22,9 +26,9 @@ export function show(el) {
   setPreviewRenderer(renderImportPreview);
   el.innerHTML = `<div class="page">
     <h2>Import</h2>
-    <p class="muted">Drop music folders below (or use a server path). Tracks are copied
-      into the library with normalized tags; lossless files are converted. You'll
-      review a preview and answer any prompts in the browser.</p>
+    <p class="muted">Drop music folders below (or use a server path). You'll review and
+      edit every album graphically — tags, cover art, and lossless bitrate — before
+      anything is copied.</p>
 
     <div id="dropZone" class="dropzone">
       <div class="dzbig">Drop folders here</div>
@@ -33,11 +37,7 @@ export function show(el) {
       <input type="file" id="dirPicker" webkitdirectory directory multiple hidden>
     </div>
 
-    <div class="field" style="margin-top:12px">
-      <label style="min-width:auto"><input type="checkbox" id="dryRun">
-        Dry run (preview only — nothing copied; files are still uploaded to scan)</label>
-    </div>
-    <div class="row" style="justify-content:flex-start">
+    <div class="row" style="justify-content:flex-start;margin-top:12px">
       <button class="btn primary" id="runBtn" disabled>Start import</button>
       <span id="upStatus" class="muted"></span>
     </div>
@@ -94,14 +94,13 @@ export function show(el) {
   };
 
   runBtn.onclick = async () => {
-    const dry_run = el.querySelector("#dryRun").checked;
     runBtn.disabled = true;
     try {
       const token = await uploadAll(dropped, (n, m) => {
         upStatus.textContent = `Uploading ${n}/${m}…`;
       });
       upStatus.textContent = "";
-      await startJob("import", { upload_token: token, dry_run });
+      await startJob("import", { upload_token: token });
     } catch (e) {
       upStatus.textContent = "";
       toast(e.message, true);
@@ -112,8 +111,7 @@ export function show(el) {
   el.querySelector("#runPathBtn").onclick = async () => {
     const source = el.querySelector("#srcPath").value.trim();
     if (!source) { toast("Enter a source folder.", true); return; }
-    const dry_run = el.querySelector("#dryRun").checked;
-    try { await startJob("import", { source, dry_run }); }
+    try { await startJob("import", { source }); }
     catch (e) { toast(e.message, true); }
   };
 
@@ -178,79 +176,256 @@ function readAllEntries(reader) {
 
 // Registered with jobs.js: render the preview prompt inline in the Import view.
 // Returns {proceed, entries} | {proceed:false}, or null to fall back to the modal
-// (e.g. when the Import view isn't currently mounted).
+// (e.g. when the Import view isn't currently mounted). Fully graphical: tags, cover
+// art (auto-searched in the background), and lossless bitrate are all edited here.
 function renderImportPreview(p) {
   const host = pageEl && pageEl.isConnected ? pageEl.querySelector("#importPreview") : null;
   if (!host) return null;
 
-  // Group entries by source folder; preserve first-seen order.
-  const groups = new Map();
+  // Group entries by source folder, into editable album models.
+  const byFolder = new Map();
   for (const e of p.entries) {
     const folder = e.src.slice(0, e.src.lastIndexOf("/"));
-    if (!groups.has(folder)) groups.set(folder, []);
-    groups.get(folder).push(e);
+    if (!byFolder.has(folder)) byFolder.set(folder, []);
+    byFolder.get(folder).push(e);
   }
+  const albums = [...byFolder.entries()].map(([folder, rows], idx) => ({
+    idx, folder, rows,
+    hasLossless: rows.some(r => r.lossless),
+    hasConflict: rows.some(r => r.conflict),
+    bitrate: p.default_bitrate || 320,
+    conflict: "add",
+    // art.mode: "source" (keep folder cover) | "url" (chosen/found) | "none" (placeholder)
+    art: { mode: "source", url: null, results: null, state: "init" },
+  }));
 
-  const sections = [...groups.entries()].map(([folder, rows]) => {
-    const f = rows[0];
-    const cover = "/api/import/cover?path=" + encodeURIComponent(folder);
-    const trackRows = rows.map((e, n) => `
-      <tr data-i="${e.i}">
-        <td><span class="num">${n + 1}</span></td>
-        <td><input class="tag" data-f="title" value="${escapeAttr(e.title)}"></td>
-        <td><input class="tag" data-f="artist" value="${escapeAttr(e.artist)}"></td>
-      </tr>`).join("");
-    return `<section class="albumsection" data-folder="${escapeAttr(folder)}">
-      <div class="albumhead">
-        <img class="cover" src="${cover}" onerror="this.style.visibility='hidden'">
-        <div class="albummeta">
-          <input class="hdr title" data-a="album" value="${escapeAttr(f.album)}" placeholder="Album title">
-          <div class="sub">
-            <input class="hdr sub" data-a="albumartist" value="${escapeAttr(f.albumartist || f.artist)}" placeholder="Album artist"> ·
-            <input class="hdr sub" data-a="year" value="${escapeAttr(f.year)}" placeholder="Year"> ·
-            <input class="hdr sub" data-a="genre" value="${escapeAttr(f.genre || "")}" placeholder="Genre">
-          </div>
-          <div class="sub">${rows.length} track${rows.length === 1 ? "" : "s"}</div>
-        </div>
-      </div>
-      <table>
-        <thead><tr><th>#</th><th>Title</th><th>Artist</th></tr></thead>
-        <tbody>${trackRows}</tbody>
-      </table>
-    </section>`;
-  }).join("");
+  host.innerHTML = `<div class="importpreview">
+    <h3>Review import — ${albums.length} album${albums.length === 1 ? "" : "s"}</h3>
+    <p class="muted">Edit tags, cover art and bitrate. Track order sets the numbering.</p>
+    ${albums.map(renderSection).join("")}
+    <div class="previewactions">
+      <button class="btn" data-cancel>Cancel</button>
+      <button class="btn primary" data-ok>Import</button>
+    </div>
+  </div>`;
+  host.scrollIntoView({ block: "start" });
+
+  for (const album of albums) wireSection(host, album);
+  const okBtn = host.querySelector("[data-ok]");
+  const validate = () => { okBtn.disabled = !albums.every(a => albumValid(host, a)); };
+  host.querySelectorAll(".importpreview input").forEach(i => i.addEventListener("input", validate));
+  validate();
 
   return new Promise(resolve => {
     let done = false;
     const finish = (v) => { if (!done) { done = true; host.innerHTML = ""; resolve(v); } };
-
-    host.innerHTML = `<div class="importpreview">
-      <h3>Import preview${p.has_lossless ? ` <span class="pill">lossless present</span>` : ""}</h3>
-      <p class="muted">Edit album and track tags before importing. Track order sets the
-        numbering; lossless bitrate is chosen next.</p>
-      ${sections}
-      <div class="previewactions">
-        <button class="btn" data-cancel>Cancel import</button>
-        <button class="btn primary" data-ok>Import</button>
-      </div>
-    </div>`;
-    host.scrollIntoView({ block: "start" });
-
-    const collect = () => {
-      const out = [];
-      host.querySelectorAll(".albumsection").forEach(sec => {
-        const alb = {};
-        sec.querySelectorAll(".albummeta input[data-a]").forEach(i => alb[i.dataset.a] = i.value);
-        sec.querySelectorAll("tr[data-i]").forEach(tr => {
-          const row = { i: Number(tr.dataset.i), album: alb.album,
-                        albumartist: alb.albumartist, year: alb.year, genre: alb.genre };
-          tr.querySelectorAll("input[data-f]").forEach(inp => row[inp.dataset.f] = inp.value);
-          out.push(row);
-        });
-      });
-      return out;
-    };
-    host.querySelector("[data-ok]").onclick = () => finish({ proceed: true, entries: collect() });
+    okBtn.onclick = () => finish({ proceed: true, entries: collectEntries(host, albums) });
     host.querySelector("[data-cancel]").onclick = () => finish({ proceed: false });
   });
+}
+
+function renderSection(album) {
+  const f = album.rows[0];
+  const trackRows = album.rows.map((e, n) => `
+    <tr data-i="${e.i}">
+      <td><span class="num">${n + 1}</span></td>
+      <td><input class="tag" data-f="title" value="${escapeAttr(e.title)}"></td>
+      <td><input class="tag" data-f="artist" value="${escapeAttr(e.artist)}"></td>
+    </tr>`).join("");
+  const bitrate = album.hasLossless ? `
+    <label class="muted" style="display:flex;align-items:center;gap:6px">Bitrate
+      <select data-bitrate>${BITRATES.map(b =>
+        `<option value="${b}" ${b === album.bitrate ? "selected" : ""}>${b} kbps</option>`).join("")}</select>
+    </label>` : "";
+  const conflict = album.hasConflict ? `
+    <label class="warn" style="display:flex;align-items:center;gap:6px" title="This album already exists in the library">
+      Already in library
+      <select data-conflict><option value="add">Add to it</option><option value="skip">Skip</option></select>
+    </label>` : "";
+  return `<section class="albumsection" data-idx="${album.idx}">
+    <div class="albumhead">
+      <div class="importcover" data-cover title="Choose cover art"></div>
+      <div class="albummeta">
+        <input class="hdr title" data-a="album" value="${escapeAttr(f.album)}" placeholder="Album title">
+        <div class="sub">
+          <input class="hdr sub" data-a="albumartist" value="${escapeAttr(f.albumartist || f.artist)}" placeholder="Album artist"> ·
+          <input class="hdr sub" data-a="year" value="${escapeAttr(f.year)}" placeholder="Year"> ·
+          <input class="hdr sub" data-a="genre" value="${escapeAttr(f.genre || "")}" placeholder="Genre">
+        </div>
+        <div class="sub" style="display:flex;gap:16px;flex-wrap:wrap;align-items:center">
+          <span>${album.rows.length} track${album.rows.length === 1 ? "" : "s"}</span>
+          ${bitrate}${conflict}
+        </div>
+      </div>
+    </div>
+    <table>
+      <thead><tr><th>#</th><th>Title</th><th>Artist</th></tr></thead>
+      <tbody>${trackRows}</tbody>
+    </table>
+  </section>`;
+}
+
+// Size an inline header field to its content (mirrors tree.js so the
+// "Album artist · Year · Genre" line stays tight, like the edit menu).
+let _measureEl = null;
+function autosizeField(inp) {
+  if (!_measureEl) {
+    _measureEl = document.createElement("span");
+    _measureEl.style.cssText =
+      "position:absolute;left:-9999px;top:-9999px;visibility:hidden;white-space:pre;";
+    document.body.appendChild(_measureEl);
+  }
+  const cs = getComputedStyle(inp);
+  _measureEl.style.fontSize = cs.fontSize;
+  _measureEl.style.fontFamily = cs.fontFamily;
+  _measureEl.style.fontWeight = cs.fontWeight;
+  _measureEl.style.fontStyle = cs.fontStyle;
+  _measureEl.style.letterSpacing = cs.letterSpacing;
+  _measureEl.textContent = inp.value || inp.placeholder || "";
+  inp.style.width = (_measureEl.offsetWidth + 1) + "px";
+}
+
+function wireSection(host, album) {
+  const sec = host.querySelector(`.albumsection[data-idx="${album.idx}"]`);
+  album.coverEl = sec.querySelector("[data-cover]");
+  album.coverEl.onclick = () => openArtPicker(album);
+
+  // Hug the sub-line fields to their content (album artist / year / genre).
+  sec.querySelectorAll(".albummeta input.hdr.sub").forEach(inp => {
+    autosizeField(inp);
+    inp.addEventListener("input", () => autosizeField(inp));
+  });
+  const br = sec.querySelector("[data-bitrate]");
+  if (br) br.onchange = () => { album.bitrate = parseInt(br.value, 10); };
+  const cf = sec.querySelector("[data-conflict]");
+  if (cf) cf.onchange = () => { album.conflict = cf.value; };
+
+  // Start with the source folder cover; if there isn't one, search online.
+  const img = new Image();
+  img.onload = () => { album.art = { mode: "source", state: "found" }; paintCover(album); };
+  img.onerror = () => { searchAlbumArt(album); };
+  album.srcCoverUrl = "/api/import/cover?path=" + encodeURIComponent(album.folder);
+  img.src = album.srcCoverUrl;
+}
+
+function albumArtistOf(album) {
+  const sec = album.coverEl.closest(".albumsection");
+  return sec.querySelector('[data-a="albumartist"]').value.trim();
+}
+function albumTitleOf(album) {
+  const sec = album.coverEl.closest(".albumsection");
+  return sec.querySelector('[data-a="album"]').value.trim();
+}
+
+async function searchAlbumArt(album) {
+  const artist = albumArtistOf(album), title = albumTitleOf(album);
+  if (!artist && !title) { album.art = { mode: "none", state: "done" }; paintCover(album); return; }
+  album.art = { mode: "none", state: "searching" };
+  paintCover(album);
+  try {
+    const r = await fetch(`/api/art/search?artist=${encodeURIComponent(artist)}&album=${encodeURIComponent(title)}`);
+    const data = await r.json();
+    const results = (data.results || []).filter(x => x.url);
+    const top = results[0];
+    if (top && (top.score || 0) >= CONFIDENT_SCORE) {
+      album.art = { mode: "url", url: top.url, results, state: "done" };
+    } else {
+      album.art = { mode: "none", results, state: "done" };
+    }
+  } catch (e) {
+    album.art = { mode: "none", results: [], state: "done" };
+  }
+  paintCover(album);
+}
+
+function paintCover(album) {
+  const el = album.coverEl;
+  const a = album.art;
+  if (a.state === "searching") {
+    el.className = "importcover shimmer";
+    el.innerHTML = `<span class="covertext">Searching…</span>`;
+  } else if (a.mode === "url" && a.url) {
+    el.className = "importcover";
+    el.innerHTML = `<img class="cover" src="${escapeAttr(a.url)}" alt="">`;
+  } else if (a.mode === "source") {
+    el.className = "importcover";
+    el.innerHTML = `<img class="cover" src="${escapeAttr(album.srcCoverUrl)}" alt="">`;
+  } else {
+    el.className = "importcover placeholder";
+    el.innerHTML = `<span class="covertext">No art<br><small>click to choose</small></span>`;
+  }
+}
+
+async function openArtPicker(album) {
+  // Lazily search if we haven't yet (e.g. a source cover was present).
+  if (!album.art.results) {
+    const artist = albumArtistOf(album), title = albumTitleOf(album);
+    try {
+      const r = await fetch(`/api/art/search?artist=${encodeURIComponent(artist)}&album=${encodeURIComponent(title)}`);
+      album.art.results = ((await r.json()).results || []).filter(x => x.url);
+    } catch (e) { album.art.results = []; }
+  }
+  const results = album.art.results || [];
+  const tiles = results.map((rr, i) => `
+    <div class="art" data-pick="${i}"><img src="${escapeAttr(rr.url)}" loading="lazy">
+      <div class="cap">${escapeHtml(rr.source_label || rr.source || "")} · ${rr.score ?? ""}</div></div>`).join("");
+  openModal(`
+    <h3>Cover art — ${escapeHtml(albumTitleOf(album) || "album")}</h3>
+    <div class="grid">
+      ${album.srcCoverUrl ? `<div class="art" data-src><img src="${escapeAttr(album.srcCoverUrl)}" onerror="this.closest('.art').style.display='none'"><div class="cap">Folder cover</div></div>` : ""}
+      <div class="art" data-none><div class="coverph" style="aspect-ratio:1;display:flex;align-items:center;justify-content:center">No art</div><div class="cap">Placeholder</div></div>
+      ${tiles || `<p class="muted">No online results.</p>`}
+    </div>
+    <div class="row"><button class="btn" data-close>Close</button></div>`,
+    (box) => {
+      box.querySelectorAll("[data-pick]").forEach(t => t.onclick = () => {
+        const rr = results[+t.dataset.pick];
+        album.art = { mode: "url", url: rr.url, results, state: "done" };
+        paintCover(album); closeModal();
+      });
+      const src = box.querySelector("[data-src]");
+      if (src) src.onclick = () => { album.art = { mode: "source", results, state: "found" }; paintCover(album); closeModal(); };
+      box.querySelector("[data-none]").onclick = () => { album.art = { mode: "none", results, state: "done" }; paintCover(album); closeModal(); };
+      box.querySelector("[data-close]").onclick = () => closeModal();
+    });
+}
+
+function albumValid(host, album) {
+  const sec = host.querySelector(`.albumsection[data-idx="${album.idx}"]`);
+  let ok = true;
+  REQUIRED_ALBUM.forEach(a => {
+    const inp = sec.querySelector(`[data-a="${a}"]`);
+    const empty = !inp.value.trim();
+    inp.classList.toggle("needs", empty);
+    if (empty) ok = false;
+  });
+  sec.querySelectorAll('input[data-f="title"]').forEach(inp => {
+    const empty = !inp.value.trim();
+    inp.classList.toggle("needs", empty);
+    if (empty) ok = false;
+  });
+  return ok;
+}
+
+function collectEntries(host, albums) {
+  const out = [];
+  for (const album of albums) {
+    const sec = host.querySelector(`.albumsection[data-idx="${album.idx}"]`);
+    const alb = {};
+    sec.querySelectorAll(".albummeta input[data-a]").forEach(i => alb[i.dataset.a] = i.value);
+    const art = album.art.mode === "url" ? { art_url: album.art.url }
+              : album.art.mode === "none" ? { art_none: true } : {};
+    sec.querySelectorAll("tr[data-i]").forEach(tr => {
+      const row = {
+        i: Number(tr.dataset.i),
+        album: alb.album, albumartist: alb.albumartist, year: alb.year, genre: alb.genre,
+        conflict: album.hasConflict ? album.conflict : undefined,
+        ...(album.hasLossless ? { bitrate: album.bitrate } : {}),
+        ...art,
+      };
+      tr.querySelectorAll("input[data-f]").forEach(inp => row[inp.dataset.f] = inp.value);
+      out.push(row);
+    });
+  }
+  return out;
 }

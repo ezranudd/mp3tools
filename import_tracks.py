@@ -262,58 +262,23 @@ def read_tags(mp3: Path) -> dict | None:
 
 def fill_album_tags(group: list[tuple[Path, dict]], label: str, dry_run: bool,
                     *, ask_text=None) -> None:
-    """Auto-fill YEAR/TCON/ALBUMARTIST; prompt for artist/album title if still missing."""
-    # Year: try folder name for a 4-digit year, fall back to 1900.
-    year_default  = extract_year(label) or "1900"
-    needs_year    = any(not td.get("YEAR") for _, td in group)
-    needs_genre   = any(not td.get("TCON") for _, td in group)
-    missing_prompt = [k for k in ("TPE1", "TALB")
-                      if any(not td.get(k) for _, td in group)]
-
-    if dry_run:
-        if needs_year:
-            print(f"  (dry run) Would set Year to '{year_default}'  [{label}]")
-        if needs_genre:
-            print(f"  (dry run) Would set Genre to 'Unknown'  [{label}]")
-        if any(not td.get("ALBUMARTIST") and td.get("TPE1") for _, td in group):
-            print(f"  (dry run) Would set Album Artist from Artist  [{label}]")
-        if missing_prompt:
-            print(f"  (dry run) Would prompt for: "
-                  f"{', '.join(TAG_NAMES.get(k, k) for k in missing_prompt)}  [{label}]")
-        for _, td in group:
-            if not td.get("ALBUMARTIST") and td.get("TPE1"):
-                td["ALBUMARTIST"] = td["TPE1"]
-        return
-
-    if needs_year:
-        print(f"  Auto-fill Year: '{year_default}'  [{label}]")
-    if needs_genre:
-        print(f"  Auto-fill Genre: 'Unknown'  [{label}]")
-
+    """Auto-fill/suggest album tags in place — never prompts. Year←folder/1900,
+    Genre←'Unknown', Album Artist←Artist, and propagate any Artist/Album value found
+    on one track to the rest. Truly-missing Artist/Album are left blank for the UI."""
+    year_default = extract_year(label) or "1900"
     for _, td in group:
         if not td.get("YEAR"):
             td["YEAR"] = year_default
         if not td.get("TCON"):
             td["TCON"] = "Unknown"
 
-    _ask = ask_text or get_input
-    if missing_prompt:
-        print(f"\n  ── {label} ──")
-        for key in ("TPE1", "TALB"):
-            if key not in missing_prompt:
-                continue
-            suggestion = next((td[key] for _, td in group if td.get(key)), "")
-            prompt = f"    {TAG_NAMES.get(key, key)}"
-            if suggestion:
-                prompt += f" [{suggestion}]"
-            prompt += ": "
-            val = _ask(prompt)
-            if not val and suggestion:
-                val = suggestion
-            if val:
-                for _, td in group:
-                    if not td.get(key):
-                        td[key] = val
+    # Propagate a single known Artist/Album across the album group as a suggestion.
+    for key in ("TPE1", "TALB"):
+        suggestion = next((td[key] for _, td in group if td.get(key)), "")
+        if suggestion:
+            for _, td in group:
+                if not td.get(key):
+                    td[key] = suggestion
 
     for _, td in group:
         if not td.get("ALBUMARTIST") and td.get("TPE1"):
@@ -321,30 +286,14 @@ def fill_album_tags(group: list[tuple[Path, dict]], label: str, dry_run: bool,
 
 
 def fill_track_tags(mp3: Path, td: dict, dry_run: bool, *, ask_text=None) -> None:
-    """Prompt for Title if missing; update td in place."""
-    _ask = ask_text or get_input
-    for key in TRACK_TAGS:
-        if td.get(key):
-            continue
-        if dry_run:
-            print(f"    (dry run) {mp3.name}: missing {TAG_NAMES.get(key, key)}")
-            continue
-        suggestion = ""
-        if key == "TIT2":
-            stem = mp3.stem
-            if " - " in stem:
-                suggestion = stem.split(" - ", 1)[-1]
-            else:
-                suggestion = re.sub(r"^\d+[\.\s\-]+", "", stem).strip() or stem
-        prompt = f"    {mp3.name}  {TAG_NAMES.get(key, key)}"
-        if suggestion:
-            prompt += f" [{suggestion}]"
-        prompt += ": "
-        val = _ask(prompt)
-        if not val and suggestion:
-            val = suggestion
-        if val:
-            td[key] = val
+    """Suggest a Title from the filename if missing — never prompts."""
+    if td.get("TIT2"):
+        return
+    stem = mp3.stem
+    if " - " in stem:
+        td["TIT2"] = stem.split(" - ", 1)[-1]
+    else:
+        td["TIT2"] = re.sub(r"^\d+[\.\s\-]+", "", stem).strip() or stem
 
 
 # ── Core ──────────────────────────────────────────────────────────────────────
@@ -397,6 +346,19 @@ def _create_placeholder_cover(path: Path) -> bool:
     except Exception as e:
         print(f"    ERROR creating placeholder: {e}")
         return False
+
+
+def _fetch_art_url(url: str, max_size: int) -> tuple[bytes, str] | None:
+    """Download a specific artwork URL (user/auto choice) and resize. None on failure."""
+    try:
+        from fetch_art import fetch_artwork, resize_artwork
+        data, mime = fetch_artwork(url)
+        if max_size > 0:
+            data, mime = resize_artwork(data, mime, max_size)
+        return data, mime
+    except Exception as e:
+        print(f"  Cover       : art fetch failed: {e}")
+        return None
 
 
 def _try_fetch_art(artist: str, album: str, settings: dict, max_size: int) -> tuple[bytes, str] | None:
@@ -552,19 +514,14 @@ def import_tracks(source: Path, library: Path, dry_run: bool,
             existing_mp3s = sorted(dest_folder.glob("*.mp3"))
             if existing_mp3s:
                 print(f"  Existing    : {len(existing_mp3s)} track(s) already in library")
-                if dry_run:
-                    print("  (dry run) Would prompt to add or skip")
-                    offset = len(existing_mp3s)
-                else:
-                    _ask_choice = ask_choice or get_input
-                    choice = ""
-                    while choice not in ("a", "s"):
-                        choice = _ask_choice("  [A]dd to existing album  [S]kip: ").lower()
-                    if choice == "s":
-                        print("  Skipped.\n")
-                        stats["skipped"] += len(group)
-                        continue
-                    offset = len(existing_mp3s)
+                # Resolution comes from the UI (rides in the entry dict); default add.
+                resolution = next((td.get("_CONFLICT") for _, td in group
+                                   if td.get("_CONFLICT")), "add")
+                if resolution == "skip":
+                    print("  Skipped (existing album).\n")
+                    stats["skipped"] += len(group)
+                    continue
+                offset = len(existing_mp3s)
 
         # ── Sort and assign track numbers ──────────────────────────────────────
         # Sort by position in the entries list, which matches the preview display
@@ -592,15 +549,20 @@ def import_tracks(source: Path, library: Path, dry_run: bool,
                 except Exception as e:
                     print(f"  ERROR updating existing TRCK ({ex.name}): {e}")
 
-        # ── Locate cover source and pre-prepare embed data ─────────────────────
-        src_folders = {src.parent for src, _ in group}
-        cover_src   = None
-        for sf in sorted(src_folders):
-            if sf.is_dir():
-                c = _find_cover(sf)
-                if c:
-                    cover_src = c
-                    break
+        # ── Resolve the album's cover (UI choice rides in the entry dict) ──────
+        # _ART_URL → use that online image; _ART_NONE → force a placeholder;
+        # otherwise fall back to a local source cover / the auto-fetch setting.
+        art_url  = next((td.get("_ART_URL") for _, td in group if td.get("_ART_URL")), None)
+        art_none = any(td.get("_ART_NONE") for _, td in group)
+
+        cover_src = None
+        if not art_url and not art_none:
+            for sf in sorted({src.parent for src, _ in group}):
+                if sf.is_dir():
+                    c = _find_cover(sf)
+                    if c:
+                        cover_src = c
+                        break
 
         cover_apic_data: tuple[bytes, str] | None = None
         if cover_art in ("embed", "both") and cover_src:
@@ -608,11 +570,14 @@ def import_tracks(source: Path, library: Path, dry_run: bool,
             if cover_apic_data:
                 print(f"  Cover art  : embedding from {cover_src.name}")
 
-        # Fetch art online now (before the copy loop) when no source cover exists,
+        # Fetch art online now (before the copy loop) when there's no source cover,
         # so fetched data can be embedded during the copy loop for embed/both mode.
         fetched_art: tuple[bytes, str] | None = None
-        if cover_src is None and not dry_run and settings and settings.get("fetch_art_online"):
-            fetched_art = _try_fetch_art(album_artist_tag, album_tag, settings, cover_art_size)
+        if cover_src is None and not dry_run and not art_none:
+            if art_url:
+                fetched_art = _fetch_art_url(art_url, cover_art_size)
+            elif settings and settings.get("fetch_art_online"):
+                fetched_art = _try_fetch_art(album_artist_tag, album_tag, settings, cover_art_size)
             if fetched_art and cover_art in ("embed", "both"):
                 cover_apic_data = fetched_art
 
@@ -629,7 +594,7 @@ def import_tracks(source: Path, library: Path, dry_run: bool,
                 stats["skipped"] += 1
                 continue
 
-            lossless_bitrate = td.get("_LOSSLESS_BITRATE")
+            lossless_bitrate = td.get("_LOSSLESS_BITRATE") or 320
             lossless_label = (f" [{lossless_bitrate} kbps]" if is_lossless and lossless_bitrate
                               else (" [lossless → MP3]" if is_lossless else ""))
             print(f"  {src.parent.name}/{src.name}{lossless_label}")

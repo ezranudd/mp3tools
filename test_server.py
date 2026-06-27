@@ -443,6 +443,133 @@ def test_import_preview_edits_genre(tmp_path, tmp_path_factory):
     assert str(ID3(imported[0], translate=False).get("TCON")) == "Jazz"
 
 
+def _make_flac(path, **frames):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+         "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo", "-t", "1", str(path)],
+        check=True,
+    )
+    if frames:
+        from mutagen.flac import FLAC
+        f = FLAC(path)
+        for k, v in frames.items():
+            f[k] = v
+        f.save()
+
+
+def test_import_preview_serializes_new_fields(tmp_path, tmp_path_factory):
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("ffmpeg not available")
+    src = tmp_path_factory.mktemp("source")
+    _make_mp3(src / "song.mp3", TIT2="T", TPE1="A", TPE2="A", TALB="Al", TYER="2020", TRCK="1")
+    server.set_root(tmp_path)
+    c = TestClient(server.app)
+
+    seen = {}
+
+    def answer(prompt):
+        if prompt["kind"] == "preview":
+            seen["default_bitrate"] = prompt.get("default_bitrate")
+            seen["row0"] = prompt["entries"][0]
+            return {"proceed": True, "entries": prompt["entries"]}
+        if prompt["kind"] == "choice" and prompt["options"]:
+            return prompt["options"][0]["key"]
+        return ""
+
+    jid = c.post("/api/jobs", json={"kind": "import", "source": str(src)}).json()["job_id"]
+    assert _poll(c, jid, answer)["state"] == "done"
+    assert seen["default_bitrate"] == 320
+    assert seen["row0"]["lossless"] is False
+    assert "conflict" in seen["row0"]
+
+
+def test_import_conflict_skip_and_add(tmp_path, tmp_path_factory):
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("ffmpeg not available")
+    # Pre-existing album in the library (dest derived from tags: Imp / 2020 - ImpAlbum).
+    dest = tmp_path / "Imp" / "2020 - ImpAlbum"
+    _make_mp3(dest / "01. Imp - Old.mp3", TIT2="Old", TPE1="Imp", TPE2="Imp",
+              TALB="ImpAlbum", TYER="2020", TRCK="01/1")
+    server.set_root(tmp_path)
+    c = TestClient(server.app)
+
+    def run(resolution):
+        src = tmp_path_factory.mktemp("src")
+        _make_mp3(src / "new.mp3", TIT2="New", TPE1="Imp", TPE2="Imp",
+                  TALB="ImpAlbum", TYER="2020", TRCK="1")
+
+        def answer(prompt):
+            if prompt["kind"] == "preview":
+                rows = prompt["entries"]
+                assert rows[0]["conflict"] is True       # dest already exists
+                for r in rows:
+                    r["conflict"] = resolution
+                return {"proceed": True, "entries": rows}
+            if prompt["kind"] == "choice" and prompt["options"]:
+                return prompt["options"][0]["key"]
+            return ""
+
+        jid = c.post("/api/jobs", json={"kind": "import", "source": str(src)}).json()["job_id"]
+        assert _poll(c, jid, answer)["state"] == "done"
+
+    run("skip")
+    assert len(list(dest.glob("*.mp3"))) == 1           # skipped: untouched
+    run("add")
+    assert len(list(dest.glob("*.mp3"))) == 2           # added: appended
+
+
+def test_import_lossless_bitrate_not_dropped(tmp_path, tmp_path_factory):
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("ffmpeg not available")
+    src = tmp_path_factory.mktemp("flacsrc")
+    _make_flac(src / "track.flac", title="Song", artist="Band",
+               albumartist="Band", album="FlacAlbum", date="2019", tracknumber="1")
+    server.set_root(tmp_path)
+    c = TestClient(server.app)
+
+    def answer(prompt):
+        if prompt["kind"] == "preview":
+            rows = prompt["entries"]
+            assert rows[0]["lossless"] is True
+            for r in rows:
+                r["bitrate"] = 128
+            return {"proceed": True, "entries": rows}
+        if prompt["kind"] == "choice" and prompt["options"]:
+            return prompt["options"][0]["key"]
+        return ""
+
+    jid = c.post("/api/jobs", json={"kind": "import", "source": str(src)}).json()["job_id"]
+    assert _poll(c, jid, answer)["state"] == "done"
+    imported = list(tmp_path.rglob("*.mp3"))
+    assert imported, "lossless entry must import (not be dropped) when a bitrate is set"
+
+
+def test_import_art_none_writes_placeholder(tmp_path, tmp_path_factory):
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("ffmpeg not available")
+    pytest.importorskip("PIL")
+    src = tmp_path_factory.mktemp("noart")
+    _make_mp3(src / "song.mp3", TIT2="T", TPE1="Solo", TPE2="Solo",
+              TALB="NoArt", TYER="2020", TRCK="1")
+    server.set_root(tmp_path)
+    c = TestClient(server.app)
+
+    def answer(prompt):
+        if prompt["kind"] == "preview":
+            rows = prompt["entries"]
+            for r in rows:
+                r["art_none"] = True
+            return {"proceed": True, "entries": rows}
+        if prompt["kind"] == "choice" and prompt["options"]:
+            return prompt["options"][0]["key"]
+        return ""
+
+    jid = c.post("/api/jobs", json={"kind": "import", "source": str(src)}).json()["job_id"]
+    assert _poll(c, jid, answer)["state"] == "done"
+    assert (tmp_path / "Solo" / "2020 - NoArt" / "cover.jpg").is_file()
+
+
 def test_import_upload_rejects_traversal(client):
     token = client.post("/api/import/upload/start").json()["token"]
     resp = client.post("/api/import/upload/file",

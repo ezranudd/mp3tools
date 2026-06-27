@@ -32,7 +32,10 @@ DEFAULTS: dict = {
     "background_fit":     "cover",    # web UI: "cover" | "contain" | "tile"
     "background_mime":    "",         # web UI: mime of the uploaded bg image (set on upload)
     "background_readable": True,      # web UI: boost text contrast over the bg image
+    "import_bitrate":       320,      # web UI: default lossless→MP3 bitrate for import
 }
+
+_VALID_BITRATES = frozenset((128, 160, 192, 256, 320))
 
 _VALID_COVER_ART = frozenset(("folder", "embed", "both"))
 _VALID_ART_SOURCES = frozenset(ART_SOURCE_ORDER)
@@ -86,6 +89,8 @@ def load(library_root: Path) -> dict:
                 settings["background_mime"] = data["background_mime"].strip()
             if isinstance(data.get("background_readable"), bool):
                 settings["background_readable"] = data["background_readable"]
+            if data.get("import_bitrate") in _VALID_BITRATES:
+                settings["import_bitrate"] = data["import_bitrate"]
         except Exception:
             pass
     return settings

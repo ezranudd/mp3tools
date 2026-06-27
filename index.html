@@ -242,6 +242,17 @@
   .previewactions { position:sticky; bottom:0; display:flex; gap:8px;
                     justify-content:flex-end; margin-top:16px; padding-top:12px;
                     border-top:1px solid var(--line); background:var(--bg); }
+  /* Import cover slot: source/found image, searching shimmer, or placeholder. */
+  .importcover { width:200px; height:200px; flex:0 0 auto; border:1px solid var(--line);
+                 border-radius:6px; background:var(--panel); cursor:pointer; overflow:hidden;
+                 display:flex; align-items:center; justify-content:center; position:relative; }
+  .importcover img.cover { width:100%; height:100%; border:0; border-radius:0; }
+  .importcover .covertext { color:var(--muted); font-size:13px; text-align:center; }
+  .importcover.placeholder { border-style:dashed; }
+  .importcover.shimmer { background:linear-gradient(90deg,var(--panel),var(--line),var(--panel));
+                         background-size:200% 100%; animation:shimmer 1.2s ease-in-out infinite; }
+  @keyframes shimmer { 0% { background-position:200% 0; } 100% { background-position:-200% 0; } }
+  input.needs { outline:1px solid var(--err); outline-offset:-1px; border-radius:3px; }
   .devicelist { display:flex; flex-wrap:wrap; gap:8px; margin:2px 0 4px; }
   .devbtn { display:flex; gap:8px; align-items:center; }
   .devbtn svg { width:16px; height:16px; flex:0 0 auto; }
