@@ -12,6 +12,9 @@ let TREE = [];        // artist nodes from /api/tree
 let treeEl, detailEl;
 let subscribed = false;
 let pendingReveal = null;   // { artist_path, album_path, track_path? } from search
+let genreAlbums = [];       // albums in the current genre grid
+let genreName = "";         // current genre being shown
+let genreSort = "az";       // az | date | rand
 
 // Ask Browse to jump to an album/track once it's (re)mounted.
 export function requestReveal(target) { pendingReveal = target; }
@@ -187,6 +190,75 @@ async function refreshCurrent() {
   if (CURRENT) selectArtist(CURRENT.path);
 }
 
+// ── Genre grid (click an album's genre to see all same-genre albums) ──────────
+
+async function showGenre(genre) {
+  CURRENT = null;     // a grid, not an artist — leave it alone on job/mode rerenders
+  clearSel();
+  genreName = genre;
+  genreSort = "az";
+  detailEl.innerHTML = `<p class="muted">Loading…</p>`;
+  let data;
+  try { data = await jget("/api/genre?name=" + encodeURIComponent(genre)); }
+  catch (e) { toast(e.message, true); return; }
+  genreAlbums = data.albums || [];
+  detailEl.innerHTML = `
+    <div class="artisthead genrehead">
+      <h2>Genre · ${escapeHtml(genre)}</h2>
+      <div class="sub">${genreAlbums.length} album${genreAlbums.length === 1 ? "" : "s"}</div>
+      <div class="sortbar">
+        <span class="muted">Sort:</span>
+        <button class="btn sortbtn" data-sort="az">A–Z</button>
+        <button class="btn sortbtn" data-sort="date">Date</button>
+        <button class="btn sortbtn" data-sort="rand">Random</button>
+      </div>
+    </div>
+    <div class="genregrid" id="genreGrid"></div>`;
+  detailEl.querySelectorAll(".sortbtn").forEach(b =>
+    b.onclick = () => { genreSort = b.dataset.sort; renderGenreGrid(); });
+  renderGenreGrid();
+}
+
+function sortedGenreAlbums() {
+  const list = genreAlbums.slice();
+  if (genreSort === "az") {
+    list.sort((a, b) => (a.album || "").localeCompare(b.album || "", undefined, { sensitivity: "base" }));
+  } else if (genreSort === "date") {
+    list.sort((a, b) => (a.year || "9999").localeCompare(b.year || "9999"));
+  } else {
+    for (let i = list.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [list[i], list[j]] = [list[j], list[i]];
+    }
+  }
+  return list;
+}
+
+function renderGenreGrid() {
+  const grid = detailEl.querySelector("#genreGrid");
+  if (!grid) return;
+  detailEl.querySelectorAll(".sortbtn").forEach(b =>
+    b.classList.toggle("active", b.dataset.sort === genreSort));
+  if (!genreAlbums.length) {
+    grid.innerHTML = `<p class="muted">No albums in this genre.</p>`;
+    return;
+  }
+  grid.innerHTML = sortedGenreAlbums().map(a => {
+    const cover = "/api/cover?path=" + encodeURIComponent(a.album_path);
+    return `<div class="gcard" data-album="${escapeAttr(a.album_path)}"
+                 data-artist="${escapeAttr(a.artist_path)}" title="${escapeAttr((a.album || "") + " — " + (a.artist || ""))}">
+        <img src="${cover}" loading="lazy" onerror="this.style.visibility='hidden'">
+        <div class="gcap"><b>${escapeHtml(a.album || "")}</b><span>${escapeHtml(a.artist || "")}</span></div>
+      </div>`;
+  }).join("");
+  grid.querySelectorAll(".gcard").forEach(card =>
+    card.onclick = () => applyReveal({
+      artist_path: card.dataset.artist,
+      album_path: card.dataset.album,
+      track_path: null,
+    }));
+}
+
 // ── Album rendering (into an arbitrary container, bound to a state object) ─────
 
 function renderAlbumInto(container, st) {
@@ -210,7 +282,10 @@ function albumHead(st, innerMeta) {
 
 function renderAlbumBrowseInto(container, st) {
   const { tracks, artist, album, year, genre } = st;
-  const sub = [artist || "(unknown artist)", year, genre].filter(Boolean).map(escapeHtml).join(" · ");
+  const subParts = [escapeHtml(artist || "(unknown artist)")];
+  if (year) subParts.push(escapeHtml(year));
+  if (genre) subParts.push(`<span class="genrelink" data-genre="${escapeAttr(genre)}">${escapeHtml(genre)}</span>`);
+  const sub = subParts.join(" · ");
   const rows = tracks.map(t => `
     <tr class="browserow" data-path="${escapeAttr(t.path)}">
       <td><span class="rowplay">▶</span> <span class="num">${escapeHtml((t.track || "").split("/")[0])}</span></td>
@@ -229,6 +304,8 @@ function renderAlbumBrowseInto(container, st) {
     </table>`;
   container.querySelectorAll("tr.browserow").forEach((tr, i) =>
     tr.onclick = () => playAlbum(tracks, i, st.path));
+  container.querySelectorAll(".genrelink").forEach(el =>
+    el.onclick = (e) => { e.stopPropagation(); showGenre(el.dataset.genre); });
   updatePlayingHighlight(getCurrentPath());
 }
 

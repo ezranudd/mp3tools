@@ -166,6 +166,34 @@ def test_search_empty_query(client):
     assert data == {"artists": [], "albums": [], "tracks": []}
 
 
+def test_genre_lists_albums(client, tmp_path):
+    # Two albums (different artists) tagged Rock, plus one tagged Jazz.
+    _make_mp3(tmp_path / "Rocker" / "2001 - Loud" / "01. Rocker - A.mp3",
+              TIT2="A", TPE1="Rocker", TPE2="Rocker", TALB="Loud", TYER="2001",
+              TRCK="01/1", TCON="Rock")
+    _make_mp3(tmp_path / "Stoner" / "2010 - Heavy" / "01. Stoner - B.mp3",
+              TIT2="B", TPE1="Stoner", TPE2="Stoner", TALB="Heavy", TYER="2010",
+              TRCK="01/1", TCON="rock")          # case-insensitive match
+    _make_mp3(tmp_path / "Smooth" / "2005 - Mellow" / "01. Smooth - C.mp3",
+              TIT2="C", TPE1="Smooth", TPE2="Smooth", TALB="Mellow", TYER="2005",
+              TRCK="01/1", TCON="Jazz")
+
+    data = client.get("/api/genre", params={"name": "Rock"}).json()
+    assert data["genre"] == "Rock"
+    albums = data["albums"]
+    titles = sorted(a["album"] for a in albums)
+    assert titles == ["Heavy", "Loud"]
+    loud = next(a for a in albums if a["album"] == "Loud")
+    assert loud["album_path"].endswith("2001 - Loud")
+    assert loud["artist_path"].endswith("Rocker")
+    assert loud["year"] == "2001"
+
+
+def test_genre_empty(client):
+    data = client.get("/api/genre", params={"name": "Nonexistent"}).json()
+    assert data == {"genre": "Nonexistent", "albums": []}
+
+
 # ── Local artwork upload ──────────────────────────────────────────────────────
 
 def test_art_upload_local_file(client, tmp_path):

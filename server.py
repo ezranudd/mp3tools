@@ -158,6 +158,11 @@ def api_search(q: str = Query(""), limit: int = Query(20)) -> JSONResponse:
     return JSONResponse(browse.search(ROOT, q, limit))
 
 
+@app.get("/api/genre")
+def api_genre(name: str = Query("")) -> JSONResponse:
+    return JSONResponse({"genre": name, "albums": browse.albums_by_genre(ROOT, name)})
+
+
 # ── Audio streaming ───────────────────────────────────────────────────────────
 
 @app.get("/api/track")

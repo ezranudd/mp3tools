@@ -803,6 +803,36 @@ def search(root: Path, query: str, limit: int = 20) -> dict:
     return {"artists": artists, "albums": albums, "tracks": tracks}
 
 
+def albums_by_genre(root: Path, genre: str) -> list[dict]:
+    """All albums whose genre matches *genre* (case-insensitive, trimmed).
+
+    An album's genre is taken from its first track's TCON, mirroring how the
+    Browse UI derives an album's genre. Returns a list of
+    {"album", "artist", "year", "album_path", "artist_path"} sorted A-Z by
+    album label.
+    """
+    want = genre.strip().lower()
+    out: list[dict] = []
+    if not want:
+        return out
+
+    for artist in build_tree(root):
+        for album in artist.children:
+            if not album.children:
+                continue
+            tags = read_tags(album.children[0].path)
+            if (tags.get("genre") or "").strip().lower() != want:
+                continue
+            out.append({
+                "album": tags.get("album") or album.label,
+                "artist": tags.get("albumartist") or tags.get("artist") or artist.label,
+                "year": tags.get("year", ""),
+                "album_path": str(album.path), "artist_path": str(artist.path),
+            })
+    out.sort(key=lambda a: a["album"].lower())
+    return out
+
+
 def find_node(root: Path, path: Path) -> "Node | None":
     """Locate the Node whose .path == *path* within build_tree(root)."""
     path = Path(path)
