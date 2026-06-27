@@ -89,6 +89,56 @@ def parse_track(s: str) -> tuple[int | None, int | None]:
         return None, None
 
 
+def _natural_key(s: str) -> tuple:
+    """Split a string into digit/non-digit chunks so that '2' sorts before
+    '10' and 'CD2' before 'CD10'. Each chunk is a uniformly-typed 3-tuple so
+    keys are always comparable (no int-vs-str TypeError)."""
+    out = []
+    for tok in re.findall(r"\d+|\D+", s.lower()):
+        if tok.isdigit():
+            out.append((0, int(tok), ""))
+        else:
+            out.append((1, 0, tok))
+    return tuple(out)
+
+
+def _disc_track_nums(td: dict) -> tuple[int, int]:
+    """(disc, track) from TPOS/TRCK. Missing disc → 1; missing track → large
+    sentinel so untagged files fall to the natural-filename tiebreak."""
+    disc_raw = (td.get("TPOS") or "1").split("/")[0].strip()
+    trck_raw = (td.get("TRCK") or "").split("/")[0].strip()
+    try:
+        disc = int(disc_raw)
+    except ValueError:
+        disc = 1
+    try:
+        track = int(trck_raw)
+    except ValueError:
+        track = 10**9
+    return disc, track
+
+
+def merge_order_key(source: Path, src: Path, td: dict) -> list:
+    """Discovery sort key that keeps merged albums in a robust, predictable
+    order. A folder's own files always come before its subfolders' files, so
+    "Bonus Tracks" / "CD2" subfolders append after the parent / "CD1" tracks
+    instead of interleaving in the middle. Folders and filenames sort
+    naturally, and within a single folder tracks order by disc then track
+    number (falling back to natural filename order)."""
+    try:
+        rel = src.relative_to(source)
+    except ValueError:
+        rel = Path(src.name)
+    parts = rel.parts or (src.name,)
+    disc, track = _disc_track_nums(td)
+    # Directory components first (marker 1), then the file leaf (marker 0).
+    # Comparing a leaf (0, …) against a sibling directory (1, …) short-circuits
+    # on the marker, so a folder's files always precede its subfolders' files.
+    key = [(1, _natural_key(p)) for p in parts[:-1]]
+    key.append((0, disc, track, _natural_key(parts[-1])))
+    return key
+
+
 def get_input(prompt: str) -> str:
     try:
         return input(prompt).strip()
@@ -434,6 +484,11 @@ def import_tracks(source: Path, library: Path, dry_run: bool,
                 continue
         td = read_lossless_tags(lf)
         entries.append((lf, td))
+
+    # ── Order for merge (subfolders append after parent; CD2 after CD1) ─────────
+    # This discovery order is the single source of truth: the preview, the web
+    # UI default order, and the final track numbering all follow it.
+    entries.sort(key=lambda e: merge_order_key(source, e[0], e[1]))
 
     # ── Fill missing tags (grouped by source folder for prompting) ─────────────
     by_src: dict[Path, list[tuple[Path, dict]]] = defaultdict(list)

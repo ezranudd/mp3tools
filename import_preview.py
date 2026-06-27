@@ -11,7 +11,6 @@ Edits are applied to the entries list in-place.
 
 import curses
 import os
-import re
 from collections import defaultdict
 from pathlib import Path
 
@@ -44,21 +43,6 @@ def _album_key(td: dict) -> str:
     year  = td.get("YEAR") or ""
     album = td.get("TALB") or "(Unknown Album)"
     return f"{year} - {album}" if year else album
-
-
-def _track_sort(src: Path, td: dict) -> tuple[int, int]:
-    disc_raw = (td.get("TPOS") or "1").split("/")[0].strip()
-    trck_raw = (td.get("TRCK") or "").split("/")[0].strip()
-    try:
-        disc = int(disc_raw)
-    except ValueError:
-        disc = 1
-    try:
-        track = int(trck_raw)
-    except ValueError:
-        m = re.match(r"^(\d+)", src.stem)
-        track = int(m.group(1)) if m else 9999
-    return (disc, track)
 
 
 def _track_label(src: Path, td: dict, global_num: int | None = None,
