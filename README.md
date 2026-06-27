@@ -76,21 +76,24 @@ The left nav switches between views:
   right in the browser.
 - **Import** — copy tracks from a source folder into the library; review an
   editable preview, then answer any prompts.
+- **Sync** — mirror selected artists/albums to a device: enter the device path,
+  tick what to sync (tri-state per artist, expand for individual albums), preview
+  the plan (files/bytes to copy & delete vs. free space), then run it.
 - **Settings** — edit every option (cover-art mode, preserve flags, art sources,
   API keys) and save to `{root}/.mp3tools`.
 
-Standardize and Import run as background **jobs** with a live log; the browser
-polls each job and surfaces its prompts as dialogs (the same callback contract
-the TUI uses). Only one operation runs at a time. Tag rules (ID3v2.3, `TPE2`
-album-artist, etc.) are enforced by the shared modules exactly as in the TUI.
+Standardize, Import and Sync run as background **jobs** with a live log; the
+browser polls each job and surfaces its prompts as dialogs (the same callback
+contract the TUI uses). Only one operation runs at a time. Tag rules (ID3v2.3,
+`TPE2` album-artist, etc.) are enforced by the shared modules exactly as in the TUI.
 
 Pass `--host`/`--port` to change the bind address, or `--desktop` (requires the
 `desktop` extra) to open in a native window instead of a browser tab.
 
-> **Heads-up:** edits, standardize, and import all write to disk. Point the
+> **Heads-up:** edits, standardize, import and sync all write to disk. Point the
 > server at a copy of your library if you want to experiment safely.
 >
-> CD ripping and device sync are not in the web UI yet — use the TUI for those.
+> CD ripping is not in the web UI yet — use the TUI for that.
 
 ## Features
 

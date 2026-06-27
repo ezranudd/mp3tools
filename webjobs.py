@@ -330,9 +330,54 @@ def _run_import(job: Job, params: dict) -> None:
     print("\nDone.")
 
 
+def _run_sync(job: Job, params: dict) -> None:
+    import shutil
+    import sync_library as sync
+
+    library = Path(params["path"])
+    device = Path(params["device"])
+    dry_run = bool(params.get("dry_run", False))
+    selection = params.get("selection", {})
+
+    artists = sync.artists_from_selection(selection)
+    plan = sync.combined_plan(library, device, artists)
+    usage = shutil.disk_usage(device)
+    net = max(0, plan.bytes_to_copy - plan.bytes_to_remove)
+
+    print(f"Device : {device}")
+    print(f"Mode   : {'DRY RUN' if dry_run else 'LIVE'}")
+    print(f"Copy   : {len(plan.copy_files)} files ({sync.format_size(plan.bytes_to_copy)})")
+    print(f"Delete : {len(plan.remove_files)} files ({sync.format_size(plan.bytes_to_remove)})")
+    print(f"Free   : {sync.format_size(usage.free)}  (net needed {sync.format_size(net)})")
+
+    if net > usage.free:
+        raise RuntimeError(
+            f"Not enough free space: need {sync.format_size(net)}, "
+            f"free {sync.format_size(usage.free)}")
+    if not (plan.copy_files or plan.remove_files or plan.remove_dirs):
+        print("\nNothing to do — device already in sync.")
+        return
+
+    print()
+    state = {"name": None}
+
+    def on_progress(action, name, df, tf, db, tb):
+        if name and name != state["name"]:
+            state["name"] = name
+            print(f"  {action}: {name}")
+        job.set_progress(f"{df}/{tf} files · {sync.format_size(db)} / {sync.format_size(tb)}")
+
+    copied, rf, rd = sync.run_plan(plan, dry_run, on_progress=on_progress)
+    verb_c = "Would copy" if dry_run else "Copied"
+    verb_d = "would delete" if dry_run else "deleted"
+    print(f"\n{verb_c} {copied}, {verb_d} {rf}, removed {rd} folders.")
+    print("Dry run complete." if dry_run else "Sync complete.")
+
+
 _RUNNERS = {
     "standardize": _run_standardize,
     "import": _run_import,
+    "sync": _run_sync,
 }
 
 

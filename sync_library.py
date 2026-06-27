@@ -337,6 +337,150 @@ def combined_plan(library: Path, device: Path, artists: list[ArtistInfo]) -> Syn
     return SyncPlan(all_copy, all_remove_files, all_remove_dirs, copy_bytes, remove_bytes)
 
 
+# ── Web/headless helpers (no curses) ──────────────────────────────────────────
+
+def artist_rows(library: Path, device: Path) -> list[dict]:
+    """Artist-level rows for the web sync view (size + device status each)."""
+    rows = []
+    for ai in build_artist_info(library):
+        ensure_artist_size(ai)
+        ensure_artist_status(ai, device)
+        rows.append({
+            "path": str(ai.path), "name": ai.path.name,
+            "size": ai.size or 0, "files": ai.files or 0,
+            "size_h": format_size(ai.size or 0), "status": ai.device_status,
+        })
+    return rows
+
+
+def album_rows(artist_path: Path, device: Path) -> dict:
+    """Albums of one artist (loaded on expand), with size + device status."""
+    ai = ArtistInfo(path=Path(artist_path))
+    ensure_albums(ai)
+    rows = []
+    for al in (ai.albums or []):
+        ensure_album_size(al)
+        ensure_album_status(al, ai, device)
+        rows.append({
+            "path": str(al.path), "name": al.path.name,
+            "size": al.size or 0, "files": al.files or 0,
+            "size_h": format_size(al.size or 0), "status": al.device_status,
+        })
+    return {"has_albums": bool(ai.albums), "albums": rows}
+
+
+def artists_from_selection(selection: dict) -> list[ArtistInfo]:
+    """Reconstruct ArtistInfo objects (with .selected flags) from a web payload.
+
+    selection maps an artist path to either the string "all" or a list of
+    selected album paths. Mirrors how the TUI's ArtistInfo/AlbumInfo feed
+    combined_plan().
+    """
+    artists: list[ArtistInfo] = []
+    for apath, sel in selection.items():
+        ai = ArtistInfo(path=Path(apath))
+        ensure_albums(ai)
+        if sel == "all":
+            if ai.albums:
+                for al in ai.albums:
+                    al.selected = True
+            else:
+                ai.whole_selected = True
+        elif isinstance(sel, (list, tuple)):
+            wanted = {str(p) for p in sel}
+            if ai.albums:
+                for al in ai.albums:
+                    if str(al.path) in wanted:
+                        al.selected = True
+            else:
+                ai.whole_selected = bool(sel)
+        artists.append(ai)
+    return artists
+
+
+def plan_summary(plan: SyncPlan, device: Path) -> dict:
+    """JSON-safe summary of a SyncPlan plus device free-space figures."""
+    usage = shutil.disk_usage(device)
+    net = max(0, plan.bytes_to_copy - plan.bytes_to_remove)
+    return {
+        "copy_files": len(plan.copy_files),
+        "remove_files": len(plan.remove_files),
+        "remove_dirs": len(plan.remove_dirs),
+        "bytes_to_copy": plan.bytes_to_copy,
+        "bytes_to_remove": plan.bytes_to_remove,
+        "free": usage.free, "total": usage.total, "net_needed": net,
+        "enough_space": net <= usage.free,
+        "copy_h": format_size(plan.bytes_to_copy),
+        "remove_h": format_size(plan.bytes_to_remove),
+        "free_h": format_size(usage.free), "net_h": format_size(net),
+    }
+
+
+def run_plan(plan: SyncPlan, dry_run: bool, *, on_progress=None) -> tuple[int, int, int]:
+    """Apply a SyncPlan without curses (headless port of apply_plan).
+
+    on_progress(action, name, done_files, total_files, done_bytes, total_bytes)
+    is called as work proceeds. Returns (copied, removed_files, removed_dirs).
+    """
+    copied = removed_files = removed_dirs = 0
+    total_files = len(plan.remove_files) + len(plan.remove_dirs) + len(plan.copy_files)
+    total_bytes = plan.bytes_to_remove + plan.bytes_to_copy
+    done_files = done_bytes = 0
+
+    def emit(action: str, name: str) -> None:
+        if on_progress:
+            on_progress(action, name, done_files, total_files, done_bytes, total_bytes)
+
+    for path in plan.remove_files:
+        size = 0
+        try:
+            size = path.stat().st_size
+        except OSError:
+            pass
+        if not dry_run:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+        done_files += 1
+        done_bytes += size
+        removed_files += 1
+        emit("Delete", path.name)
+
+    for path in plan.remove_dirs:
+        if not dry_run and path.exists():
+            try:
+                path.rmdir()
+                removed_dirs += 1
+            except OSError:
+                pass
+        elif dry_run:
+            removed_dirs += 1
+        done_files += 1
+        emit("Remove folder", path.name)
+
+    for src, dst in plan.copy_files:
+        if dry_run:
+            try:
+                done_bytes += src.stat().st_size
+            except OSError:
+                pass
+        else:
+            def progress(delta: int) -> None:
+                nonlocal done_bytes
+                done_bytes += delta
+                emit("Copy", src.name)
+            copy_with_progress(src, dst, progress)
+        done_files += 1
+        copied += 1
+        emit("Copy", src.name)
+
+    if not dry_run and (copied or removed_files):
+        os.sync()
+
+    return copied, removed_files, removed_dirs
+
+
 def _bar(done: int, total: int, width: int) -> str:
     width = max(8, width)
     if total <= 0:

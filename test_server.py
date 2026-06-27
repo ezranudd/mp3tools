@@ -257,3 +257,57 @@ def test_second_job_conflict(client):
     assert resp.status_code == 409
     client.post(f"/api/jobs/{first}/cancel")  # release
     shutil.rmtree(src, ignore_errors=True)
+
+
+# ── Sync ──────────────────────────────────────────────────────────────────────
+
+def _sync_client(tmp_path):
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("ffmpeg not available")
+    _make_mp3(tmp_path / "Artist One" / "2019 - First" / "01. A - S.mp3")
+    _make_mp3(tmp_path / "Artist One" / "2021 - Second" / "01. A - S.mp3")
+    _make_mp3(tmp_path / "Artist Two" / "2020 - Solo" / "01. A - S.mp3")
+    server.set_root(tmp_path)
+    return TestClient(server.app)
+
+
+def test_sync_artists_and_albums(tmp_path, tmp_path_factory):
+    c = _sync_client(tmp_path)
+    dev = tmp_path_factory.mktemp("device")
+    data = c.get("/api/sync/artists", params={"device": str(dev)}).json()
+    names = sorted(a["name"] for a in data["artists"])
+    assert names == ["Artist One", "Artist Two"]
+    assert all(a["status"] == "not on device" for a in data["artists"])
+
+    albums = c.get("/api/sync/albums",
+                   params={"artist": str(tmp_path / "Artist One"), "device": str(dev)}).json()
+    assert albums["has_albums"]
+    assert sorted(x["name"] for x in albums["albums"]) == ["2019 - First", "2021 - Second"]
+
+
+def test_sync_plan_and_job_copies(tmp_path, tmp_path_factory):
+    c = _sync_client(tmp_path)
+    dev = tmp_path_factory.mktemp("device")
+    selection = {
+        str(tmp_path / "Artist One"): "all",
+        str(tmp_path / "Artist Two"): [str(tmp_path / "Artist Two" / "2020 - Solo")],
+    }
+    plan = c.post("/api/sync/plan", json={"device": str(dev), "selection": selection}).json()
+    assert plan["copy_files"] == 3 and plan["enough_space"]
+
+    jid = c.post("/api/jobs",
+                 json={"kind": "sync", "device": str(dev), "selection": selection}).json()["job_id"]
+    j = _poll(c, jid)
+    assert j["state"] == "done", j.get("error")
+    copied = sorted(str(p.relative_to(dev)) for p in dev.rglob("*.mp3"))
+    assert copied == [
+        "Artist One/2019 - First/01. A - S.mp3",
+        "Artist One/2021 - Second/01. A - S.mp3",
+        "Artist Two/2020 - Solo/01. A - S.mp3",
+    ]
+
+
+def test_sync_device_inside_library_rejected(tmp_path):
+    c = _sync_client(tmp_path)
+    resp = c.get("/api/sync/artists", params={"device": str(tmp_path / "Artist One")})
+    assert resp.status_code == 400

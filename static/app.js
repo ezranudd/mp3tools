@@ -6,6 +6,7 @@ import * as browse from "./tree.js";
 import * as audit from "./audit.js";
 import * as standardize from "./standardize.js";
 import * as importView from "./import.js";
+import * as syncView from "./sync.js";
 import * as settings from "./settings.js";
 
 const VIEWS = [
@@ -13,6 +14,7 @@ const VIEWS = [
   ["audit", "Audit", audit],
   ["standardize", "Standardize", standardize],
   ["import", "Import", importView],
+  ["sync", "Sync", syncView],
   ["settings", "Settings", settings],
 ];
 

@@ -1,0 +1,202 @@
+// Sync view: pick a device, choose artists/albums, preview the plan, then mirror.
+import { jget, jpost, toast, escapeHtml, escapeAttr } from "./util.js";
+import { runJob } from "./jobs.js";
+
+let el;
+let device = "";
+let artists = [];   // {path,name,size_h,status,mode,expanded,loaded,albums:[{path,name,size_h,status,selected}]}
+
+export function show(container) {
+  el = container;
+  el.innerHTML = `<div class="page">
+    <h2>Sync</h2>
+    <p class="muted">Mirror selected artists/albums from the library to a device
+      (USB stick, SD card, phone…). Whole-artist selections also prune albums that
+      were removed from the library; partial selections leave other device albums
+      untouched.</p>
+    <div class="field" style="margin-top:10px">
+      <label style="min-width:auto">Device folder</label>
+      <input id="devPath" placeholder="/run/media/you/MUSIC" style="width:340px"
+             value="${escapeAttr(device)}">
+      <button class="btn primary" id="loadBtn">Load</button>
+    </div>
+    <div class="field">
+      <label style="min-width:auto"><input type="checkbox" id="dryRun"> Dry run (preview only)</label>
+    </div>
+    <div id="syncBody"></div>
+  </div>`;
+  el.querySelector("#loadBtn").onclick = load;
+  el.querySelector("#devPath").onkeydown = e => { if (e.key === "Enter") load(); };
+  if (artists.length) renderBody();
+}
+
+async function load() {
+  device = el.querySelector("#devPath").value.trim();
+  if (!device) { toast("Enter a device folder.", true); return; }
+  const body = el.querySelector("#syncBody");
+  body.innerHTML = `<p class="muted">Scanning library and device…</p>`;
+  try {
+    const data = await jget("/api/sync/artists?device=" + encodeURIComponent(device));
+    device = data.device;
+    artists = data.artists.map(a => ({
+      ...a, mode: "none", expanded: false, loaded: false, albums: [],
+    }));
+    renderBody();
+  } catch (e) {
+    body.innerHTML = `<p class="err">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+function renderBody() {
+  const body = el.querySelector("#syncBody");
+  body.innerHTML = `
+    <div class="field" style="gap:8px">
+      <button class="btn" id="selAll">Select all</button>
+      <button class="btn" id="selNone">Select none</button>
+      <span class="muted" id="selSummary" style="margin-left:8px"></span>
+    </div>
+    <div id="syncList" class="card" style="max-height:48vh;overflow:auto;padding:6px 10px"></div>
+    <div class="field" style="gap:8px;margin-top:10px">
+      <button class="btn" id="previewBtn">Preview plan</button>
+      <button class="btn primary" id="syncBtn">Sync</button>
+    </div>
+    <div id="planPanel"></div>
+    <div id="jobArea" style="margin-top:12px"></div>`;
+  body.querySelector("#selAll").onclick = () => { selectAll(true); };
+  body.querySelector("#selNone").onclick = () => { selectAll(false); };
+  body.querySelector("#previewBtn").onclick = previewPlan;
+  body.querySelector("#syncBtn").onclick = runSync;
+  renderList();
+}
+
+function statusClass(s) {
+  if (!s || s === "not on device") return "muted";
+  if (s === "synced") return "ok";
+  return "warn";
+}
+
+function renderList() {
+  const host = el.querySelector("#syncList");
+  if (!artists.length) { host.innerHTML = `<p class="muted">No artists in library.</p>`; return; }
+  let html = "";
+  artists.forEach((a, ai) => {
+    html += `<div class="syncrow" style="display:flex;align-items:center;gap:8px;padding:2px 0">
+      <input type="checkbox" data-art="${ai}">
+      <span class="caret" data-exp="${ai}" style="cursor:pointer;width:14px">${a.expanded ? "▾" : "▸"}</span>
+      <span style="flex:1;font-weight:600">${escapeHtml(a.name)}</span>
+      <span class="muted" style="width:80px;text-align:right">${escapeHtml(a.size_h)}</span>
+      <span class="${statusClass(a.status)}" style="width:130px">${escapeHtml(a.status || "")}</span>
+    </div>`;
+    if (a.expanded) {
+      if (!a.albums.length) {
+        html += `<div class="muted" style="padding:2px 0 2px 38px">No album subfolders (loose tracks).</div>`;
+      }
+      a.albums.forEach((alb, bi) => {
+        html += `<div class="syncrow" style="display:flex;align-items:center;gap:8px;padding:2px 0 2px 30px">
+          <input type="checkbox" data-art="${ai}" data-alb="${bi}" ${alb.selected ? "checked" : ""}>
+          <span style="flex:1">${escapeHtml(alb.name)}</span>
+          <span class="muted" style="width:80px;text-align:right">${escapeHtml(alb.size_h)}</span>
+          <span class="${statusClass(alb.status)}" style="width:130px">${escapeHtml(alb.status || "")}</span>
+        </div>`;
+      });
+    }
+  });
+  host.innerHTML = html;
+
+  // Wire artist checkboxes (with tri-state) and expand carets.
+  host.querySelectorAll("input[data-art]").forEach(cb => {
+    const ai = +cb.dataset.art;
+    if (cb.dataset.alb === undefined) {
+      const a = artists[ai];
+      cb.checked = a.mode === "all";
+      cb.indeterminate = a.mode === "some";
+      cb.onchange = () => toggleArtist(ai);
+    } else {
+      cb.onchange = () => toggleAlbum(ai, +cb.dataset.alb);
+    }
+  });
+  host.querySelectorAll("[data-exp]").forEach(c => c.onclick = () => expand(+c.dataset.exp));
+  updateSummary();
+}
+
+function updateSummary() {
+  const nArtists = artists.filter(a => a.mode !== "none").length;
+  const nAlbums = artists.reduce((n, a) =>
+    n + (a.mode === "some" ? a.albums.filter(x => x.selected).length
+       : a.mode === "all" ? (a.albums.length || 1) : 0), 0);
+  const s = el.querySelector("#selSummary");
+  if (s) s.textContent = `${nArtists} artist${nArtists === 1 ? "" : "s"}, ${nAlbums} album${nAlbums === 1 ? "" : "s"} selected`;
+}
+
+async function expand(ai) {
+  const a = artists[ai];
+  a.expanded = !a.expanded;
+  if (a.expanded && !a.loaded) {
+    try {
+      const data = await jget(`/api/sync/albums?artist=${encodeURIComponent(a.path)}&device=${encodeURIComponent(device)}`);
+      a.albums = data.albums.map(x => ({ ...x, selected: a.mode === "all" }));
+      a.loaded = true;
+    } catch (e) { toast(e.message, true); a.expanded = false; }
+  }
+  renderList();
+}
+
+function toggleArtist(ai) {
+  const a = artists[ai];
+  const on = a.mode !== "all";
+  a.mode = on ? "all" : "none";
+  if (a.loaded) a.albums.forEach(x => x.selected = on);
+  renderList();
+}
+
+function toggleAlbum(ai, bi) {
+  const a = artists[ai];
+  a.albums[bi].selected = !a.albums[bi].selected;
+  const sel = a.albums.filter(x => x.selected).length;
+  a.mode = sel === 0 ? "none" : sel === a.albums.length ? "all" : "some";
+  renderList();
+}
+
+function selectAll(on) {
+  artists.forEach(a => {
+    a.mode = on ? "all" : "none";
+    if (a.loaded) a.albums.forEach(x => x.selected = on);
+  });
+  renderList();
+}
+
+function buildSelection() {
+  const sel = {};
+  for (const a of artists) {
+    if (a.mode === "none") continue;
+    if (a.mode === "all") sel[a.path] = "all";
+    else sel[a.path] = a.albums.filter(x => x.selected).map(x => x.path);
+  }
+  return sel;
+}
+
+async function previewPlan() {
+  const selection = buildSelection();
+  if (!Object.keys(selection).length) { toast("Nothing selected.", true); return; }
+  const panel = el.querySelector("#planPanel");
+  panel.innerHTML = `<p class="muted">Building plan…</p>`;
+  try {
+    const p = await jpost("/api/sync/plan", { device, selection });
+    panel.innerHTML = `<div class="card" style="margin-top:10px">
+      <div>Files to copy: <b>${p.copy_files}</b> (${escapeHtml(p.copy_h)})</div>
+      <div>Files to delete: <b>${p.remove_files}</b> (${escapeHtml(p.remove_h)})</div>
+      <div>Free space: ${escapeHtml(p.free_h)} · net needed: ${escapeHtml(p.net_h)}</div>
+      ${p.enough_space ? "" : `<div class="err">Not enough free space.</div>`}
+    </div>`;
+  } catch (e) { panel.innerHTML = `<p class="err">${escapeHtml(e.message)}</p>`; }
+}
+
+function runSync() {
+  const selection = buildSelection();
+  if (!Object.keys(selection).length) { toast("Nothing selected.", true); return; }
+  const dry_run = el.querySelector("#dryRun").checked;
+  const btn = el.querySelector("#syncBtn");
+  btn.disabled = true;
+  runJob("sync", { device, selection, dry_run }, el.querySelector("#jobArea"),
+    { onDone: () => { btn.disabled = false; } });
+}

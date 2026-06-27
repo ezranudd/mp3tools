@@ -22,6 +22,7 @@ import audit
 import browse
 import fetch_art
 import settings as settings_mod
+import sync_library as sync
 from webjobs import MANAGER
 
 # ── Library root ──────────────────────────────────────────────────────────────
@@ -46,6 +47,26 @@ def _safe(raw: str) -> Path:
     if p != ROOT and ROOT not in p.parents:
         raise HTTPException(status_code=403, detail="path outside library root")
     return p
+
+
+def _device(raw: str) -> Path:
+    """Resolve a sync device path: a real directory outside the library."""
+    p = Path(raw).expanduser().resolve()
+    if not p.is_dir():
+        raise HTTPException(status_code=400, detail="device is not a directory")
+    if p == ROOT or ROOT in p.parents:
+        raise HTTPException(status_code=400,
+                            detail="device cannot be the library or inside it")
+    return p
+
+
+def _validate_selection(selection: dict) -> None:
+    """Ensure every artist/album path in a sync selection is inside the library."""
+    for apath, sel in selection.items():
+        _safe(apath)
+        if isinstance(sel, (list, tuple)):
+            for album in sel:
+                _safe(album)
 
 
 app = FastAPI(title="mp3tools web")
@@ -267,12 +288,43 @@ def api_set_settings(body: dict) -> JSONResponse:
     return JSONResponse(settings_mod.load(ROOT))
 
 
-# ── Jobs (interactive operations: standardize, import) ────────────────────────
+# ── Sync (mirror selected artists/albums to a device) ─────────────────────────
+
+@app.get("/api/sync/artists")
+def api_sync_artists(device: str = Query(...)) -> JSONResponse:
+    dev = _device(device)
+    return JSONResponse({"device": str(dev), "artists": sync.artist_rows(ROOT, dev)})
+
+
+@app.get("/api/sync/albums")
+def api_sync_albums(artist: str = Query(...), device: str = Query(...)) -> JSONResponse:
+    apath = _safe(artist)
+    dev = _device(device)
+    return JSONResponse(sync.album_rows(apath, dev))
+
+
+class SyncPlanReq(BaseModel):
+    device: str
+    selection: dict
+
+
+@app.post("/api/sync/plan")
+def api_sync_plan(body: SyncPlanReq) -> JSONResponse:
+    dev = _device(body.device)
+    _validate_selection(body.selection)
+    artists = sync.artists_from_selection(body.selection)
+    plan = sync.combined_plan(ROOT, dev, artists)
+    return JSONResponse(sync.plan_summary(plan, dev))
+
+
+# ── Jobs (interactive operations: standardize, import, sync) ──────────────────
 
 class JobStart(BaseModel):
-    kind: str                  # "standardize" | "import"
+    kind: str                  # "standardize" | "import" | "sync"
     dry_run: bool = False
     source: str = ""           # import only: source directory (may be outside root)
+    device: str = ""           # sync only: device directory (outside root)
+    selection: dict = {}       # sync only: {artist_path: "all" | [album_paths]}
 
 
 @app.post("/api/jobs")
@@ -283,6 +335,10 @@ def api_start_job(body: JobStart) -> JSONResponse:
         if not src.is_dir():
             raise HTTPException(status_code=400, detail="source is not a directory")
         params["source"] = str(src)
+    elif body.kind == "sync":
+        params["device"] = str(_device(body.device))
+        _validate_selection(body.selection)
+        params["selection"] = body.selection
     try:
         job = MANAGER.start(body.kind, params)
     except ValueError as e:
