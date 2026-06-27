@@ -33,6 +33,12 @@ _HERE = Path(__file__).resolve().parent
 _INDEX = _HERE / "index.html"
 _STATIC = _HERE / "static"
 _IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
+_BG_FILENAME = ".mp3tools-background"   # web UI background image, sibling of .mp3tools
+
+
+def _bg_file() -> Path:
+    """Path to the web UI background image (ROOT is mutable, so compute per-call)."""
+    return ROOT / _BG_FILENAME
 
 
 def set_root(path) -> None:
@@ -340,9 +346,18 @@ def api_art_remove(body: ArtRemove) -> JSONResponse:
 
 # ── Settings ──────────────────────────────────────────────────────────────────
 
+def _settings_response() -> dict:
+    """Settings plus derived background fields (presence/version from the file)."""
+    cfg = settings_mod.load(ROOT)
+    bg = _bg_file()
+    cfg["background_present"] = bg.is_file()
+    cfg["background_version"] = int(bg.stat().st_mtime) if bg.is_file() else 0
+    return cfg
+
+
 @app.get("/api/settings")
 def api_get_settings() -> JSONResponse:
-    return JSONResponse(settings_mod.load(ROOT))
+    return JSONResponse(_settings_response())
 
 
 @app.post("/api/settings")
@@ -350,7 +365,46 @@ def api_set_settings(body: dict) -> JSONResponse:
     cfg = settings_mod.load(ROOT)
     cfg.update(body)
     settings_mod.save(ROOT, cfg)
-    return JSONResponse(settings_mod.load(ROOT))
+    return JSONResponse(_settings_response())
+
+
+# ── Background image (web UI personalization) ─────────────────────────────────
+
+@app.post("/api/background")
+async def api_background_upload(request: Request) -> JSONResponse:
+    """Store a user-supplied image (raw body) as the full-window background."""
+    data = await request.body()
+    if not data:
+        raise HTTPException(status_code=400, detail="empty image")
+    mime = (request.headers.get("content-type") or "").split(";")[0].strip()
+    if not mime.startswith("image/"):
+        mime = "image/jpeg"
+    bg = _bg_file()
+    bg.write_bytes(data)
+    cfg = settings_mod.load(ROOT)
+    cfg["background_mime"] = mime
+    settings_mod.save(ROOT, cfg)
+    return JSONResponse({"version": int(bg.stat().st_mtime)})
+
+
+@app.get("/api/background")
+def api_background_get() -> FileResponse:
+    bg = _bg_file()
+    if not bg.is_file():
+        raise HTTPException(status_code=404, detail="no background image")
+    mime = settings_mod.load(ROOT).get("background_mime") or "image/jpeg"
+    return FileResponse(bg, media_type=mime)
+
+
+@app.delete("/api/background")
+def api_background_clear() -> JSONResponse:
+    bg = _bg_file()
+    if bg.is_file():
+        bg.unlink()
+    cfg = settings_mod.load(ROOT)
+    cfg["background_mime"] = ""
+    settings_mod.save(ROOT, cfg)
+    return JSONResponse({})
 
 
 # ── Sync (mirror selected artists/albums to a device) ─────────────────────────

@@ -27,10 +27,15 @@ DEFAULTS: dict = {
     "art_source_order": list(ART_SOURCE_ORDER),
     "theaudiodb_api_key": "",
     "discogs_token":      "",
+    "background_opacity": 0.4,        # web UI: scrim strength over the bg image, 0..1
+    "background_blur":    0,          # web UI: bg image blur in px, 0..40
+    "background_fit":     "cover",    # web UI: "cover" | "contain" | "tile"
+    "background_mime":    "",         # web UI: mime of the uploaded bg image (set on upload)
 }
 
 _VALID_COVER_ART = frozenset(("folder", "embed", "both"))
 _VALID_ART_SOURCES = frozenset(ART_SOURCE_ORDER)
+_VALID_BACKGROUND_FIT = frozenset(("cover", "contain", "tile"))
 
 
 def load(library_root: Path) -> dict:
@@ -70,6 +75,14 @@ def load(library_root: Path) -> dict:
                 settings["theaudiodb_api_key"] = data["theaudiodb_api_key"].strip()
             if isinstance(data.get("discogs_token"), str):
                 settings["discogs_token"] = data["discogs_token"].strip()
+            if isinstance(data.get("background_opacity"), (int, float)):
+                settings["background_opacity"] = min(1.0, max(0.0, float(data["background_opacity"])))
+            if isinstance(data.get("background_blur"), (int, float)):
+                settings["background_blur"] = min(40, max(0, int(data["background_blur"])))
+            if data.get("background_fit") in _VALID_BACKGROUND_FIT:
+                settings["background_fit"] = data["background_fit"]
+            if isinstance(data.get("background_mime"), str):
+                settings["background_mime"] = data["background_mime"].strip()
         except Exception:
             pass
     return settings

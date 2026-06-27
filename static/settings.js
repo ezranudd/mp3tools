@@ -1,5 +1,6 @@
 // Settings view: full editor for everything in settings.DEFAULTS.
 import { jget, jpost, toast, escapeHtml, escapeAttr } from "./util.js";
+import { applyBackground, uploadBackground, clearBackground } from "./background.js";
 
 const BOOLS = [
   ["enforce_artist_equals_album_artist", "Enforce Artist = Album Artist"],
@@ -56,6 +57,19 @@ function render() {
         <input id="dgs_token" value="${escapeAttr(cfg.discogs_token || "")}" style="width:240px"></div>
     </div>
 
+    <div class="card"><h4>Background image</h4>
+      <div class="field"><label>Image ${cfg.background_present ? '<span class="ok">(set)</span>' : '<span class="muted">(none)</span>'}</label>
+        <input type="file" id="bg_file" accept="image/*">
+        <button class="btn" id="bg_clear" ${cfg.background_present ? "" : "disabled"}>Clear</button></div>
+      <div class="field"><label>Dim (scrim opacity)</label>
+        <input type="range" id="bg_opacity" min="0" max="1" step="0.05" value="${escapeAttr(cfg.background_opacity ?? 0.4)}"></div>
+      <div class="field"><label>Blur (px)</label>
+        <input type="range" id="bg_blur" min="0" max="40" step="1" value="${escapeAttr(cfg.background_blur ?? 0)}"></div>
+      <div class="field"><label>Fit</label>
+        <select id="bg_fit">${["cover", "contain", "tile"].map(v =>
+          `<option value="${v}" ${v === (cfg.background_fit || "cover") ? "selected" : ""}>${v}</option>`).join("")}</select></div>
+    </div>
+
     <div class="row" style="justify-content:flex-start">
       <button class="btn primary" id="saveBtn">Save</button>
       <button class="btn" id="reloadBtn">Reload</button>
@@ -64,6 +78,40 @@ function render() {
 
   container.querySelector("#saveBtn").onclick = save;
   container.querySelector("#reloadBtn").onclick = () => show(container);
+  wireBackground();
+}
+
+// Merge the live background-control values onto cfg and apply them immediately.
+function liveBackground() {
+  cfg.background_opacity = parseFloat(container.querySelector("#bg_opacity").value);
+  cfg.background_blur = parseInt(container.querySelector("#bg_blur").value, 10);
+  cfg.background_fit = container.querySelector("#bg_fit").value;
+  applyBackground(cfg);
+}
+
+function wireBackground() {
+  for (const id of ["#bg_opacity", "#bg_blur", "#bg_fit"])
+    container.querySelector(id).oninput = liveBackground;
+  container.querySelector("#bg_file").onchange = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try {
+      await uploadBackground(file);
+      cfg = await jget("/api/settings");
+      applyBackground(cfg);
+      toast("Background set.");
+      render();
+    } catch (err) { toast(err.message, true); }
+  };
+  container.querySelector("#bg_clear").onclick = async () => {
+    try {
+      await clearBackground();
+      cfg = await jget("/api/settings");
+      applyBackground(cfg);
+      toast("Background cleared.");
+      render();
+    } catch (err) { toast(err.message, true); }
+  };
 }
 
 async function save() {
@@ -73,6 +121,9 @@ async function save() {
     art_sources: {},
     theaudiodb_api_key: container.querySelector("#adb_key").value.trim(),
     discogs_token: container.querySelector("#dgs_token").value.trim(),
+    background_opacity: parseFloat(container.querySelector("#bg_opacity").value),
+    background_blur: parseInt(container.querySelector("#bg_blur").value, 10),
+    background_fit: container.querySelector("#bg_fit").value,
   };
   container.querySelectorAll("[data-bool]").forEach(c => body[c.dataset.bool] = c.checked);
   container.querySelectorAll("[data-src]").forEach(c => body.art_sources[c.dataset.src] = c.checked);

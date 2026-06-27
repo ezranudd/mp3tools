@@ -2,6 +2,7 @@
 import { jget, toast } from "./util.js";
 import { getMode, setMode, onModeChange } from "./mode.js";
 import { getTheme, toggleTheme } from "./theme.js";
+import { initBackground } from "./background.js";
 import { subscribeJob, cancelJob, jobLabel, initJobs } from "./jobs.js";
 import { initPlayer } from "./player.js";
 import { initSearch } from "./search.js";
@@ -92,6 +93,7 @@ async function init() {
   buildNav();
   buildModeToggle();
   buildThemeToggle();
+  initBackground();
   buildJobIndicator();
   initPlayer();
   initSearch(activate);

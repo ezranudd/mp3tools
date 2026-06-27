@@ -185,6 +185,56 @@ def test_settings_roundtrip(client):
     assert client.get("/api/settings").json()["cover_art"] == "both"
 
 
+# ── Background image ──────────────────────────────────────────────────────────
+
+def test_background_upload_serve_clear(client, tmp_path):
+    # Initially absent.
+    s = client.get("/api/settings").json()
+    assert s["background_present"] is False and s["background_version"] == 0
+    assert client.get("/api/background").status_code == 404
+
+    # Upload raw image bytes.
+    img = b"\x89PNG\r\n\x1a\nfake-image-bytes"
+    up = client.post("/api/background", content=img, headers={"Content-Type": "image/png"})
+    assert up.status_code == 200 and up.json()["version"] > 0
+    assert (tmp_path / ".mp3tools-background").is_file()
+
+    # Settings now report presence + version; image is served with its mime.
+    s = client.get("/api/settings").json()
+    assert s["background_present"] is True and s["background_version"] > 0
+    got = client.get("/api/background")
+    assert got.status_code == 200
+    assert got.headers["content-type"] == "image/png"
+    assert got.content == img
+
+    # Clear removes file + mime, and serving 404s again.
+    assert client.delete("/api/background").status_code == 200
+    assert not (tmp_path / ".mp3tools-background").is_file()
+    assert client.get("/api/settings").json()["background_present"] is False
+    assert client.get("/api/background").status_code == 404
+
+
+def test_background_empty_rejected(client):
+    resp = client.post("/api/background", content=b"", headers={"Content-Type": "image/png"})
+    assert resp.status_code == 400
+
+
+def test_background_tunables_roundtrip(client):
+    client.post("/api/settings", json={
+        "background_opacity": 0.65, "background_blur": 12, "background_fit": "contain"})
+    s = client.get("/api/settings").json()
+    assert s["background_opacity"] == 0.65
+    assert s["background_blur"] == 12
+    assert s["background_fit"] == "contain"
+    # Out-of-range / invalid values are clamped or ignored on load.
+    client.post("/api/settings", json={
+        "background_opacity": 5, "background_blur": 999, "background_fit": "bogus"})
+    s = client.get("/api/settings").json()
+    assert s["background_opacity"] == 1.0
+    assert s["background_blur"] == 40
+    assert s["background_fit"] == "cover"   # invalid value falls back to the default
+
+
 # ── Structural edits ──────────────────────────────────────────────────────────
 
 def test_edit_track_title_renames_file(client):

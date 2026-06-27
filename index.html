@@ -30,6 +30,22 @@
   ::-webkit-scrollbar-corner { background:transparent; }
   body { margin:0; font:14px/1.4 system-ui, sans-serif; color:var(--fg);
          background:var(--bg); height:100vh; display:flex; flex-direction:column; }
+  /* Customizable full-window background image (foobar-style). */
+  #bgLayer { position:fixed; inset:0; z-index:-1; overflow:hidden; display:none; }
+  html[data-bg="on"] #bgLayer { display:block; }
+  #bgImage { position:absolute; inset:-5%;        /* overscan hides blurred edges */
+             background-position:center; background-repeat:no-repeat;
+             background-size:var(--bg-fit, cover); filter:blur(var(--bg-blur, 0px)); }
+  #bgScrim { position:absolute; inset:0; background:var(--bg);
+             opacity:var(--bg-opacity, .4); }
+  /* Immersive mode: let the image show through the chrome panels. */
+  html[data-bg="on"] body { background:transparent; }
+  html[data-bg="on"] header,
+  html[data-bg="on"] nav.sidebar,
+  html[data-bg="on"] #tree,
+  html[data-bg="on"] .player {
+         background:color-mix(in srgb, var(--panel) 78%, transparent);
+         backdrop-filter:blur(6px); }
   header { padding:10px 16px; background:var(--panel); border-bottom:1px solid var(--line);
            display:flex; align-items:center; gap:12px; flex:0 0 auto; }
   header h1 { font-size:15px; margin:0; font-weight:600; }
@@ -207,6 +223,7 @@
 </style>
 </head>
 <body>
+<div id="bgLayer"><div id="bgImage"></div><div id="bgScrim"></div></div>
 <header>
   <h1>mp3tools</h1>
   <span class="root" id="rootLabel"></span>
