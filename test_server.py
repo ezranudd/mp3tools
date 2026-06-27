@@ -155,6 +155,31 @@ def test_search_empty_query(client):
     assert data == {"albums": [], "tracks": []}
 
 
+# ── Local artwork upload ──────────────────────────────────────────────────────
+
+def test_art_upload_local_file(client, tmp_path):
+    pytest.importorskip("PIL")
+    import io
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (20, 20), (200, 30, 30)).save(buf, "PNG")
+
+    tree = client.get("/api/tree").json()
+    album = tree["artists"][0]["children"][0]["path"]
+    resp = client.post("/api/art/upload", params={"path": album},
+                       content=buf.getvalue(), headers={"Content-Type": "image/png"})
+    assert resp.status_code == 200 and resp.json()["updated"] >= 1
+    assert list(Path(album).glob("cover.*")), "expected a cover file written"
+
+
+def test_art_upload_empty_rejected(client):
+    tree = client.get("/api/tree").json()
+    album = tree["artists"][0]["children"][0]["path"]
+    resp = client.post("/api/art/upload", params={"path": album}, content=b"",
+                       headers={"Content-Type": "image/png"})
+    assert resp.status_code == 400
+
+
 def test_settings_roundtrip(client):
     client.post("/api/settings", json={"cover_art": "both"})
     assert client.get("/api/settings").json()["cover_art"] == "both"

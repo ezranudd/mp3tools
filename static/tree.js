@@ -315,8 +315,17 @@ async function findArt(st) {
   const { openModal, closeModal } = await import("./util.js");
   openModal(`<h3>Artwork — ${escapeHtml(artist)} / ${escapeHtml(album)}</h3>
     <div id="artBody" class="grid"><p class="muted">Searching…</p></div>
-    <div class="row"><button class="btn" data-close>Close</button></div>`,
-    (box) => { box.querySelector("[data-close]").onclick = closeModal; });
+    <div class="row">
+      <input type="file" accept="image/*" id="artFile" style="display:none">
+      <button class="btn" data-file>Choose local file…</button>
+      <button class="btn" data-close>Close</button>
+    </div>`,
+    (box) => {
+      box.querySelector("[data-close]").onclick = closeModal;
+      const file = box.querySelector("#artFile");
+      box.querySelector("[data-file]").onclick = () => file.click();
+      file.onchange = () => { if (file.files[0]) uploadArt(st, file.files[0], closeModal); };
+    });
   try {
     const data = await jget(`/api/art/search?artist=${encodeURIComponent(artist)}&album=${encodeURIComponent(album)}`);
     const results = data.results || [];
@@ -341,6 +350,21 @@ async function findArt(st) {
 async function applyArt(st, url, close) {
   try {
     const res = await jpost("/api/art/apply", { path: st.path, url });
+    close();
+    toast(`Artwork applied (${res.updated} file${res.updated === 1 ? "" : "s"}).`);
+    refreshCurrent();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function uploadArt(st, fileObj, close) {
+  try {
+    const r = await fetch("/api/art/upload?path=" + encodeURIComponent(st.path), {
+      method: "POST",
+      headers: { "Content-Type": fileObj.type || "image/jpeg" },
+      body: fileObj,
+    });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+    const res = await r.json();
     close();
     toast(`Artwork applied (${res.updated} file${res.updated === 1 ? "" : "s"}).`);
     refreshCurrent();

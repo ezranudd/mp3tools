@@ -13,7 +13,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -217,24 +217,47 @@ class ArtApply(BaseModel):
     url: str           # full-size artwork url to download
 
 
+def _apply_album_art(album_dir: Path, data: bytes, mime: str) -> dict:
+    """Apply image *data* as *album_dir*'s cover, honoring the cover-art settings."""
+    cfg = settings_mod.load(ROOT)
+    # Build an ALBUM node so we reuse browse's apply logic verbatim.
+    album = browse.Node(browse.ALBUM, album_dir.name, album_dir)
+    album.children = browse._make_tracks(sorted(album_dir.glob("*.mp3")), album)
+    updated, errors = browse.apply_art_to_album(
+        album, data, mime, cfg["cover_art"], cfg["cover_art_embed_size"])
+    return {"updated": updated, "errors": errors}
+
+
 @app.post("/api/art/apply")
 def api_art_apply(body: ArtApply) -> JSONResponse:
     _require_idle()
     album_dir = _safe(body.path)
     if not album_dir.is_dir():
         raise HTTPException(status_code=404, detail="album not found")
-    cfg = settings_mod.load(ROOT)
     try:
         data, mime = fetch_art.fetch_artwork(body.url)
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e))
+    return JSONResponse(_apply_album_art(album_dir, data, mime))
 
-    # Build an ALBUM node so we reuse browse's apply logic verbatim.
-    album = browse.Node(browse.ALBUM, album_dir.name, album_dir)
-    album.children = browse._make_tracks(sorted(album_dir.glob("*.mp3")), album)
-    updated, errors = browse.apply_art_to_album(
-        album, data, mime, cfg["cover_art"], cfg["cover_art_embed_size"])
-    return JSONResponse({"updated": updated, "errors": errors})
+
+@app.post("/api/art/upload")
+async def api_art_upload(request: Request, path: str = Query(...)) -> JSONResponse:
+    """Apply a user-supplied local image (raw body) as the album cover."""
+    _require_idle()
+    album_dir = _safe(path)
+    if not album_dir.is_dir():
+        raise HTTPException(status_code=404, detail="album not found")
+    data = await request.body()
+    if not data:
+        raise HTTPException(status_code=400, detail="empty image")
+    mime = (request.headers.get("content-type") or "").split(";")[0].strip()
+    if not mime.startswith("image/"):
+        mime = "image/jpeg"
+    try:
+        return JSONResponse(_apply_album_art(album_dir, data, mime))
+    except Exception as e:                       # bad/corrupt image, etc.
+        raise HTTPException(status_code=400, detail=f"could not apply image: {e}")
 
 
 # ── Audit ─────────────────────────────────────────────────────────────────────
