@@ -34,6 +34,39 @@ export function toast(msg, isErr = false) {
   _toastTimer = setTimeout(() => (t.className = "toast"), 2400);
 }
 
+// Make a table body's rows reorderable by dragging their `.draghandle`. Rows are
+// reordered live within the tbody; onReorder() fires after a drop. Using a handle
+// (rather than draggable rows) keeps any inputs in the row editable.
+export function enableRowDrag(tbody, onReorder) {
+  let dragging = null;
+  tbody.querySelectorAll("tr").forEach(tr => {
+    const handle = tr.querySelector(".draghandle");
+    if (!handle) return;
+    handle.draggable = true;
+    handle.addEventListener("dragstart", (e) => {
+      dragging = tr;
+      tr.classList.add("dragging");
+      e.dataTransfer.effectAllowed = "move";
+    });
+    handle.addEventListener("dragend", () => {
+      if (dragging) dragging.classList.remove("dragging");
+      dragging = null;
+      if (onReorder) onReorder();
+    });
+  });
+  tbody.addEventListener("dragover", (e) => {
+    if (!dragging) return;
+    e.preventDefault();
+    const rows = [...tbody.querySelectorAll("tr:not(.dragging)")];
+    const after = rows.find(r => {
+      const box = r.getBoundingClientRect();
+      return e.clientY < box.top + box.height / 2;
+    });
+    if (after) tbody.insertBefore(dragging, after);
+    else tbody.appendChild(dragging);
+  });
+}
+
 const _modal = () => document.getElementById("modal");
 const _modalBox = () => document.getElementById("modalBox");
 

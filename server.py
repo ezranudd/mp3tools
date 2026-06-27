@@ -382,6 +382,24 @@ def api_album_delete(body: AlbumDelete) -> JSONResponse:
     return JSONResponse({"ok": True, "deleted": str(album_dir)})
 
 
+class AlbumReorder(BaseModel):
+    path: str            # album directory
+    order: list[str]     # track file paths in their new order
+
+
+@app.post("/api/album/reorder")
+def api_album_reorder(body: AlbumReorder) -> JSONResponse:
+    _require_idle()
+    album_dir = _safe(body.path)
+    if not album_dir.is_dir():
+        raise HTTPException(status_code=404, detail="album not found")
+    ordered = [_safe(p) for p in body.order]
+    if any(p.parent != album_dir for p in ordered):
+        raise HTTPException(status_code=400, detail="tracks must be in the album folder")
+    ok, error = browse.reorder_album(album_dir, ordered)
+    return JSONResponse({"ok": ok, "error": error})
+
+
 @app.post("/api/art/remove")
 def api_art_remove(body: ArtRemove) -> JSONResponse:
     _require_idle()

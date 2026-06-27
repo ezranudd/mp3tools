@@ -198,6 +198,9 @@
   th:last-child, td:last-child { width:84px; }
   th { color:var(--muted); font-weight:500; font-size:12px; }
   td .num { color:var(--muted); }
+  .draghandle { cursor:grab; color:var(--muted); user-select:none; }
+  .draghandle:active { cursor:grabbing; }
+  tr.dragging { opacity:.5; }
   /* Inline editable fields reuse the metrics of the static text they replace,
      using outline (no layout shift) instead of border, so Edit ≈ Browse. */
   input.tag, input.hdr { padding:0; border:0; border-radius:3px; line-height:inherit;

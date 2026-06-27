@@ -15,10 +15,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 import server
-from mutagen.id3 import ID3, TIT2, TPE1, TPE2, TALB, TYER, TRCK
+from mutagen.id3 import ID3, TIT2, TPE1, TPE2, TALB, TYER, TRCK, TPOS, TCON
 
 _FRAMES = {"TIT2": TIT2, "TPE1": TPE1, "TPE2": TPE2,
-           "TALB": TALB, "TYER": TYER, "TRCK": TRCK}
+           "TALB": TALB, "TYER": TYER, "TRCK": TRCK, "TPOS": TPOS, "TCON": TCON}
 
 
 def _make_mp3(path, **frames):
@@ -277,6 +277,96 @@ def test_edit_album_genre_keeps_path(client):
     assert body["ok"]
     # genre is a tag-only edit — folder does not move.
     assert body["new_path"] == album_path
+
+
+def test_album_reorder_renumbers_and_renames(client, tmp_path):
+    album = tmp_path / "Reorder Artist" / "2024 - Reorder Album"
+    _make_mp3(album / "01. Reorder Artist - One.mp3", TIT2="One", TPE1="Reorder Artist",
+              TPE2="Reorder Artist", TALB="Reorder Album", TYER="2024", TRCK="01/3")
+    _make_mp3(album / "02. Reorder Artist - Two.mp3", TIT2="Two", TPE1="Reorder Artist",
+              TPE2="Reorder Artist", TALB="Reorder Album", TYER="2024", TRCK="02/3")
+    _make_mp3(album / "03. Reorder Artist - Three.mp3", TIT2="Three", TPE1="Reorder Artist",
+              TPE2="Reorder Artist", TALB="Reorder Album", TYER="2024", TRCK="03/3")
+
+    # New order: Three, One, Two (a swap that would collide with naive renaming).
+    order = [str(album / "03. Reorder Artist - Three.mp3"),
+             str(album / "01. Reorder Artist - One.mp3"),
+             str(album / "02. Reorder Artist - Two.mp3")]
+    resp = client.post("/api/album/reorder", json={"path": str(album), "order": order})
+    assert resp.status_code == 200 and resp.json()["ok"], resp.json()
+
+    names = sorted(p.name for p in album.glob("*.mp3"))
+    assert names == ["01. Reorder Artist - Three.mp3",
+                     "02. Reorder Artist - One.mp3",
+                     "03. Reorder Artist - Two.mp3"]
+    t1 = ID3(album / "01. Reorder Artist - Three.mp3", translate=False)
+    assert str(t1.get("TIT2")) == "Three" and str(t1.get("TRCK")) == "01/3"
+
+
+def test_album_reorder_rejects_outside_album(client, tmp_path):
+    tree = client.get("/api/tree").json()
+    album = tree["artists"][0]["children"][0]["path"]
+    resp = client.post("/api/album/reorder",
+                       json={"path": album, "order": ["/etc/passwd"]})
+    assert resp.status_code in (400, 403)
+
+
+def test_import_merges_discs_in_order(tmp_path, tmp_path_factory):
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("ffmpeg not available")
+    src = tmp_path_factory.mktemp("multidisc")
+    common = dict(TPE1="Band", TPE2="Band", TALB="Live", TYER="2003", TCON="Rock")
+    _make_mp3(src / "CD2" / "a.mp3", TIT2="D2T1", TPOS="2/2", TRCK="1", **common)
+    _make_mp3(src / "CD1" / "b.mp3", TIT2="D1T1", TPOS="1/2", TRCK="1", **common)
+    server.set_root(tmp_path)
+    c = TestClient(server.app)
+
+    seen = {}
+
+    def answer(prompt):
+        if prompt["kind"] == "preview":
+            # Both discs serialize with the same destination (one merged album).
+            seen["n"] = len(prompt["entries"])
+            return {"proceed": True, "entries": prompt["entries"]}
+        if prompt["kind"] == "choice" and prompt["options"]:
+            return prompt["options"][0]["key"]
+        return ""
+
+    jid = c.post("/api/jobs", json={"kind": "import", "source": str(src)}).json()["job_id"]
+    assert _poll(c, jid, answer)["state"] == "done"
+    dest = tmp_path / "Band" / "2003 - Live"
+    names = sorted(p.name for p in dest.glob("*.mp3"))
+    assert len(names) == 2
+    # Disc 1 track numbered before disc 2 in the single merged album.
+    assert ID3(dest / names[0], translate=False).get("TIT2").text[0] == "D1T1"
+    assert ID3(dest / names[1], translate=False).get("TIT2").text[0] == "D2T1"
+
+
+def test_import_order_honored(tmp_path, tmp_path_factory):
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("ffmpeg not available")
+    src = tmp_path_factory.mktemp("ordersrc")
+    _make_mp3(src / "a.mp3", TIT2="Aaa", TPE1="Ord", TPE2="Ord", TALB="OrdAlbum",
+              TYER="2020", TRCK="1")
+    _make_mp3(src / "b.mp3", TIT2="Bbb", TPE1="Ord", TPE2="Ord", TALB="OrdAlbum",
+              TYER="2020", TRCK="2")
+    server.set_root(tmp_path)
+    c = TestClient(server.app)
+
+    def answer(prompt):
+        if prompt["kind"] == "preview":
+            rows = prompt["entries"]
+            rows.sort(key=lambda r: r["title"], reverse=True)   # submit B before A
+            return {"proceed": True, "entries": rows}
+        if prompt["kind"] == "choice" and prompt["options"]:
+            return prompt["options"][0]["key"]
+        return ""
+
+    jid = c.post("/api/jobs", json={"kind": "import", "source": str(src)}).json()["job_id"]
+    assert _poll(c, jid, answer)["state"] == "done"
+    dest = tmp_path / "Ord" / "2020 - OrdAlbum"
+    first = sorted(dest.glob("*.mp3"))[0]
+    assert str(ID3(first, translate=False).get("TIT2")) == "Bbb"   # submitted order won
 
 
 def test_album_delete_and_prunes_artist(client, tmp_path):

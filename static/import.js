@@ -1,7 +1,7 @@
 // Import view: drag-and-drop folders into the browser (uploaded to a temp dir on
 // the server) OR point at a server-side path; preview + prompts via the global tracker.
 import { startJob, mountJobPane, setPreviewRenderer } from "./jobs.js";
-import { toast, escapeHtml, escapeAttr, openModal, closeModal } from "./util.js";
+import { toast, escapeHtml, escapeAttr, openModal, closeModal, enableRowDrag } from "./util.js";
 
 const CONFIDENT_SCORE = 140;                 // mirrors fetch_art.CONFIDENT_MATCH_SCORE
 const BITRATES = [128, 160, 192, 256, 320];
@@ -182,22 +182,29 @@ function renderImportPreview(p) {
   const host = pageEl && pageEl.isConnected ? pageEl.querySelector("#importPreview") : null;
   if (!host) return null;
 
-  // Group entries by source folder, into editable album models.
-  const byFolder = new Map();
+  // Merge entries that will land in the same library album (album-artist + album +
+  // year — matching the import's destination), so multi-disc folders show as one
+  // section. Order each album's tracks smartly: disc, then track#, then source path.
+  const groups = new Map();
   for (const e of p.entries) {
-    const folder = e.src.slice(0, e.src.lastIndexOf("/"));
-    if (!byFolder.has(folder)) byFolder.set(folder, []);
-    byFolder.get(folder).push(e);
+    const key = [(e.albumartist || e.artist), e.album, e.year]
+      .map(s => (s || "").trim().toLowerCase()).join("|");
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(e);
   }
-  const albums = [...byFolder.entries()].map(([folder, rows], idx) => ({
-    idx, folder, rows,
+  const albums = [...groups.values()].map((rows, idx) => {
+    rows.sort((a, b) => discOf(a) - discOf(b) || trackOf(a) - trackOf(b)
+                        || a.src.localeCompare(b.src));
+    return ({
+    idx, folder: rows[0].src.slice(0, rows[0].src.lastIndexOf("/")), rows,
     hasLossless: rows.some(r => r.lossless),
     hasConflict: rows.some(r => r.conflict),
     bitrate: p.default_bitrate || 320,
     conflict: "add",
     // art.mode: "source" (keep folder cover) | "url" (chosen/found) | "none" (placeholder)
     art: { mode: "source", url: null, results: null, state: "init" },
-  }));
+    });
+  });
 
   host.innerHTML = `<div class="importpreview">
     <h3>Review import — ${albums.length} album${albums.length === 1 ? "" : "s"}</h3>
@@ -224,11 +231,24 @@ function renderImportPreview(p) {
   });
 }
 
+// Disc/track numbers for the smart initial order. Disc from TPOS, else the source
+// folder name (…CD2/Disc 2…); track from the leading integer of TRCK.
+function discOf(e) {
+  const t = parseInt(String(e.disc || "").split("/")[0], 10);
+  if (!isNaN(t)) return t;
+  const m = /(?:cd|disc)\s*0*(\d+)/i.exec(e.src || "");
+  return m ? parseInt(m[1], 10) : 1;
+}
+function trackOf(e) {
+  const t = parseInt(String(e.track || "").split("/")[0], 10);
+  return isNaN(t) ? 9999 : t;
+}
+
 function renderSection(album) {
   const f = album.rows[0];
   const trackRows = album.rows.map((e, n) => `
     <tr data-i="${e.i}">
-      <td><span class="num">${n + 1}</span></td>
+      <td><span class="draghandle" title="Drag to reorder">⠿</span> <span class="num">${n + 1}</span></td>
       <td><input class="tag" data-f="title" value="${escapeAttr(e.title)}"></td>
       <td><input class="tag" data-f="artist" value="${escapeAttr(e.artist)}"></td>
     </tr>`).join("");
@@ -294,6 +314,13 @@ function wireSection(host, album) {
   sec.querySelectorAll(".albummeta input.hdr.sub").forEach(inp => {
     autosizeField(inp);
     inp.addEventListener("input", () => autosizeField(inp));
+  });
+
+  // Drag tracks to reorder; renumber the visible # after each drop. Submit order
+  // (DOM order) is what import uses for the final track numbers.
+  const tbody = sec.querySelector("tbody");
+  enableRowDrag(tbody, () => {
+    tbody.querySelectorAll("tr .num").forEach((s, n) => s.textContent = n + 1);
   });
   const br = sec.querySelector("[data-bitrate]");
   if (br) br.onchange = () => { album.bitrate = parseInt(br.value, 10); };

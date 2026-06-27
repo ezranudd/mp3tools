@@ -1,7 +1,7 @@
 // Browse view: library tree (left) + detail (right).
 // Selecting an album shows that album; selecting an artist shows ALL its albums.
 // Read-only in Browse mode; inline auto-saving fields in Edit mode.
-import { jget, jpost, toast, escapeHtml, escapeAttr } from "./util.js";
+import { jget, jpost, toast, escapeHtml, escapeAttr, enableRowDrag } from "./util.js";
 import { isEdit, onModeChange } from "./mode.js";
 import { isBusy, subscribeJob } from "./jobs.js";
 import { playAlbum, subscribe as subscribePlayer, getCurrentPath } from "./player.js";
@@ -235,7 +235,7 @@ function renderAlbumEditInto(container, st) {
   const { tracks, artist, album, year, genre } = st;
   const rows = tracks.map(t => `
     <tr data-path="${escapeAttr(t.path)}">
-      <td><button class="rowplay" data-play title="Play">▶</button> <span class="num">${escapeHtml((t.track || "").split("/")[0])}</span></td>
+      <td><span class="draghandle" title="Drag to reorder">⠿</span> <button class="rowplay" data-play title="Play">▶</button> <span class="num">${escapeHtml((t.track || "").split("/")[0])}</span></td>
       <td><input class="tag" data-path="${escapeAttr(t.path)}" data-frame="TIT2"
                  value="${escapeAttr(t.title || "")}"></td>
       <td><input class="tag" data-path="${escapeAttr(t.path)}" data-frame="TPE1"
@@ -284,6 +284,17 @@ function renderAlbumEditInto(container, st) {
   container.querySelectorAll("button[data-play]").forEach((b, i) =>
     b.onclick = (e) => { e.stopPropagation(); playAlbum(tracks, i, st.path); });
   updatePlayingHighlight(getCurrentPath());
+
+  // Drag tracks to reorder → renumber/rename the files on disk, then refresh.
+  const tbody = container.querySelector("tbody");
+  if (tbody) enableRowDrag(tbody, async () => {
+    const order = [...tbody.querySelectorAll("tr[data-path]")].map(tr => tr.dataset.path);
+    try {
+      const res = await jpost("/api/album/reorder", { path: st.path, order });
+      if (!res.ok) toast(res.error || "Reorder failed", true);
+    } catch (e) { toast(e.message, true); }
+    refreshCurrent();
+  });
 
   container.querySelector('[data-act="art"]').onclick = () => findArt(st);
   container.querySelector('[data-act="rmart"]').onclick = () => edit.removeArt(st.path, refreshCurrent);

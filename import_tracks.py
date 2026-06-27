@@ -527,7 +527,8 @@ def import_tracks(source: Path, library: Path, dry_run: bool,
         # Sort by position in the entries list, which matches the preview display
         # order. This ensures manual multi-CD merges produce consecutive numbering
         # rather than interleaving by TPOS/TRCK tags.
-        group_sorted = sorted(group, key=lambda x: entries_index.get(id(x[1]), 9999))
+        group_sorted = sorted(group, key=lambda x: x[1].get(
+            "_ORDER", entries_index.get(id(x[1]), 9999)))
         total = offset + len(group_sorted)
         width = 3 if total >= 100 else 2
 

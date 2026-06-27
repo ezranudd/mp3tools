@@ -819,6 +819,49 @@ def apply_edits(edits: "list[PendingEdit]") -> tuple[bool, str]:
     return _apply_pending(edits)
 
 
+def reorder_album(album_dir: Path, ordered_paths: "list[Path]") -> tuple[bool, str]:
+    """Renumber an album's tracks to the given order: write TRCK = i/N and rename
+    files to 'NN. Artist - Title.mp3'. Two-phase rename (via temp names) so reorders
+    that swap numbers don't collide. Returns (ok, error_string)."""
+    current = sorted(album_dir.glob("*.mp3"))
+    ordered = [Path(p) for p in ordered_paths]
+    if set(ordered) != set(current):
+        return False, "track set does not match the album"
+
+    n = len(ordered)
+    width = 3 if n >= 100 else 2
+    errors: list[str] = []
+
+    # Write TRCK first (files still at their current paths), then collision-safe rename.
+    plan: list[tuple[Path, Path]] = []   # (current_path, final_path)
+    for i, path in enumerate(ordered, 1):
+        tags = read_tags(path) or {}
+        artist_s = _sanitize(tags.get("artist", ""))
+        title_s = _sanitize(tags.get("title", "") or path.stem)
+        final = album_dir / _new_track_filename(i, width, artist_s, title_s)
+        try:
+            _write_tags(path, {"TRCK": f"{str(i).zfill(width)}/{n}"})
+        except Exception as exc:
+            errors.append(f"tag:{path.name}: {exc}")
+        plan.append((path, final))
+
+    temps: list[tuple[Path, Path]] = []
+    try:
+        for idx, (path, final) in enumerate(plan):
+            tmp = album_dir / f".reorder-{idx}.tmp"
+            path.rename(tmp)
+            temps.append((tmp, final))
+        for tmp, final in temps:
+            if final.exists() and final != tmp:
+                errors.append(f"exists:{final.name}")
+            else:
+                tmp.rename(final)
+    except Exception as exc:
+        errors.append(f"rename: {exc}")
+
+    return (not errors), "  |  ".join(errors)
+
+
 # ── Edit dispatcher ───────────────────────────────────────────────────────────
 
 def _do_edit(stdscr, node: Node) -> "PendingEdit | None":

@@ -235,6 +235,7 @@ def _serialize_entries(entries, root=None) -> list[dict]:
             "genre": td.get("TCON", ""),
             "year": td.get("YEAR", ""),
             "track": td.get("TRCK", ""),
+            "disc": td.get("TPOS", ""),
             "bitrate": td.get("_MP3_BITRATE", ""),
             "lossless": Path(path).suffix.lower() in LOSSLESS_EXTENSIONS,
             "conflict": _dest_exists(root, td),
@@ -248,13 +249,17 @@ def _apply_entry_edits(entries, edited) -> None:
     that import_tracks consumes (lossless bitrate, cover choice, conflict add/skip)."""
     if not edited:
         return
-    by_i = {row.get("i"): row for row in edited if isinstance(row, dict)}
+    rows = [row for row in edited if isinstance(row, dict)]
+    by_i = {row.get("i"): row for row in rows}
+    order = {row.get("i"): pos for pos, row in enumerate(rows)}   # submitted order
     field_map = {"artist": "TPE1", "albumartist": "ALBUMARTIST", "title": "TIT2",
                  "album": "TALB", "genre": "TCON", "year": "YEAR", "track": "TRCK"}
     for i, (_path, td) in enumerate(entries):
         row = by_i.get(i)
         if not row:
             continue
+        if i in order:
+            td["_ORDER"] = order[i]
         for key, frame in field_map.items():
             if key in row:
                 td[frame] = row[key]
