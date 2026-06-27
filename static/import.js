@@ -115,7 +115,7 @@ export function show(el) {
     catch (e) { toast(e.message, true); }
   };
 
-  mountJobPane(el.querySelector("#jobArea"), { kind: "import" });
+  mountJobPane(el.querySelector("#jobArea"), { kind: "import", log: false });
 }
 
 // Upload each collected file into a fresh server-side session; returns its token.

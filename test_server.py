@@ -353,13 +353,18 @@ def test_import_order_honored(tmp_path, tmp_path_factory):
               TYER="2020", TRCK="1")
     _make_mp3(src / "b.mp3", TIT2="Bbb", TPE1="Ord", TPE2="Ord", TALB="OrdAlbum",
               TYER="2020", TRCK="2")
+    _make_mp3(src / "c.mp3", TIT2="Ccc", TPE1="Ord", TPE2="Ord", TALB="OrdAlbum",
+              TYER="2020", TRCK="3")
     server.set_root(tmp_path)
     c = TestClient(server.app)
+
+    # Submit in a known shuffled preview order: Ccc, Aaa, Bbb.
+    submitted = ["Ccc", "Aaa", "Bbb"]
 
     def answer(prompt):
         if prompt["kind"] == "preview":
             rows = prompt["entries"]
-            rows.sort(key=lambda r: r["title"], reverse=True)   # submit B before A
+            rows.sort(key=lambda r: submitted.index(r["title"]))
             return {"proceed": True, "entries": rows}
         if prompt["kind"] == "choice" and prompt["options"]:
             return prompt["options"][0]["key"]
@@ -368,8 +373,11 @@ def test_import_order_honored(tmp_path, tmp_path_factory):
     jid = c.post("/api/jobs", json={"kind": "import", "source": str(src)}).json()["job_id"]
     assert _poll(c, jid, answer)["state"] == "done"
     dest = tmp_path / "Ord" / "2020 - OrdAlbum"
-    first = sorted(dest.glob("*.mp3"))[0]
-    assert str(ID3(first, translate=False).get("TIT2")) == "Bbb"   # submitted order won
+    # The on-disk track numbers must match the submitted (preview) order exactly.
+    for n, title in enumerate(submitted, 1):
+        f = dest / f"0{n}. Ord - {title}.mp3"
+        assert f.is_file(), sorted(p.name for p in dest.glob("*.mp3"))
+        assert str(ID3(f, translate=False).get("TRCK")) == f"0{n}/3"
 
 
 def test_album_delete_and_prunes_artist(client, tmp_path):
