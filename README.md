@@ -90,6 +90,22 @@ contract the TUI uses). Only one operation runs at a time. Tag rules (ID3v2.3,
 Pass `--host`/`--port` to change the bind address, or `--desktop` (requires the
 `desktop` extra) to open in a native window instead of a browser tab.
 
+### Sharing on the local network (read-only)
+
+```bash
+python server.py ~/Music --lan
+# → http://127.0.0.1:8765            (this machine: full access)
+# → http://192.168.1.50:8765         (local network: read-only browse + playback)
+```
+
+`--lan` binds `0.0.0.0` so other computers on your network can open the printed
+LAN URL in a browser to **browse the library and play music**. Access is decided
+by client IP: requests from the machine running the server (loopback) get the
+full UI; every other device is a **read-only guest** — no audit, standardize,
+import, sync, tag/art editing, or settings changes (the server returns `403` and
+the guest UI hides those controls). There is no login. Only use `--lan` on a
+network you trust.
+
 > **Heads-up:** edits, standardize, import and sync all write to disk. Point the
 > server at a copy of your library if you want to experiment safely.
 >

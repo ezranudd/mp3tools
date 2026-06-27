@@ -27,6 +27,9 @@ const VIEWS = [
 const viewEl = document.getElementById("view");
 const sidebar = document.getElementById("sidebar");
 let current = null;
+// Owners (loopback) get the full UI; network guests get read-only browse+play.
+// Fails safe to guest if /api/whoami can't be reached.
+let TRUSTED = false;
 
 async function activate(name) {
   const entry = VIEWS.find(v => v[0] === name);
@@ -59,7 +62,9 @@ function revealPlaying({ album_path, track_path }) {
 }
 
 function buildNav() {
-  for (const [name, label, , icon] of VIEWS) {
+  // Guests only get Browse; the other views are owner-only admin tools.
+  const views = TRUSTED ? VIEWS : VIEWS.filter(v => v[0] === "browse");
+  for (const [name, label, , icon] of views) {
     const btn = document.createElement("button");
     btn.innerHTML = `<span class="navicon">${icon}</span><span class="navlabel">${escapeHtml(label)}</span>`;
     btn.dataset.name = name;
@@ -70,6 +75,10 @@ function buildNav() {
 
 function buildModeToggle() {
   const wrap = document.getElementById("modeToggle");
+  // Edit mode is owner-only. Force browse and hide the toggle for guests so the
+  // edit-only affordances in tree.js (inline fields, delete, drag-reorder) never
+  // render — and even a stale localStorage "edit" can't resurrect them.
+  if (!TRUSTED) { setMode("browse"); wrap.style.display = "none"; return; }
   const mk = (name, label) => {
     const b = document.createElement("button");
     b.textContent = label;
@@ -108,11 +117,17 @@ function buildJobIndicator() {
 }
 
 async function init() {
+  try {
+    const who = await jget("/api/whoami");
+    TRUSTED = !!who.trusted;
+  } catch (e) {
+    TRUSTED = false;   // fail safe to read-only
+  }
   buildNav();
   buildModeToggle();
   buildThemeToggle();
   initBackground();
-  buildJobIndicator();
+  if (TRUSTED) buildJobIndicator();   // jobs are owner-only operations
   initPlayer(revealPlaying);
   initSearch(activate);
   accent.initAccent();
@@ -123,7 +138,7 @@ async function init() {
     toast(e.message, true);
   }
   activate("browse");
-  initJobs();   // resume tracking a job that was already running
+  if (TRUSTED) initJobs();   // resume tracking a job that was already running
 }
 
 init();

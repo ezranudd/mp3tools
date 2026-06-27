@@ -32,6 +32,11 @@ from webjobs import MANAGER
 # Set by main() (or by tests via set_root) before requests are served.
 ROOT: Path = Path.cwd()
 
+# True when started with --lan (bound to 0.0.0.0 for the local network). Only
+# affects what we print and the /api/whoami hint — guest gating keys off the
+# request's client IP, not this flag (see _is_trusted / the guest middleware).
+LAN_MODE: bool = False
+
 _HERE = Path(__file__).resolve().parent
 _INDEX = _HERE / "index.html"
 _STATIC = _HERE / "static"
@@ -57,6 +62,17 @@ def set_root(path) -> None:
     """Point the server at a library root (used by main() and tests)."""
     global ROOT
     ROOT = Path(path).expanduser().resolve()
+
+
+def _is_trusted(request: Request) -> bool:
+    """Full access for loopback clients (the owner on the server machine);
+    everyone else on the network is a read-only guest. Missing client info
+    (e.g. in-process test calls) counts as trusted."""
+    client = request.client
+    if client is None:
+        return True
+    host = client.host
+    return host in ("127.0.0.1", "::1") or host.startswith("127.")
 
 
 def _safe(raw: str) -> Path:
@@ -98,6 +114,31 @@ def _require_idle() -> None:
 
 app = FastAPI(title="mp3tools web")
 
+# Read-only routes a non-loopback "guest" may reach. Default-deny: anything not
+# here (audit, edit, import, sync, jobs, settings POST, every mutation) → 403,
+# so new endpoints are private unless deliberately added. Static + "/" handle
+# the SPA; the SPA itself hides admin UI for guests (see /api/whoami).
+_GUEST_GET_PATHS = frozenset({
+    "/", "/api/tree", "/api/album", "/api/search", "/api/genre",
+    "/api/track", "/api/cover", "/api/background", "/api/settings",
+    "/api/whoami",
+})
+
+
+def _guest_allowed(method: str, path: str) -> bool:
+    if method not in ("GET", "HEAD"):
+        return False
+    return path in _GUEST_GET_PATHS or path.startswith("/static/")
+
+
+@app.middleware("http")
+async def _guest_gate(request: Request, call_next):
+    # Loopback = owner (full access); any other client IP = read-only guest,
+    # restricted to the browse/play allowlist above.
+    if not _is_trusted(request) and not _guest_allowed(request.method, request.url.path):
+        return JSONResponse(status_code=403, content={"detail": "read-only guest"})
+    return await call_next(request)
+
 
 @app.middleware("http")
 async def _no_cache_static(request, call_next):
@@ -122,6 +163,13 @@ def _node_json(node: browse.Node) -> dict:
         "path": str(node.path),
         "children": [_node_json(c) for c in node.children],
     }
+
+
+@app.get("/api/whoami")
+def api_whoami(request: Request) -> JSONResponse:
+    """Bootstrap hint for the SPA: trusted owners get the full UI, guests get a
+    read-only browse/play UI."""
+    return JSONResponse({"trusted": _is_trusted(request), "lan": LAN_MODE})
 
 
 @app.get("/api/tree")
@@ -429,9 +477,21 @@ def _settings_response() -> dict:
     return cfg
 
 
+def _guest_settings(cfg: dict) -> dict:
+    """Strip owner-only / credential-ish keys before handing settings to a guest.
+    Guests only need display fields (background presence/version/fit/blur/opacity)."""
+    drop = {"art_sources", "art_source_order"}
+    return {k: v for k, v in cfg.items()
+            if k not in drop
+            and not any(s in k.lower() for s in ("token", "key", "secret"))}
+
+
 @app.get("/api/settings")
-def api_get_settings() -> JSONResponse:
-    return JSONResponse(_settings_response())
+def api_get_settings(request: Request) -> JSONResponse:
+    cfg = _settings_response()
+    if not _is_trusted(request):
+        cfg = _guest_settings(cfg)
+    return JSONResponse(cfg)
 
 
 @app.post("/api/settings")
@@ -627,11 +687,29 @@ def index() -> HTMLResponse:
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
+def _lan_ip() -> str:
+    """Best-effort local-network IP for the printed URL. No packets are sent —
+    connecting a UDP socket just picks the outbound interface's address."""
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        return s.getsockname()[0]
+    except OSError:
+        return "127.0.0.1"
+    finally:
+        s.close()
+
+
 def main() -> None:
+    global LAN_MODE
     parser = argparse.ArgumentParser(description="mp3tools web UI")
     parser.add_argument("root", help="library root directory")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--lan", action="store_true",
+                        help="serve to the local network (binds 0.0.0.0); "
+                             "remote devices get read-only browse + playback")
     parser.add_argument("--desktop", action="store_true",
                         help="open in a native window (requires pywebview)")
     args = parser.parse_args()
@@ -640,13 +718,19 @@ def main() -> None:
     if not ROOT.is_dir():
         parser.error(f"not a directory: {ROOT}")
 
-    url = f"http://{args.host}:{args.port}"
+    host = args.host
+    if args.lan:
+        LAN_MODE = True
+        if host == "127.0.0.1":          # honor an explicit --host if given
+            host = "0.0.0.0"
+
+    url = f"http://{host}:{args.port}"
     if args.desktop:
         import threading
         import uvicorn
         import webview  # pywebview
         threading.Thread(
-            target=lambda: uvicorn.run(app, host=args.host, port=args.port,
+            target=lambda: uvicorn.run(app, host=host, port=args.port,
                                        log_level="warning"),
             daemon=True,
         ).start()
@@ -655,7 +739,12 @@ def main() -> None:
     else:
         import uvicorn
         print(f"mp3tools web — serving {ROOT}\n  {url}")
-        uvicorn.run(app, host=args.host, port=args.port)
+        if LAN_MODE:
+            print(f"  local network: http://{_lan_ip()}:{args.port}  "
+                  "(read-only browse + playback)")
+            print("  note: library is exposed read-only to the local network — "
+                  "do not use on untrusted networks.")
+        uvicorn.run(app, host=host, port=args.port)
 
 
 if __name__ == "__main__":

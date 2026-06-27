@@ -61,7 +61,15 @@ def client(tmp_path):
     album.mkdir(parents=True)
     _make_mp3(album / "01. Test Artist - Silent Night.mp3")
     server.set_root(tmp_path)
-    return TestClient(server.app)
+    # Default client is the loopback owner (full access); TestClient otherwise
+    # reports host "testclient", which the guest gate would treat as read-only.
+    return TestClient(server.app, client=("127.0.0.1", 12345))
+
+
+@pytest.fixture()
+def guest(client):
+    """A read-only client from a non-loopback (LAN) address."""
+    return TestClient(server.app, client=("192.168.1.50", 12345))
 
 
 def test_tree_shape(client):
@@ -389,7 +397,7 @@ def test_import_merges_discs_in_order(tmp_path, tmp_path_factory):
     _make_mp3(src / "CD2" / "a.mp3", TIT2="D2T1", TPOS="2/2", TRCK="1", **common)
     _make_mp3(src / "CD1" / "b.mp3", TIT2="D1T1", TPOS="1/2", TRCK="1", **common)
     server.set_root(tmp_path)
-    c = TestClient(server.app)
+    c = TestClient(server.app, client=("127.0.0.1", 12345))
 
     seen = {}
 
@@ -423,7 +431,7 @@ def test_import_order_honored(tmp_path, tmp_path_factory):
     _make_mp3(src / "c.mp3", TIT2="Ccc", TPE1="Ord", TPE2="Ord", TALB="OrdAlbum",
               TYER="2020", TRCK="3")
     server.set_root(tmp_path)
-    c = TestClient(server.app)
+    c = TestClient(server.app, client=("127.0.0.1", 12345))
 
     # Submit in a known shuffled preview order: Ccc, Aaa, Bbb.
     submitted = ["Ccc", "Aaa", "Bbb"]
@@ -501,7 +509,7 @@ def test_standardize_prompt_roundtrip(tmp_path):
     _make_mp3(album / "01. Artist - Track.mp3",
               TPE1="Artist", TPE2="Artist", TALB="Album", TYER="2024", TRCK="01/1")
     server.set_root(tmp_path)
-    c = TestClient(server.app)
+    c = TestClient(server.app, client=("127.0.0.1", 12345))
 
     asked = []
 
@@ -531,7 +539,7 @@ def test_import_job_copies_file(tmp_path, tmp_path_factory):
     _make_mp3(src / "song.mp3", TIT2="Imported", TPE1="Imp", TPE2="Imp",
               TALB="ImpAlbum", TYER="2020", TRCK="1")
     server.set_root(tmp_path)
-    c = TestClient(server.app)
+    c = TestClient(server.app, client=("127.0.0.1", 12345))
 
     def answer(prompt):
         if prompt["kind"] == "preview":
@@ -556,7 +564,7 @@ def test_import_via_upload(tmp_path, tmp_path_factory):
     _make_mp3(staging / "song.mp3", TIT2="Dropped", TPE1="Dee", TPE2="Dee",
               TALB="DropAlbum", TYER="2021", TRCK="1")
     server.set_root(tmp_path)
-    c = TestClient(server.app)
+    c = TestClient(server.app, client=("127.0.0.1", 12345))
 
     token = c.post("/api/import/upload/start").json()["token"]
     upload_dir = server._UPLOADS[token]
@@ -589,7 +597,7 @@ def test_import_preview_edits_genre(tmp_path, tmp_path_factory):
     _make_mp3(src / "song.mp3", TIT2="Tune", TPE1="Band", TPE2="Band",
               TALB="Rec", TYER="2022", TRCK="1")
     server.set_root(tmp_path)
-    c = TestClient(server.app)
+    c = TestClient(server.app, client=("127.0.0.1", 12345))
 
     def answer(prompt):
         if prompt["kind"] == "preview":
@@ -632,7 +640,7 @@ def test_import_preview_serializes_new_fields(tmp_path, tmp_path_factory):
     src = tmp_path_factory.mktemp("source")
     _make_mp3(src / "song.mp3", TIT2="T", TPE1="A", TPE2="A", TALB="Al", TYER="2020", TRCK="1")
     server.set_root(tmp_path)
-    c = TestClient(server.app)
+    c = TestClient(server.app, client=("127.0.0.1", 12345))
 
     seen = {}
 
@@ -660,7 +668,7 @@ def test_import_conflict_skip_and_add(tmp_path, tmp_path_factory):
     _make_mp3(dest / "01. Imp - Old.mp3", TIT2="Old", TPE1="Imp", TPE2="Imp",
               TALB="ImpAlbum", TYER="2020", TRCK="01/1")
     server.set_root(tmp_path)
-    c = TestClient(server.app)
+    c = TestClient(server.app, client=("127.0.0.1", 12345))
 
     def run(resolution):
         src = tmp_path_factory.mktemp("src")
@@ -694,7 +702,7 @@ def test_import_lossless_bitrate_not_dropped(tmp_path, tmp_path_factory):
     _make_flac(src / "track.flac", title="Song", artist="Band",
                albumartist="Band", album="FlacAlbum", date="2019", tracknumber="1")
     server.set_root(tmp_path)
-    c = TestClient(server.app)
+    c = TestClient(server.app, client=("127.0.0.1", 12345))
 
     def answer(prompt):
         if prompt["kind"] == "preview":
@@ -721,7 +729,7 @@ def test_import_art_none_writes_placeholder(tmp_path, tmp_path_factory):
     _make_mp3(src / "song.mp3", TIT2="T", TPE1="Solo", TPE2="Solo",
               TALB="NoArt", TYER="2020", TRCK="1")
     server.set_root(tmp_path)
-    c = TestClient(server.app)
+    c = TestClient(server.app, client=("127.0.0.1", 12345))
 
     def answer(prompt):
         if prompt["kind"] == "preview":
@@ -796,7 +804,7 @@ def _sync_client(tmp_path):
     _make_mp3(tmp_path / "Artist One" / "2021 - Second" / "01. A - S.mp3")
     _make_mp3(tmp_path / "Artist Two" / "2020 - Solo" / "01. A - S.mp3")
     server.set_root(tmp_path)
-    return TestClient(server.app)
+    return TestClient(server.app, client=("127.0.0.1", 12345))
 
 
 def test_sync_artists_and_albums(tmp_path, tmp_path_factory):
@@ -972,3 +980,52 @@ def test_match_score_edition_tolerant():
     typo = _match_score("Artist", "Album", "Artist", "Albbum")
     other = _match_score("Artist", "Album", "Artist", "Completely Different")
     assert typo > other
+
+
+# ── LAN guest gating (loopback = owner, other IPs = read-only) ────────────────
+
+def test_whoami_owner_vs_guest(client, guest):
+    assert client.get("/api/whoami").json()["trusted"] is True
+    assert guest.get("/api/whoami").json()["trusted"] is False
+
+
+def test_guest_can_browse_and_play(client, guest):
+    tree = guest.get("/api/tree")
+    assert tree.status_code == 200
+    album_path = tree.json()["artists"][0]["children"][0]["path"]
+    assert guest.get("/api/album", params={"path": album_path}).status_code == 200
+    track_path = guest.get("/api/album", params={"path": album_path}) \
+        .json()["tracks"][0]["path"]
+    # Audio streams with Range support so seeking works.
+    r = guest.get("/api/track", params={"path": track_path},
+                  headers={"Range": "bytes=0-99"})
+    assert r.status_code in (200, 206)
+    assert guest.get("/api/search", params={"q": "Silent"}).status_code == 200
+
+
+def test_guest_blocked_from_admin(client, guest):
+    album = client.get("/api/tree").json()["artists"][0]["children"][0]["path"]
+    track = client.get("/api/album", params={"path": album}).json()["tracks"][0]["path"]
+    # Read-only audit is a GET but still owner-only (default-deny).
+    assert guest.get("/api/audit").status_code == 403
+    # Mutations are all blocked.
+    assert guest.post("/api/tags",
+                      json={"path": track, "updates": {"TIT2": "x"}}).status_code == 403
+    assert guest.post("/api/settings", json={"cover_art": "embed"}).status_code == 403
+    assert guest.post("/api/edit/apply",
+                      json={"path": album, "op": "album_genre", "value": "Z"}).status_code == 403
+    assert guest.post("/api/jobs", json={"kind": "standardize"}).status_code == 403
+    assert guest.get("/api/sync/devices").status_code == 403
+    # The owner is unaffected by the guest gate.
+    assert client.get("/api/audit").status_code == 200
+
+
+def test_guest_settings_sanitized(client, guest):
+    full = client.get("/api/settings").json()
+    assert "art_sources" in full                 # owner sees everything
+    g = guest.get("/api/settings")
+    assert g.status_code == 200                   # guests may read display fields
+    body = g.json()
+    assert "art_sources" not in body
+    assert "art_source_order" not in body
+    assert not any(s in k.lower() for k in body for s in ("token", "key", "secret"))
