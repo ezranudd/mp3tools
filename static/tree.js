@@ -251,8 +251,6 @@ function renderAlbumEditInto(container, st) {
       </div>
       <div class="sub">${tracks.length} track${tracks.length === 1 ? "" : "s"}</div>
       <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
-        <button class="btn" data-act="art">Find artwork</button>
-        <button class="btn danger" data-act="rmart">Remove art</button>
         <button class="btn danger" data-act="del">Delete album</button>
       </div>`) + `
     <table>
@@ -296,8 +294,14 @@ function renderAlbumEditInto(container, st) {
     refreshCurrent();
   });
 
-  container.querySelector('[data-act="art"]').onclick = () => findArt(st);
-  container.querySelector('[data-act="rmart"]').onclick = () => edit.removeArt(st.path, refreshCurrent);
+  // Clicking the cover manages all artwork (search/apply, upload, remove).
+  const coverImg = container.querySelector(".albumhead img.cover");
+  if (coverImg) {
+    coverImg.classList.add("editcover");
+    coverImg.title = "Click to change cover art";
+    coverImg.onclick = () => findArt(st);
+  }
+
   container.querySelector('[data-act="del"]').onclick = () =>
     edit.deleteAlbum(st.path, st.album || st.path.split("/").pop(), afterAlbumDelete);
 }
@@ -369,6 +373,7 @@ async function findArt(st) {
     <div class="row">
       <input type="file" accept="image/*" id="artFile" style="display:none">
       <button class="btn" data-file>Choose local file…</button>
+      <button class="btn danger" data-remove>Remove art</button>
       <button class="btn" data-close>Close</button>
     </div>`,
     (box) => {
@@ -376,6 +381,7 @@ async function findArt(st) {
       const file = box.querySelector("#artFile");
       box.querySelector("[data-file]").onclick = () => file.click();
       file.onchange = () => { if (file.files[0]) uploadArt(st, file.files[0], closeModal); };
+      box.querySelector("[data-remove]").onclick = () => { closeModal(); edit.removeArt(st.path, refreshCurrent); };
     });
   try {
     const data = await jget(`/api/art/search?artist=${encodeURIComponent(artist)}&album=${encodeURIComponent(album)}`);

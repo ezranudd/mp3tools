@@ -187,6 +187,8 @@
   .albumhead { display:flex; gap:18px; align-items:flex-start; margin-bottom:16px; }
   .cover { width:200px; height:200px; object-fit:cover; background:var(--panel);
            border:1px solid var(--line); border-radius:6px; }
+  .cover.editcover { cursor:pointer; }
+  .cover.editcover:hover { border-color:var(--accent); }
   .albummeta h2 { margin:0 0 4px; font-size:18px; font-weight:600; }
   .albummeta .sub { color:var(--muted); min-height:20px; }
   /* Fixed layout so columns line up across every album section. */
