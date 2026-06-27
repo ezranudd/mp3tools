@@ -68,6 +68,8 @@ function render() {
       <div class="field"><label>Fit</label>
         <select id="bg_fit">${["cover", "contain", "tile"].map(v =>
           `<option value="${v}" ${v === (cfg.background_fit || "cover") ? "selected" : ""}>${v}</option>`).join("")}</select></div>
+      <div class="field"><label>Improve text readability</label>
+        <input type="checkbox" id="bg_readable" ${(cfg.background_readable ?? true) ? "checked" : ""}></div>
     </div>
 
     <div class="row" style="justify-content:flex-start">
@@ -86,12 +88,14 @@ function liveBackground() {
   cfg.background_opacity = parseFloat(container.querySelector("#bg_opacity").value);
   cfg.background_blur = parseInt(container.querySelector("#bg_blur").value, 10);
   cfg.background_fit = container.querySelector("#bg_fit").value;
+  cfg.background_readable = container.querySelector("#bg_readable").checked;
   applyBackground(cfg);
 }
 
 function wireBackground() {
-  for (const id of ["#bg_opacity", "#bg_blur", "#bg_fit"])
+  for (const id of ["#bg_opacity", "#bg_blur", "#bg_fit", "#bg_readable"])
     container.querySelector(id).oninput = liveBackground;
+  container.querySelector("#bg_readable").onchange = liveBackground;
   container.querySelector("#bg_file").onchange = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -124,6 +128,7 @@ async function save() {
     background_opacity: parseFloat(container.querySelector("#bg_opacity").value),
     background_blur: parseInt(container.querySelector("#bg_blur").value, 10),
     background_fit: container.querySelector("#bg_fit").value,
+    background_readable: container.querySelector("#bg_readable").checked,
   };
   container.querySelectorAll("[data-bool]").forEach(c => body[c.dataset.bool] = c.checked);
   container.querySelectorAll("[data-src]").forEach(c => body.art_sources[c.dataset.src] = c.checked);

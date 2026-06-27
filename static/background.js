@@ -9,10 +9,13 @@ export function applyBackground(cfg) {
   const img = document.getElementById("bgImage");
   if (!cfg || !cfg.background_present) {
     delete root.dataset.bg;
+    delete root.dataset.bgReadable;
     img.style.backgroundImage = "";
     return;
   }
   root.dataset.bg = "on";
+  if (cfg.background_readable ?? true) root.dataset.bgReadable = "on";
+  else delete root.dataset.bgReadable;
   root.style.setProperty("--bg-opacity", String(cfg.background_opacity ?? 0.4));
   root.style.setProperty("--bg-blur", `${cfg.background_blur ?? 0}px`);
   // "tile" isn't a real background-size; repeat the image at native size instead.

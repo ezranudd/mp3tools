@@ -49,6 +49,17 @@
   html[data-bg="on"] nav.sidebar {
          background:color-mix(in srgb, var(--panel) 45%, transparent);
          backdrop-filter:blur(6px); }
+  /* Optional: keep text legible over the background image. --bg is the opaque theme
+     base, so the halo is dark in dark mode and light in light mode. */
+  html[data-bg="on"][data-bg-readable] #detail,
+  html[data-bg="on"][data-bg-readable] .page {
+         --muted:color-mix(in srgb, var(--fg) 62%, var(--muted));
+         text-shadow:0 1px 2px var(--bg), 0 0 3px var(--bg); }
+  /* Form-control value text doesn't reliably inherit text-shadow — carry it onto
+     the Edit-mode inputs so editable fields keep the same halo. */
+  html[data-bg="on"][data-bg-readable] #detail :is(input, textarea, select),
+  html[data-bg="on"][data-bg-readable] .page :is(input, textarea, select) {
+         text-shadow:inherit; }
   header { padding:10px 16px; background:var(--panel); border-bottom:1px solid var(--line);
            display:flex; align-items:center; gap:12px; flex:0 0 auto;
            position:relative; z-index:30; }
@@ -110,7 +121,6 @@
                   border-radius:6px; }
   .player .pbtn:hover { color:var(--accent); }
   .player .pbtn svg { width:18px; height:18px; display:block; fill:currentColor; }
-  .player .pjump { color:var(--muted); }   /* secondary control, brightens on hover */
   .player .ptitle { min-width:160px; max-width:38vw; overflow:hidden; text-overflow:ellipsis;
                     white-space:nowrap; cursor:pointer; }
   .player .ptitle:hover { color:var(--accent); }

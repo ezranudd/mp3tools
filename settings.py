@@ -31,6 +31,7 @@ DEFAULTS: dict = {
     "background_blur":    0,          # web UI: bg image blur in px, 0..40
     "background_fit":     "cover",    # web UI: "cover" | "contain" | "tile"
     "background_mime":    "",         # web UI: mime of the uploaded bg image (set on upload)
+    "background_readable": True,      # web UI: boost text contrast over the bg image
 }
 
 _VALID_COVER_ART = frozenset(("folder", "embed", "both"))
@@ -83,6 +84,8 @@ def load(library_root: Path) -> dict:
                 settings["background_fit"] = data["background_fit"]
             if isinstance(data.get("background_mime"), str):
                 settings["background_mime"] = data["background_mime"].strip()
+            if isinstance(data.get("background_readable"), bool):
+                settings["background_readable"] = data["background_readable"]
         except Exception:
             pass
     return settings

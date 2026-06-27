@@ -17,9 +17,6 @@ const ICON = {
   next: SVG(`<path d="M16 6h2v12h-2z M4 6l10.5 6L4 18z"/>`),
   play: SVG(`<path d="M8 5v14l11-7z"/>`),
   pause: SVG(`<path d="M7 5h3.5v14H7z M13.5 5H17v14h-3.5z"/>`),
-  locate: SVG(`<circle cx="12" cy="12" r="6" fill="none" stroke="currentColor" stroke-width="2"/>` +
-              `<circle cx="12" cy="12" r="1.6"/>` +
-              `<path stroke="currentColor" stroke-width="2" d="M12 2v3M12 19v3M2 12h3M19 12h3"/>`),
 };
 
 export function getCurrentPath() {
@@ -37,7 +34,6 @@ export function initPlayer(revealFn = null) {
     <button class="pbtn" data-prev title="Previous">${ICON.prev}</button>
     <button class="pbtn play" data-play title="Play/Pause">${ICON.play}</button>
     <button class="pbtn" data-next title="Next">${ICON.next}</button>
-    <button class="pbtn pjump" data-jump title="Show in library">${ICON.locate}</button>
     <span class="ptitle" data-title title="Show in library"></span>
     <span class="ptime" data-cur>0:00</span>
     <input type="range" class="pseek" data-seek min="0" max="1000" value="0">
@@ -51,7 +47,6 @@ export function initPlayer(revealFn = null) {
 
   bar.querySelector("[data-prev]").onclick = prev;
   bar.querySelector("[data-next]").onclick = next;
-  bar.querySelector("[data-jump]").onclick = jumpToAlbum;
   els.title.onclick = jumpToAlbum;
   els.play.onclick = toggle;
 
