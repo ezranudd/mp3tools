@@ -41,10 +41,13 @@
   /* Immersive mode: let the image show through the chrome panels. */
   html[data-bg="on"] body { background:transparent; }
   html[data-bg="on"] header,
-  html[data-bg="on"] nav.sidebar,
   html[data-bg="on"] #tree,
   html[data-bg="on"] .player {
          background:color-mix(in srgb, var(--panel) 78%, transparent);
+         backdrop-filter:blur(6px); }
+  /* The left menu is more see-through than the other chrome. */
+  html[data-bg="on"] nav.sidebar {
+         background:color-mix(in srgb, var(--panel) 45%, transparent);
          backdrop-filter:blur(6px); }
   header { padding:10px 16px; background:var(--panel); border-bottom:1px solid var(--line);
            display:flex; align-items:center; gap:12px; flex:0 0 auto; }
@@ -118,6 +121,9 @@
   nav.sidebar button:hover { background:var(--bg); }
   nav.sidebar button.active { border-left-color:var(--accent); color:var(--accent);
                               font-weight:600; }
+  .navicon { display:inline-block; width:1.4em; margin-right:8px; text-align:center;
+             opacity:.75; }
+  nav.sidebar button.active .navicon { opacity:1; }
   #view { flex:1; min-width:0; display:flex; }
 
   /* shared widgets */

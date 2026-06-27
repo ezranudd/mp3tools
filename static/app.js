@@ -15,12 +15,12 @@ import * as syncView from "./sync.js";
 import * as settings from "./settings.js";
 
 const VIEWS = [
-  ["browse", "Browse", browse],
-  ["audit", "Audit", audit],
-  ["standardize", "Standardize", standardize],
-  ["import", "Import", importView],
-  ["sync", "Sync", syncView],
-  ["settings", "Settings", settings],
+  ["browse", "Browse", browse, "♪"],
+  ["audit", "Audit", audit, "✓"],
+  ["standardize", "Standardize", standardize, "✦"],
+  ["import", "Import", importView, "↧"],
+  ["sync", "Sync", syncView, "⇄"],
+  ["settings", "Settings", settings, "⚙"],
 ];
 
 const viewEl = document.getElementById("view");
@@ -41,9 +41,9 @@ function activate(name) {
 }
 
 function buildNav() {
-  for (const [name, label] of VIEWS) {
+  for (const [name, label, , icon] of VIEWS) {
     const btn = document.createElement("button");
-    btn.textContent = label;
+    btn.innerHTML = `<span class="navicon">${icon}</span>${escapeHtml(label)}`;
     btn.dataset.name = name;
     btn.onclick = () => activate(name);
     sidebar.appendChild(btn);
