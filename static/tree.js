@@ -65,7 +65,35 @@ function updatePlayingHighlight(path) {
 
 function rerender() {
   if (!treeEl || !treeEl.isConnected) return;
-  loadTree().then(() => { if (CURRENT) selectArtist(CURRENT.path); });
+  const anchor = captureAnchor();
+  loadTree().then(() => {
+    if (CURRENT) selectArtist(CURRENT.path).then(() => restoreAnchor(anchor));
+  });
+}
+
+// Remember which album section sits at the top of #detail (and its sub-offset),
+// so a re-render that changes section heights (Browse↔Edit) can restore the view.
+function captureAnchor() {
+  if (!detailEl) return null;
+  const cTop = detailEl.getBoundingClientRect().top;
+  for (const sec of detailEl.querySelectorAll(".albumsection")) {
+    const r = sec.getBoundingClientRect();
+    if (r.bottom > cTop + 1) return { path: sec.dataset.path, delta: r.top - cTop };
+  }
+  return { scrollTop: detailEl.scrollTop };   // fallback: no album sections
+}
+
+function restoreAnchor(a) {
+  if (!a || !detailEl) return;
+  if (a.path) {
+    const sec = detailEl.querySelector(`.albumsection[data-path="${CSS.escape(a.path)}"]`);
+    if (sec) {
+      const cTop = detailEl.getBoundingClientRect().top;
+      detailEl.scrollTop += (sec.getBoundingClientRect().top - cTop) - a.delta;
+      return;
+    }
+  }
+  if (a.scrollTop != null) detailEl.scrollTop = a.scrollTop;
 }
 
 async function loadTree() {
