@@ -279,6 +279,27 @@ def test_edit_album_genre_keeps_path(client):
     assert body["new_path"] == album_path
 
 
+def test_album_delete_and_prunes_artist(client, tmp_path):
+    tree = client.get("/api/tree").json()
+    album_path = tree["artists"][0]["children"][0]["path"]
+    resp = client.post("/api/album/delete", json={"path": album_path})
+    assert resp.status_code == 200 and resp.json()["ok"]
+    assert not Path(album_path).exists()
+    # It was the artist's only album → the empty artist folder is pruned.
+    assert not (tmp_path / "Test Artist").exists()
+
+
+def test_album_delete_rejects_artist_dir(client, tmp_path):
+    # An artist-level path (parent == ROOT) must not be deletable.
+    resp = client.post("/api/album/delete", json={"path": str(tmp_path / "Test Artist")})
+    assert resp.status_code == 400
+    assert (tmp_path / "Test Artist").is_dir()
+
+
+def test_album_delete_rejects_outside_root(client):
+    assert client.post("/api/album/delete", json={"path": "/etc"}).status_code == 403
+
+
 def test_edit_unknown_op_400(client):
     tree = client.get("/api/tree").json()
     album_path = tree["artists"][0]["children"][0]["path"]

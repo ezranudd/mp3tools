@@ -35,6 +35,21 @@ export async function removeArt(path, onDone) {
   } catch (e) { toast(e.message, true); }
 }
 
+// Album-level: permanently delete the album folder (single confirmation).
+export async function deleteAlbum(path, label, onDone) {
+  const choice = await promptModal({
+    title: `Delete album "${label}"? This permanently removes the folder and its files.`,
+    kind: "choice",
+    options: [{ key: "delete", label: "Delete" }, { key: "cancel", label: "Cancel" }],
+  });
+  if (choice !== "delete") return;
+  try {
+    await jpost("/api/album/delete", { path });
+    toast("Album deleted.");
+    if (onDone) onDone();
+  } catch (e) { toast(e.message, true); }
+}
+
 // Artist-level: choose rename or genre, then edit.
 export async function editArtist(artist, onDone) {
   const choice = await promptModal({

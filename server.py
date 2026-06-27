@@ -360,6 +360,28 @@ class ArtRemove(BaseModel):
     mode: str          # "folder" | "embed" | "both"
 
 
+class AlbumDelete(BaseModel):
+    path: str          # album directory
+
+
+@app.post("/api/album/delete")
+def api_album_delete(body: AlbumDelete) -> JSONResponse:
+    _require_idle()
+    album_dir = _safe(body.path)                       # rejects paths outside ROOT
+    if not album_dir.is_dir():
+        raise HTTPException(status_code=404, detail="album not found")
+    if album_dir == ROOT or album_dir.parent == ROOT:  # never ROOT or an artist dir
+        raise HTTPException(status_code=400, detail="not an album folder")
+    shutil.rmtree(album_dir)
+    artist_dir = album_dir.parent                      # prune the artist if now empty
+    try:
+        if artist_dir != ROOT and not any(artist_dir.iterdir()):
+            artist_dir.rmdir()
+    except OSError:
+        pass
+    return JSONResponse({"ok": True, "deleted": str(album_dir)})
+
+
 @app.post("/api/art/remove")
 def api_art_remove(body: ArtRemove) -> JSONResponse:
     _require_idle()

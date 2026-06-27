@@ -253,6 +253,7 @@ function renderAlbumEditInto(container, st) {
       <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn" data-act="art">Find artwork</button>
         <button class="btn danger" data-act="rmart">Remove art</button>
+        <button class="btn danger" data-act="del">Delete album</button>
       </div>`) + `
     <table>
       <thead><tr><th>#</th><th>Title</th><th>Artist</th><th>Rate</th></tr></thead>
@@ -286,6 +287,17 @@ function renderAlbumEditInto(container, st) {
 
   container.querySelector('[data-act="art"]').onclick = () => findArt(st);
   container.querySelector('[data-act="rmart"]').onclick = () => edit.removeArt(st.path, refreshCurrent);
+  container.querySelector('[data-act="del"]').onclick = () =>
+    edit.deleteAlbum(st.path, st.album || st.path.split("/").pop(), afterAlbumDelete);
+}
+
+// After deleting an album, reload the tree and re-select the artist — unless that
+// was its last album (the artist folder gets pruned, so fall back to the placeholder).
+async function afterAlbumDelete() {
+  const artistPath = CURRENT && CURRENT.path;
+  await loadTree();
+  if (artistPath && TREE.find(a => a.path === artistPath)) selectArtist(artistPath);
+  else { CURRENT = null; detailEl.innerHTML = `<p class="muted">Select an artist or album.</p>`; }
 }
 
 // Commit on blur or Enter (Enter blurs to fire the change once).
