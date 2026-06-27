@@ -216,6 +216,7 @@ function renderAlbumBrowseInto(container, st) {
       <td><span class="rowplay">▶</span> <span class="num">${escapeHtml((t.track || "").split("/")[0])}</span></td>
       <td>${escapeHtml(t.title || "")}</td>
       <td>${escapeHtml(t.artist || "")}</td>
+      <td class="tdur muted">${escapeHtml(t.length || "")}</td>
       <td class="muted">${escapeHtml(t.bitrate ? t.bitrate + " kbps" : "")}</td>
     </tr>`).join("");
   container.innerHTML = albumHead(st, `
@@ -223,7 +224,7 @@ function renderAlbumBrowseInto(container, st) {
       <div class="sub">${sub}</div>
       <div class="sub">${tracks.length} track${tracks.length === 1 ? "" : "s"}</div>`) + `
     <table>
-      <thead><tr><th>#</th><th>Title</th><th>Artist</th><th>Rate</th></tr></thead>
+      <thead><tr><th>#</th><th>Title</th><th>Artist</th><th class="tdur">Time</th><th>Rate</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>`;
   container.querySelectorAll("tr.browserow").forEach((tr, i) =>
@@ -240,6 +241,7 @@ function renderAlbumEditInto(container, st) {
                  value="${escapeAttr(t.title || "")}"></td>
       <td><input class="tag" data-path="${escapeAttr(t.path)}" data-frame="TPE1"
                  value="${escapeAttr(t.artist || "")}"></td>
+      <td class="tdur muted">${escapeHtml(t.length || "")}</td>
       <td class="muted">${escapeHtml(t.bitrate ? t.bitrate + " kbps" : "")}</td>
     </tr>`).join("");
   container.innerHTML = albumHead(st, `
@@ -254,7 +256,7 @@ function renderAlbumEditInto(container, st) {
         <button class="btn danger" data-act="del">Delete album</button>
       </div>`) + `
     <table>
-      <thead><tr><th>#</th><th>Title</th><th>Artist</th><th>Rate</th></tr></thead>
+      <thead><tr><th>#</th><th>Title</th><th>Artist</th><th class="tdur">Time</th><th>Rate</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>`;
 

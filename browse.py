@@ -202,6 +202,13 @@ def build_tree(root: Path) -> list[Node]:
 
 # ── Tag I/O ───────────────────────────────────────────────────────────────────
 
+def _fmt_dur(seconds: float | None) -> str:
+    if not seconds or seconds <= 0:
+        return ""
+    s = int(seconds)
+    return f"{s // 60}:{s % 60:02d}"
+
+
 def _read_tags(path: Path) -> dict[str, str]:
     try:
         audio = MP3(path, ID3=lambda *a, **kw: ID3(*a, translate=False, **kw))
@@ -220,6 +227,7 @@ def _read_tags(path: Path) -> dict[str, str]:
         }
         if audio.info:
             result["bitrate"] = str(int(audio.info.bitrate / 1000))
+            result["length"] = _fmt_dur(audio.info.length)
         return result
     except Exception:
         return {}
