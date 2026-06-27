@@ -7,6 +7,7 @@ Public API
   fetch_artwork(url)                                             -> (bytes, mime)
   resize_artwork(data, mime, max_size)                           -> (bytes, mime)
 """
+import difflib
 import json
 import re
 import time
@@ -111,6 +112,34 @@ def _norm(value: str) -> str:
     return " ".join(value.split())
 
 
+# Edition / version qualifiers that shouldn't block a match ("Album (Deluxe Edition)"
+# vs "Album"). Used to broaden provider queries and to compare base titles.
+_EDITION_KEYWORDS = (
+    r"deluxe|expanded|remaster(?:ed)?|anniversary|"
+    r"(?:special|limited|collector'?s?|standard|super ?deluxe)(?: edition)?|"
+    r"bonus(?: tracks?)?|reissue|re-?issue|mono|stereo|explicit|clean|"
+    r"original (?:motion picture )?soundtrack|edition|version|"
+    r"disc\s*\d+|cd\s*\d+|vol(?:ume)?\.?\s*\d+"
+)
+_EDITION_PAREN = re.compile(
+    r"\s*[\(\[][^\)\]]*\b(?:" + _EDITION_KEYWORDS + r")\b[^\)\]]*[\)\]]", re.I)
+_EDITION_TRAIL = re.compile(
+    r"\s*[-–—:]\s*[^-–—:]*\b(?:" + _EDITION_KEYWORDS + r")\b.*$", re.I)
+
+
+def _strip_edition(name: str) -> str:
+    """Drop edition/version qualifiers so similar titles match. Keeps the original
+    if stripping would empty it."""
+    s = _EDITION_PAREN.sub("", name or "")
+    s = _EDITION_TRAIL.sub("", s)
+    s = s.strip(" -–—:")
+    return s or (name or "")
+
+
+def _ratio(a: str, b: str) -> float:
+    return difflib.SequenceMatcher(None, a, b).ratio() if a and b else 0.0
+
+
 def _overlap_score(wanted: str, candidate: str, weight: int) -> int:
     wanted_tokens = set(wanted.split())
     candidate_tokens = set(candidate.split())
@@ -125,6 +154,8 @@ def _match_score(wanted_artist: str, wanted_album: str,
     album  = _norm(wanted_album)
     found_artist_n = _norm(found_artist)
     found_album_n  = _norm(found_album)
+    base_album   = _norm(_strip_edition(wanted_album))
+    found_base    = _norm(_strip_edition(found_album))
 
     score = 0
     if artist and found_artist_n == artist:
@@ -132,10 +163,13 @@ def _match_score(wanted_artist: str, wanted_album: str,
     elif artist and (artist in found_artist_n or found_artist_n in artist):
         score += 60
     else:
-        score += _overlap_score(artist, found_artist_n, 30)
+        score += max(_overlap_score(artist, found_artist_n, 30),
+                     int(_ratio(artist, found_artist_n) * 30))
 
     if album and found_album_n == album:
         score += 120
+    elif base_album and base_album == found_base:   # differ only by an edition tag
+        score += 105
     elif album and found_album_n.startswith(album + " "):
         score += 90
     elif album and album in found_album_n:
@@ -143,7 +177,8 @@ def _match_score(wanted_artist: str, wanted_album: str,
     elif album and found_album_n in album:
         score += 50
     else:
-        score += _overlap_score(album, found_album_n, 40)
+        score += max(_overlap_score(album, found_album_n, 40),
+                     int(_ratio(album, found_album_n) * 60))
 
     if album and "tribute" not in album and "tribute" in found_album_n:
         score -= 40
@@ -173,7 +208,7 @@ def _result(source: str, artist: str, album: str, year: str,
 
 def search_itunes(artist: str, album: str, limit: int = 5) -> list[dict]:
     """Query iTunes Search API and return normalized art results."""
-    term = f"{artist} {album}".strip()
+    term = f"{artist} {_strip_edition(album)}".strip()
     params = urllib.parse.urlencode({"term": term, "entity": "album", "limit": limit})
     url = f"https://itunes.apple.com/search?{params}"
     data = _request_json(url, "itunes", timeout=10)
@@ -213,7 +248,7 @@ def _musicbrainz_artist_credit(item: dict) -> str:
 def search_musicbrainz(artist: str, album: str, limit: int = 5) -> list[dict]:
     """Search MusicBrainz release-groups and resolve front art from Cover Art Archive."""
     safe_artist = artist.replace('"', "")
-    safe_album = album.replace('"', "")
+    safe_album = _strip_edition(album).replace('"', "")
     query = f'artist:"{safe_artist}" AND releasegroup:"{safe_album}"'
     params = urllib.parse.urlencode({
         "query": query,
@@ -271,7 +306,7 @@ def search_theaudiodb(artist: str, album: str, api_key: str = "",
     """Search TheAudioDB album endpoint. Requires an API key."""
     if not api_key:
         return []
-    params = urllib.parse.urlencode({"s": artist, "a": album})
+    params = urllib.parse.urlencode({"s": artist, "a": _strip_edition(album)})
     url = f"https://www.theaudiodb.com/api/v1/json/{urllib.parse.quote(api_key)}/searchalbum.php?{params}"
     data = _request_json(url, "theaudiodb", timeout=12)
 
@@ -299,7 +334,7 @@ def search_discogs(artist: str, album: str, token: str = "",
     """Search Discogs releases. Intended for interactive candidate selection only."""
     params = urllib.parse.urlencode({
         "artist": artist,
-        "release_title": album,
+        "release_title": _strip_edition(album),
         "type": "release",
         "per_page": min(max(limit, 1), 10),
     })
