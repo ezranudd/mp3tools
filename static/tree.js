@@ -235,7 +235,7 @@ function renderAlbumEditInto(container, st) {
   const { tracks, artist, album, year, genre } = st;
   const rows = tracks.map(t => `
     <tr data-path="${escapeAttr(t.path)}">
-      <td><span class="draghandle" title="Drag to reorder">⠿</span> <button class="rowplay" data-play title="Play">▶</button> <span class="num">${escapeHtml((t.track || "").split("/")[0])}</span></td>
+      <td><span class="draghandle" title="Drag to reorder">⠿</span> <span class="num">${escapeHtml((t.track || "").split("/")[0])}</span></td>
       <td><input class="tag" data-path="${escapeAttr(t.path)}" data-frame="TIT2"
                  value="${escapeAttr(t.title || "")}"></td>
       <td><input class="tag" data-path="${escapeAttr(t.path)}" data-frame="TPE1"
@@ -278,9 +278,8 @@ function renderAlbumEditInto(container, st) {
     inp.addEventListener("input", () => autosizeField(inp));
   });
 
-  // Play buttons (editing stays in the title/artist cells).
-  container.querySelectorAll("button[data-play]").forEach((b, i) =>
-    b.onclick = (e) => { e.stopPropagation(); playAlbum(tracks, i, st.path); });
+  // No playback in Edit mode (reorder by dragging instead); still reflect any
+  // track already playing from Browse.
   updatePlayingHighlight(getCurrentPath());
 
   // Drag tracks to reorder → renumber/rename the files on disk, then refresh.

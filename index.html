@@ -200,7 +200,7 @@
   th:last-child, td:last-child { width:84px; }
   th { color:var(--muted); font-weight:500; font-size:12px; }
   td .num { color:var(--muted); }
-  .draghandle { cursor:grab; color:var(--muted); user-select:none; }
+  .draghandle { display:none; cursor:grab; color:var(--muted); user-select:none; }
   .draghandle:active { cursor:grabbing; }
   tr.dragging { opacity:.5; }
   /* Inline editable fields reuse the metrics of the static text they replace,
@@ -222,10 +222,13 @@
   .rowplay { display:none; cursor:pointer; background:transparent; border:0;
              color:var(--muted); font:inherit; padding:0; }
   .rowplay:hover { color:var(--accent); }
-  /* Reveal the play icon (swapping out the number) on hover and on the playing row. */
-  tr:hover .rowplay, tr.playing .rowplay { display:inline; }
-  tr:hover .num,     tr.playing .num     { display:none; }
-  tr.playing .rowplay { color:var(--accent); }
+  /* Browse: hover or the playing row swaps the number for the play icon. */
+  tr.browserow:hover .rowplay, tr.browserow.playing .rowplay { display:inline; }
+  tr.browserow:hover .num,     tr.browserow.playing .num     { display:none; }
+  tr.browserow.playing .rowplay { color:var(--accent); }
+  /* Edit/Import: hover swaps the number for the drag handle (no playback). */
+  tr:has(.draghandle):hover .draghandle { display:inline; }
+  tr:has(.draghandle):hover .num        { display:none; }
 
   /* generic page (audit, settings, job views) */
   .page { flex:1; overflow:auto; padding:16px 20px; }
