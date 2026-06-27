@@ -1,12 +1,65 @@
 """
-Library settings — stored in {library_root}/.mp3tools as JSON.
+Library settings — self-contained in a hidden per-library folder.
+
+Everything a library needs lives under {library_root}/.mp3tools/:
+  - mp3tools.conf  : settings JSON (was the old {library_root}/.mp3tools file)
+  - background     : web UI background image (was {library_root}/.mp3tools-background)
+
+load()/save() transparently migrate the old single-file layout the first time
+they run against a library.
 """
 import json
 import copy
 from pathlib import Path
 
-SETTINGS_FILENAME = ".mp3tools"
+SETTINGS_DIRNAME = ".mp3tools"
+CONF_FILENAME = "mp3tools.conf"
+BACKGROUND_FILENAME = "background"
+
+# Old (pre-folder) locations, migrated on first load/save.
+_LEGACY_SETTINGS_FILENAME = ".mp3tools"            # a JSON file at the library root
+_LEGACY_BACKGROUND_FILENAME = ".mp3tools-background"
+
 ART_SOURCE_ORDER = ["itunes", "musicbrainz", "theaudiodb", "discogs"]
+
+
+def settings_dir(library_root: Path) -> Path:
+    return library_root / SETTINGS_DIRNAME
+
+
+def conf_path(library_root: Path) -> Path:
+    return settings_dir(library_root) / CONF_FILENAME
+
+
+def background_path(library_root: Path) -> Path:
+    return settings_dir(library_root) / BACKGROUND_FILENAME
+
+
+def _migrate(library_root: Path) -> None:
+    """Move the old single-file layout into the .mp3tools/ folder. Best-effort:
+    any failure leaves the old files untouched rather than raising."""
+    try:
+        legacy = library_root / _LEGACY_SETTINGS_FILENAME
+        # Old format: .mp3tools is a regular file. Convert it (same name) to a
+        # directory holding mp3tools.conf — so read+remove before mkdir.
+        if legacy.is_file():
+            data = legacy.read_bytes()
+            legacy.unlink()
+            settings_dir(library_root).mkdir(exist_ok=True)
+            dest = conf_path(library_root)
+            if not dest.exists():
+                dest.write_bytes(data)
+
+        legacy_bg = library_root / _LEGACY_BACKGROUND_FILENAME
+        if legacy_bg.is_file():
+            settings_dir(library_root).mkdir(exist_ok=True)
+            target = background_path(library_root)
+            if target.exists():
+                legacy_bg.unlink()
+            else:
+                legacy_bg.replace(target)
+    except Exception:
+        pass
 
 DEFAULTS: dict = {
     "cover_art":            "folder",  # "folder" | "embed" | "both"
@@ -43,8 +96,9 @@ _VALID_BACKGROUND_FIT = frozenset(("cover", "contain", "tile"))
 
 
 def load(library_root: Path) -> dict:
+    _migrate(library_root)
     settings = copy.deepcopy(DEFAULTS)
-    path = library_root / SETTINGS_FILENAME
+    path = conf_path(library_root)
     if path.is_file():
         try:
             with open(path, encoding="utf-8") as f:
@@ -97,6 +151,8 @@ def load(library_root: Path) -> dict:
 
 
 def save(library_root: Path, settings: dict) -> None:
-    path = library_root / SETTINGS_FILENAME
+    _migrate(library_root)
+    settings_dir(library_root).mkdir(parents=True, exist_ok=True)
+    path = conf_path(library_root)
     with open(path, "w", encoding="utf-8") as f:
         json.dump({k: settings[k] for k in DEFAULTS if k in settings}, f, indent=2)

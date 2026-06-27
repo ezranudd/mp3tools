@@ -36,12 +36,12 @@ _HERE = Path(__file__).resolve().parent
 _INDEX = _HERE / "index.html"
 _STATIC = _HERE / "static"
 _IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
-_BG_FILENAME = ".mp3tools-background"   # web UI background image, sibling of .mp3tools
 
 
 def _bg_file() -> Path:
-    """Path to the web UI background image (ROOT is mutable, so compute per-call)."""
-    return ROOT / _BG_FILENAME
+    """Path to the web UI background image, inside the library's .mp3tools/ folder
+    (ROOT is mutable, so compute per-call)."""
+    return settings_mod.background_path(ROOT)
 
 
 # Drag-and-drop import: opaque token → temp dir holding the uploaded source tree.
@@ -454,6 +454,7 @@ async def api_background_upload(request: Request) -> JSONResponse:
     if not mime.startswith("image/"):
         mime = "image/jpeg"
     bg = _bg_file()
+    bg.parent.mkdir(parents=True, exist_ok=True)
     bg.write_bytes(data)
     cfg = settings_mod.load(ROOT)
     cfg["background_mime"] = mime

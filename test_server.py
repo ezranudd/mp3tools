@@ -224,6 +224,26 @@ def test_settings_roundtrip(client):
     assert client.get("/api/settings").json()["cover_art"] == "both"
 
 
+def test_settings_migration(tmp_path):
+    import json
+    import settings as settings_mod
+
+    # Old layout: a .mp3tools JSON file + a sibling background image file.
+    (tmp_path / ".mp3tools").write_text(json.dumps({"cover_art": "both"}), encoding="utf-8")
+    (tmp_path / ".mp3tools-background").write_bytes(b"oldbg")
+
+    cfg = settings_mod.load(tmp_path)
+
+    # Value preserved through the move.
+    assert cfg["cover_art"] == "both"
+    # .mp3tools is now a folder holding mp3tools.conf + background.
+    assert (tmp_path / ".mp3tools").is_dir()
+    assert (tmp_path / ".mp3tools" / "mp3tools.conf").is_file()
+    assert (tmp_path / ".mp3tools" / "background").read_bytes() == b"oldbg"
+    # Legacy files are gone.
+    assert not (tmp_path / ".mp3tools-background").exists()
+
+
 # ── Background image ──────────────────────────────────────────────────────────
 
 def test_background_upload_serve_clear(client, tmp_path):
@@ -236,7 +256,7 @@ def test_background_upload_serve_clear(client, tmp_path):
     img = b"\x89PNG\r\n\x1a\nfake-image-bytes"
     up = client.post("/api/background", content=img, headers={"Content-Type": "image/png"})
     assert up.status_code == 200 and up.json()["version"] > 0
-    assert (tmp_path / ".mp3tools-background").is_file()
+    assert (tmp_path / ".mp3tools" / "background").is_file()
 
     # Settings now report presence + version; image is served with its mime.
     s = client.get("/api/settings").json()
@@ -248,7 +268,7 @@ def test_background_upload_serve_clear(client, tmp_path):
 
     # Clear removes file + mime, and serving 404s again.
     assert client.delete("/api/background").status_code == 200
-    assert not (tmp_path / ".mp3tools-background").is_file()
+    assert not (tmp_path / ".mp3tools" / "background").is_file()
     assert client.get("/api/settings").json()["background_present"] is False
     assert client.get("/api/background").status_code == 404
 

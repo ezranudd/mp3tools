@@ -27,9 +27,17 @@ const viewEl = document.getElementById("view");
 const sidebar = document.getElementById("sidebar");
 let current = null;
 
-function activate(name) {
+async function activate(name) {
   const entry = VIEWS.find(v => v[0] === name);
   if (!entry) return;
+  // Let the outgoing view veto the switch (e.g. unsaved Settings changes).
+  if (current && current !== name) {
+    const curMod = (VIEWS.find(v => v[0] === current) || [])[2];
+    if (curMod && curMod.beforeLeave) {
+      const ok = await curMod.beforeLeave();
+      if (!ok) return;
+    }
+  }
   current = name;
   for (const btn of sidebar.children) btn.classList.toggle("active", btn.dataset.name === name);
   viewEl.innerHTML = "";

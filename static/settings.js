@@ -1,5 +1,5 @@
 // Settings view: full editor for everything in settings.DEFAULTS.
-import { jget, jpost, toast, escapeHtml, escapeAttr } from "./util.js";
+import { jget, jpost, toast, escapeHtml, escapeAttr, openModal, closeModal } from "./util.js";
 import { applyBackground, uploadBackground, clearBackground } from "./background.js";
 
 const BOOLS = [
@@ -13,10 +13,11 @@ const BOOLS = [
 ];
 const SOURCES = ["itunes", "musicbrainz", "theaudiodb", "discogs"];
 
-let container, cfg;
+let container, cfg, dirty = false;
 
 export async function show(el) {
   container = el;
+  dirty = false;
   el.innerHTML = `<div class="page"><h2>Settings</h2><p class="muted">Loading…</p></div>`;
   try {
     cfg = await jget("/api/settings");
@@ -58,9 +59,11 @@ function render() {
     </div>
 
     <div class="card"><h4>Background image</h4>
-      <div class="field"><label>Image ${cfg.background_present ? '<span class="ok">(set)</span>' : '<span class="muted">(none)</span>'}</label>
-        <input type="file" id="bg_file" accept="image/*">
-        <button class="btn" id="bg_clear" ${cfg.background_present ? "" : "disabled"}>Clear</button></div>
+      <div class="field"><label>Image</label>
+        <input type="file" id="bg_file" accept="image/*" style="display:none">
+        <button class="btn" id="bg_choose">Choose image…</button>
+        <button class="btn" id="bg_clear" ${cfg.background_present ? "" : "disabled"}>Clear</button>
+        <span class="${cfg.background_present ? "ok" : "muted"}">${cfg.background_present ? "Current image set" : "No image"}</span></div>
       <div class="field"><label>Dim (scrim opacity)</label>
         <input type="range" id="bg_opacity" min="0" max="1" step="0.05" value="${escapeAttr(cfg.background_opacity ?? 0.4)}"></div>
       <div class="field"><label>Blur (px)</label>
@@ -81,6 +84,14 @@ function render() {
   container.querySelector("#saveBtn").onclick = save;
   container.querySelector("#reloadBtn").onclick = () => show(container);
   wireBackground();
+
+  // Any control edit marks the screen dirty (background upload/clear re-render,
+  // resetting this, since they persist server-side immediately).
+  const markDirty = () => { dirty = true; };
+  const page = container.querySelector(".page");
+  page.addEventListener("input", markDirty);
+  page.addEventListener("change", markDirty);
+  dirty = false;
 }
 
 // Merge the live background-control values onto cfg and apply them immediately.
@@ -89,6 +100,7 @@ function liveBackground() {
   cfg.background_blur = parseInt(container.querySelector("#bg_blur").value, 10);
   cfg.background_fit = container.querySelector("#bg_fit").value;
   cfg.background_readable = container.querySelector("#bg_readable").checked;
+  dirty = true;
   applyBackground(cfg);
 }
 
@@ -96,7 +108,9 @@ function wireBackground() {
   for (const id of ["#bg_opacity", "#bg_blur", "#bg_fit", "#bg_readable"])
     container.querySelector(id).oninput = liveBackground;
   container.querySelector("#bg_readable").onchange = liveBackground;
-  container.querySelector("#bg_file").onchange = async (e) => {
+  const fileInput = container.querySelector("#bg_file");
+  container.querySelector("#bg_choose").onclick = () => fileInput.click();
+  fileInput.onchange = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
     try {
@@ -134,6 +148,43 @@ async function save() {
   container.querySelectorAll("[data-src]").forEach(c => body.art_sources[c.dataset.src] = c.checked);
   try {
     cfg = await jpost("/api/settings", body);
+    dirty = false;
     toast("Settings saved.");
   } catch (e) { toast(e.message, true); }
+}
+
+// Called by the router before switching away. Prompts on unsaved changes.
+export async function beforeLeave() {
+  if (!dirty) return true;
+  const choice = await leavePrompt();
+  if (choice === "cancel") return false;
+  if (choice === "save") {
+    await save();
+  } else {   // revert: drop edits and undo live background previews
+    cfg = await jget("/api/settings");
+    applyBackground(cfg);
+  }
+  dirty = false;
+  return true;
+}
+
+function leavePrompt() {
+  return new Promise(resolve => {
+    let done = false;
+    const finish = v => { if (!done) { done = true; closeModal(); resolve(v); } };
+    openModal(
+      `<h3>Unsaved settings changes</h3>
+       <p class="muted">You have unsaved changes. Save them before leaving?</p>
+       <div class="row">
+         <button class="btn" data-k="cancel">Cancel</button>
+         <button class="btn danger" data-k="revert">Discard</button>
+         <button class="btn primary" data-k="save">Save &amp; leave</button>
+       </div>`,
+      (box) => {
+        box.querySelectorAll("[data-k]").forEach(b => b.onclick = () => finish(b.dataset.k));
+        box.tabIndex = -1;
+        box.focus();
+        box.onkeydown = e => { if (e.key === "Escape") finish("cancel"); };
+      });
+  });
 }
