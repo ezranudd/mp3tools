@@ -6,6 +6,7 @@ import { initBackground } from "./background.js";
 import { subscribeJob, cancelJob, jobLabel, initJobs } from "./jobs.js";
 import { initPlayer } from "./player.js";
 import { initSearch } from "./search.js";
+import * as accent from "./accent.js";
 import { escapeHtml } from "./util.js";
 import * as browse from "./tree.js";
 import * as audit from "./audit.js";
@@ -89,7 +90,7 @@ function buildThemeToggle() {
   // Show the icon for the theme you'd switch TO.
   const reflect = () => { btn.textContent = getTheme() === "dark" ? "☀" : "☾"; };
   reflect();
-  btn.onclick = () => { toggleTheme(); reflect(); };
+  btn.onclick = () => { toggleTheme(); reflect(); accent.refresh(); };
 }
 
 function buildJobIndicator() {
@@ -114,6 +115,7 @@ async function init() {
   buildJobIndicator();
   initPlayer(revealPlaying);
   initSearch(activate);
+  accent.initAccent();
   try {
     const data = await jget("/api/tree");
     document.getElementById("rootLabel").textContent = data.root;

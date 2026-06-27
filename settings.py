@@ -85,6 +85,7 @@ DEFAULTS: dict = {
     "background_fit":     "cover",    # web UI: "cover" | "contain" | "tile"
     "background_mime":    "",         # web UI: mime of the uploaded bg image (set on upload)
     "background_readable": True,      # web UI: boost text contrast over the bg image
+    "theme_accent_from_art": False,   # web UI: tint theme to the playing album's art
     "import_bitrate":       320,      # web UI: default lossless→MP3 bitrate for import
 }
 
@@ -143,6 +144,8 @@ def load(library_root: Path) -> dict:
                 settings["background_mime"] = data["background_mime"].strip()
             if isinstance(data.get("background_readable"), bool):
                 settings["background_readable"] = data["background_readable"]
+            if isinstance(data.get("theme_accent_from_art"), bool):
+                settings["theme_accent_from_art"] = data["theme_accent_from_art"]
             if data.get("import_bitrate") in _VALID_BITRATES:
                 settings["import_bitrate"] = data["import_bitrate"]
         except Exception:

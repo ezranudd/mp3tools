@@ -1,6 +1,7 @@
 // Settings view: full editor for everything in settings.DEFAULTS.
 import { jget, jpost, toast, escapeHtml, escapeAttr, openModal, closeModal } from "./util.js";
 import { applyBackground, uploadBackground, clearBackground } from "./background.js";
+import { setEnabled as setAccentEnabled } from "./accent.js";
 
 const BOOLS = [
   ["enforce_artist_equals_album_artist", "Enforce Artist = Album Artist"],
@@ -75,6 +76,12 @@ function render() {
         <input type="checkbox" id="bg_readable" ${(cfg.background_readable ?? true) ? "checked" : ""}></div>
     </div>
 
+    <div class="card"><h4>Appearance</h4>
+      <div class="field"><label>Match theme color to album art</label>
+        <input type="checkbox" class="toggle" id="accent_art" data-bool="theme_accent_from_art"
+               ${cfg.theme_accent_from_art ? "checked" : ""}></div>
+    </div>
+
     <div class="row" style="justify-content:flex-start">
       <button class="btn primary" id="saveBtn">Save</button>
       <button class="btn" id="reloadBtn">Reload</button>
@@ -84,6 +91,9 @@ function render() {
   container.querySelector("#saveBtn").onclick = save;
   container.querySelector("#reloadBtn").onclick = () => show(container);
   wireBackground();
+  // Live-preview the album-art accent toggle.
+  container.querySelector("#accent_art").onchange =
+    (e) => setAccentEnabled(e.target.checked);
 
   // Any control edit marks the screen dirty (background upload/clear re-render,
   // resetting this, since they persist server-side immediately).
@@ -160,9 +170,10 @@ export async function beforeLeave() {
   if (choice === "cancel") return false;
   if (choice === "save") {
     await save();
-  } else {   // revert: drop edits and undo live background previews
+  } else {   // revert: drop edits and undo live background/accent previews
     cfg = await jget("/api/settings");
     applyBackground(cfg);
+    setAccentEnabled(cfg.theme_accent_from_art);
   }
   dirty = false;
   return true;

@@ -224,6 +224,17 @@ def test_settings_roundtrip(client):
     assert client.get("/api/settings").json()["cover_art"] == "both"
 
 
+def test_theme_accent_setting(client):
+    assert client.get("/api/settings").json()["theme_accent_from_art"] is False
+    client.post("/api/settings", json={"theme_accent_from_art": True})
+    assert client.get("/api/settings").json()["theme_accent_from_art"] is True
+    client.post("/api/settings", json={"theme_accent_from_art": False})
+    assert client.get("/api/settings").json()["theme_accent_from_art"] is False
+    # A non-bool fails validation on load and falls back to the default (False).
+    client.post("/api/settings", json={"theme_accent_from_art": "yes"})
+    assert client.get("/api/settings").json()["theme_accent_from_art"] is False
+
+
 def test_settings_migration(tmp_path):
     import json
     import settings as settings_mod
