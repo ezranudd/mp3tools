@@ -51,7 +51,7 @@ function render({ artists, albums, tracks }) {
     html += `<div class="searchgroup">Artists</div>`;
     html += artists.map(a => `
       <div class="searchrow" data-kind="artist" data-artist="${escapeAttr(a.artist_path)}">
-        <span class="searchthumb glyph"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 4-6 8-6s8 2 8 6z"/></svg></span>
+        <span class="searchthumb glyph"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8.6" r="4.8"/><path d="M12 14.6c-4.7 0-8.5 3-8.5 6.8V24h17v-2.6c0-3.8-3.8-6.8-8.5-6.8z"/></svg></span>
         <span>${escapeHtml(a.artist)}</span>
         <span class="muted">${a.n_albums} album${a.n_albums === 1 ? "" : "s"}</span>
       </div>`).join("");
