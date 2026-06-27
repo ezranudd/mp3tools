@@ -359,6 +359,55 @@ def test_import_job_copies_file(tmp_path, tmp_path_factory):
     assert imported, "expected an imported file in the library"
 
 
+def test_import_via_upload(tmp_path, tmp_path_factory):
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("ffmpeg not available")
+    # Build a real MP3 on disk, then upload its bytes through the drag-drop endpoints.
+    staging = tmp_path_factory.mktemp("staging")
+    _make_mp3(staging / "song.mp3", TIT2="Dropped", TPE1="Dee", TPE2="Dee",
+              TALB="DropAlbum", TYER="2021", TRCK="1")
+    server.set_root(tmp_path)
+    c = TestClient(server.app)
+
+    token = c.post("/api/import/upload/start").json()["token"]
+    upload_dir = server._UPLOADS[token]
+    up = c.post("/api/import/upload/file",
+                params={"token": token, "path": "DropAlbum/song.mp3"},
+                content=(staging / "song.mp3").read_bytes(),
+                headers={"Content-Type": "audio/mpeg"})
+    assert up.status_code == 200
+    assert (upload_dir / "DropAlbum" / "song.mp3").is_file()
+
+    def answer(prompt):
+        if prompt["kind"] == "preview":
+            return {"proceed": True, "entries": prompt["entries"]}
+        if prompt["kind"] == "choice" and prompt["options"]:
+            return prompt["options"][0]["key"]
+        return ""
+
+    jid = c.post("/api/jobs",
+                 json={"kind": "import", "upload_token": token}).json()["job_id"]
+    j = _poll(c, jid, answer)
+    assert j["state"] == "done", j.get("error")
+    assert list(tmp_path.rglob("*.mp3")), "expected an imported file in the library"
+    assert not upload_dir.exists(), "temp upload dir should be cleaned up after import"
+
+
+def test_import_upload_rejects_traversal(client):
+    token = client.post("/api/import/upload/start").json()["token"]
+    resp = client.post("/api/import/upload/file",
+                       params={"token": token, "path": "../evil.mp3"},
+                       content=b"x", headers={"Content-Type": "audio/mpeg"})
+    assert resp.status_code == 400
+
+
+def test_import_upload_unknown_token(client):
+    resp = client.post("/api/import/upload/file",
+                       params={"token": "nope", "path": "a.mp3"},
+                       content=b"x")
+    assert resp.status_code == 404
+
+
 def test_second_job_conflict(client):
     # Start an import that will block on the preview prompt, then a second start -> 409.
     # Use a source with one file so it reaches the preview and waits.

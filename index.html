@@ -217,6 +217,13 @@
   .page h2 { margin:0 0 12px; font-size:18px; }
   .field { display:flex; align-items:center; gap:10px; margin:8px 0; }
   .field label { min-width:280px; }
+  /* Import drag-and-drop zone */
+  .dropzone { border:2px dashed var(--line); border-radius:8px; padding:28px 16px;
+              text-align:center; cursor:pointer; color:var(--muted);
+              background:var(--panel); transition:border-color .15s, background .15s; }
+  .dropzone:hover { border-color:var(--accent); }
+  .dropzone.over { border-color:var(--accent); background:var(--code-bg); }
+  .dropzone .dzbig { font-size:16px; color:var(--fg); margin-bottom:4px; }
   .devicelist { display:flex; flex-wrap:wrap; gap:8px; margin:2px 0 4px; }
   .devbtn { display:flex; gap:8px; align-items:baseline; }
   .toggle { cursor:pointer; }

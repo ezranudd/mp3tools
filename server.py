@@ -11,6 +11,9 @@ The frontend is the build-step-free ``index.html`` served at ``/``.
 from __future__ import annotations
 
 import argparse
+import shutil
+import tempfile
+import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -39,6 +42,11 @@ _BG_FILENAME = ".mp3tools-background"   # web UI background image, sibling of .m
 def _bg_file() -> Path:
     """Path to the web UI background image (ROOT is mutable, so compute per-call)."""
     return ROOT / _BG_FILENAME
+
+
+# Drag-and-drop import: opaque token → temp dir holding the uploaded source tree.
+# Popped when the import job starts (which then owns cleanup of the dir).
+_UPLOADS: dict[str, Path] = {}
 
 
 def set_root(path) -> None:
@@ -441,12 +449,40 @@ def api_sync_plan(body: SyncPlanReq) -> JSONResponse:
     return JSONResponse(sync.plan_summary(plan, dev))
 
 
+# ── Drag-and-drop import upload ───────────────────────────────────────────────
+
+@app.post("/api/import/upload/start")
+def api_import_upload_start() -> JSONResponse:
+    """Open an upload session: a temp dir that received files become the import source."""
+    d = Path(tempfile.mkdtemp(prefix="mp3tools-upload-"))
+    token = uuid.uuid4().hex
+    _UPLOADS[token] = d
+    return JSONResponse({"token": token})
+
+
+@app.post("/api/import/upload/file")
+async def api_import_upload_file(request: Request, token: str = Query(...),
+                                path: str = Query(...)) -> JSONResponse:
+    """Write one uploaded file (raw body) into the session dir, preserving *path*."""
+    base = _UPLOADS.get(token)
+    if base is None:
+        raise HTTPException(status_code=404, detail="unknown upload token")
+    dest = (base / path).resolve()
+    if dest != base and base not in dest.parents:   # reject absolute / .. traversal
+        raise HTTPException(status_code=400, detail="bad path")
+    data = await request.body()
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(data)
+    return JSONResponse({"ok": True})
+
+
 # ── Jobs (interactive operations: standardize, import, sync) ──────────────────
 
 class JobStart(BaseModel):
     kind: str                  # "standardize" | "import" | "sync"
     dry_run: bool = False
     source: str = ""           # import only: source directory (may be outside root)
+    upload_token: str = ""     # import only: drag-and-drop upload session token
     device: str = ""           # sync only: device directory (outside root)
     selection: dict = {}       # sync only: {artist_path: "all" | [album_paths]}
 
@@ -455,10 +491,20 @@ class JobStart(BaseModel):
 def api_start_job(body: JobStart) -> JSONResponse:
     params: dict = {"path": str(ROOT), "dry_run": body.dry_run}
     if body.kind == "import":
-        src = Path(body.source).expanduser().resolve()
-        if not src.is_dir():
-            raise HTTPException(status_code=400, detail="source is not a directory")
-        params["source"] = str(src)
+        if body.upload_token:
+            src = _UPLOADS.pop(body.upload_token, None)   # job now owns this temp dir
+            if src is None or not src.is_dir():
+                raise HTTPException(status_code=400, detail="unknown upload token")
+            if not any(src.rglob("*")):
+                shutil.rmtree(src, ignore_errors=True)
+                raise HTTPException(status_code=400, detail="no files uploaded")
+            params["source"] = str(src)
+            params["cleanup_source"] = True
+        else:
+            src = Path(body.source).expanduser().resolve()
+            if not src.is_dir():
+                raise HTTPException(status_code=400, detail="source is not a directory")
+            params["source"] = str(src)
     elif body.kind == "sync":
         params["device"] = str(_device(body.device))
         _validate_selection(body.selection)

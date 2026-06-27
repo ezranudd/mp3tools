@@ -336,17 +336,23 @@ def _run_import(job: Job, params: dict) -> None:
     dry_run = bool(params.get("dry_run", False))
     cfg = settings_mod.load(root)
 
-    import_tracks(
-        source, root, dry_run,
-        cover_art=cfg.get("cover_art", "folder"),
-        cover_art_size=cfg.get("cover_art_embed_size", 500),
-        settings=cfg,
-        preview_fn=job.preview_fn,
-        ask_text=job.ask_text,
-        ask_choice=job.ask_choice,
-        progress=job.progress_fn,
-    )
-    print("\nDone.")
+    try:
+        import_tracks(
+            source, root, dry_run,
+            cover_art=cfg.get("cover_art", "folder"),
+            cover_art_size=cfg.get("cover_art_embed_size", 500),
+            settings=cfg,
+            preview_fn=job.preview_fn,
+            ask_text=job.ask_text,
+            ask_choice=job.ask_choice,
+            progress=job.progress_fn,
+        )
+        print("\nDone.")
+    finally:
+        # Drag-and-drop imports run from a temp upload dir we own — remove it.
+        if params.get("cleanup_source"):
+            import shutil
+            shutil.rmtree(source, ignore_errors=True)
 
 
 def _run_sync(job: Job, params: dict) -> None:
