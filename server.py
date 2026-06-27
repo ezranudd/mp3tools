@@ -69,7 +69,27 @@ def _validate_selection(selection: dict) -> None:
                 _safe(album)
 
 
+def _require_idle() -> None:
+    """Reject library-mutating requests while a background operation runs."""
+    job = MANAGER.active()
+    if job is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"a {job.kind} operation is running — try again when it finishes")
+
+
 app = FastAPI(title="mp3tools web")
+
+
+@app.middleware("http")
+async def _no_cache_static(request, call_next):
+    # The frontend is plain ES modules served from /static; force the browser to
+    # revalidate so edits show up on a normal reload (no stale cached modules).
+    resp = await call_next(request)
+    if request.url.path.startswith("/static/"):
+        resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
 
 if _STATIC.is_dir():
     app.mount("/static", StaticFiles(directory=str(_STATIC)), name="static")
@@ -149,6 +169,7 @@ class TagUpdate(BaseModel):
 
 @app.post("/api/tags")
 def api_tags(body: TagUpdate) -> JSONResponse:
+    _require_idle()
     mp3 = _safe(body.path)
     if not mp3.is_file():
         raise HTTPException(status_code=404, detail="track not found")
@@ -180,6 +201,7 @@ class ArtApply(BaseModel):
 
 @app.post("/api/art/apply")
 def api_art_apply(body: ArtApply) -> JSONResponse:
+    _require_idle()
     album_dir = _safe(body.path)
     if not album_dir.is_dir():
         raise HTTPException(status_code=404, detail="album not found")
@@ -231,6 +253,7 @@ def api_edit_preview(body: EditRequest) -> JSONResponse:
 
 @app.post("/api/edit/apply")
 def api_edit_apply(body: EditRequest) -> JSONResponse:
+    _require_idle()
     node = _safe(body.path)
     try:
         edit = browse.build_edit(ROOT, node, body.op, body.value)
@@ -263,6 +286,7 @@ class ArtRemove(BaseModel):
 
 @app.post("/api/art/remove")
 def api_art_remove(body: ArtRemove) -> JSONResponse:
+    _require_idle()
     album_dir = _safe(body.path)
     if not album_dir.is_dir():
         raise HTTPException(status_code=404, detail="album not found")
@@ -346,6 +370,13 @@ def api_start_job(body: JobStart) -> JSONResponse:
     except RuntimeError as e:
         raise HTTPException(status_code=409, detail=str(e))
     return JSONResponse({"job_id": job.id})
+
+
+@app.get("/api/jobs/active")
+def api_active_job() -> JSONResponse:
+    """The currently running/waiting job (for the UI to resume after a reload)."""
+    job = MANAGER.active()
+    return JSONResponse({"active": job.to_json() if job else None})
 
 
 @app.get("/api/jobs/{job_id}")

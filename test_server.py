@@ -9,6 +9,7 @@ which would silently pass a broken read.
 import shutil
 import subprocess
 import time
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -311,3 +312,31 @@ def test_sync_device_inside_library_rejected(tmp_path):
     c = _sync_client(tmp_path)
     resp = c.get("/api/sync/artists", params={"device": str(tmp_path / "Artist One")})
     assert resp.status_code == 400
+
+
+def test_edits_blocked_while_job_active(client, tmp_path):
+    # Start an import that parks on the preview prompt, so a job is "active".
+    import tempfile
+    src = tempfile.mkdtemp()
+    _make_mp3(Path(src) / "s.mp3", TIT2="A", TPE1="B", TPE2="B",
+              TALB="C", TYER="2020", TRCK="1")
+    jid = client.post("/api/jobs", json={"kind": "import", "source": src}).json()["job_id"]
+    for _ in range(200):
+        if client.get(f"/api/jobs/{jid}").json()["state"] == "waiting":
+            break
+        time.sleep(0.02)
+
+    # /api/jobs/active reports it.
+    active = client.get("/api/jobs/active").json()["active"]
+    assert active and active["id"] == jid and active["kind"] == "import"
+
+    # Library-mutating endpoints are rejected with 409 while it runs.
+    tree = client.get("/api/tree").json()
+    album = tree["artists"][0]["children"][0]["path"]
+    track = client.get("/api/album", params={"path": album}).json()["tracks"][0]["path"]
+    assert client.post("/api/tags", json={"path": track, "updates": {"TIT2": "X"}}).status_code == 409
+    assert client.post("/api/edit/apply",
+                       json={"path": album, "op": "album_genre", "value": "Z"}).status_code == 409
+
+    client.post(f"/api/jobs/{jid}/cancel")
+    shutil.rmtree(src, ignore_errors=True)

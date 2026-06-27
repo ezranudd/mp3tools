@@ -1,5 +1,5 @@
-// Import view: launch an import job from a source directory; preview + prompts via jobs.js.
-import { runJob } from "./jobs.js";
+// Import view: launch an import job from a source directory; preview + prompts via the global tracker.
+import { startJob, mountJobPane } from "./jobs.js";
 import { toast } from "./util.js";
 
 export function show(el) {
@@ -22,13 +22,12 @@ export function show(el) {
     <div id="jobArea" style="margin-top:14px"></div>
   </div>`;
 
-  const runBtn = el.querySelector("#runBtn");
-  runBtn.onclick = () => {
+  el.querySelector("#runBtn").onclick = async () => {
     const source = el.querySelector("#srcPath").value.trim();
     if (!source) { toast("Enter a source folder.", true); return; }
     const dry_run = el.querySelector("#dryRun").checked;
-    runBtn.disabled = true;
-    runJob("import", { source, dry_run }, el.querySelector("#jobArea"),
-      { onDone: () => { runBtn.disabled = false; } });
+    try { await startJob("import", { source, dry_run }); }
+    catch (e) { toast(e.message, true); }
   };
+  mountJobPane(el.querySelector("#jobArea"), { kind: "import" });
 }

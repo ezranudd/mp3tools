@@ -2,6 +2,8 @@
 import { jget, toast } from "./util.js";
 import { getMode, setMode, onModeChange } from "./mode.js";
 import { getTheme, toggleTheme } from "./theme.js";
+import { subscribeJob, cancelJob, jobLabel, initJobs } from "./jobs.js";
+import { escapeHtml } from "./util.js";
 import * as browse from "./tree.js";
 import * as audit from "./audit.js";
 import * as standardize from "./standardize.js";
@@ -70,10 +72,25 @@ function buildThemeToggle() {
   btn.onclick = () => { toggleTheme(); reflect(); };
 }
 
+function buildJobIndicator() {
+  const wrap = document.getElementById("jobIndicator");
+  subscribeJob(job => {
+    const busy = job && (job.state === "running" || job.state === "waiting");
+    if (!busy) { wrap.classList.remove("show"); wrap.innerHTML = ""; return; }
+    wrap.classList.add("show");
+    wrap.innerHTML = `<span class="dot"></span>
+      <span><b>${escapeHtml(jobLabel(job.kind))}</b>
+        <span class="muted">${escapeHtml(job.progress || "running…")}</span></span>
+      <button class="iconbtn" data-cancel title="Cancel">✕</button>`;
+    wrap.querySelector("[data-cancel]").onclick = () => cancelJob();
+  });
+}
+
 async function init() {
   buildNav();
   buildModeToggle();
   buildThemeToggle();
+  buildJobIndicator();
   try {
     const data = await jget("/api/tree");
     document.getElementById("rootLabel").textContent = data.root;
@@ -81,6 +98,7 @@ async function init() {
     toast(e.message, true);
   }
   activate("browse");
+  initJobs();   // resume tracking a job that was already running
 }
 
 init();

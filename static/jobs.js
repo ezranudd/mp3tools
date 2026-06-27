@@ -1,55 +1,122 @@
-// Generic job runner: start a job, stream its log/progress, service prompts.
-// Prompt kinds: "text" / "choice" (via promptModal) and "preview" (import table).
+// Global job tracker. A single active job (server-serialized) is polled here
+// regardless of which view is mounted, so operations keep running and reporting
+// as the user browses. Views render its log/progress via mountJobPane(); the
+// header indicator and edit-blocking subscribe via subscribeJob()/isBusy().
 import { jget, jpost, toast, escapeHtml, escapeAttr, promptModal, openModal, closeModal } from "./util.js";
 
-// Render the job runner into `container` and drive it to completion.
-export async function runJob(kind, params, container, { onDone } = {}) {
-  let jid;
+let active = null;   // { id, kind }
+let snap = null;     // last /api/jobs/{id} payload
+let polling = false;
+let answering = false;
+const subs = new Set();
+
+const LABELS = { sync: "Sync", standardize: "Standardize", import: "Import" };
+export function jobLabel(kind) { return LABELS[kind] || "Operation"; }
+
+function view() {
+  return (active && snap) ? { id: active.id, kind: active.kind, ...snap } : null;
+}
+function notify() { const v = view(); for (const fn of subs) fn(v); }
+
+export function subscribeJob(fn) { subs.add(fn); fn(view()); return () => subs.delete(fn); }
+export function getActiveJob() { return view(); }
+export function isBusy() { return !!(snap && (snap.state === "running" || snap.state === "waiting")); }
+export function isJobKind(kind) { return isBusy() && active && active.kind === kind; }
+
+export async function startJob(kind, params) {
+  const r = await jpost("/api/jobs", { kind, ...params });   // throws on 409
+  active = { id: r.job_id, kind };
+  snap = { state: "running", log: [], progress: "", prompt: null, result: {}, error: "" };
+  notify();
+  pump();
+  return active.id;
+}
+
+export async function cancelJob() {
+  if (active) await jpost(`/api/jobs/${active.id}/cancel`, {}).catch(() => {});
+}
+
+// Drop a finished job from view (only when idle), e.g. "back to the form".
+export function dismissJob() {
+  if (!isBusy()) { active = null; snap = null; notify(); }
+}
+
+// Resume tracking a job that was already running when the page loaded.
+export async function initJobs() {
   try {
-    const r = await jpost("/api/jobs", { kind, ...params });
-    jid = r.job_id;
-  } catch (e) { toast(e.message, true); return; }
+    const data = await jget("/api/jobs/active");
+    if (data.active) {
+      active = { id: data.active.id, kind: data.active.kind };
+      snap = data.active;
+      notify();
+      pump();
+    }
+  } catch { /* ignore */ }
+}
 
-  container.innerHTML = `
-    <div class="field"><strong id="jobProg" class="warn"></strong></div>
-    <div class="log" id="jobLog"></div>
-    <div class="row" style="justify-content:flex-start;margin-top:8px">
-      <button class="btn danger" id="jobCancel">Cancel</button>
-    </div>`;
-  const logEl = container.querySelector("#jobLog");
-  const progEl = container.querySelector("#jobProg");
-  const cancelBtn = container.querySelector("#jobCancel");
-  cancelBtn.onclick = () => jpost(`/api/jobs/${jid}/cancel`, {}).catch(() => {});
-
-  let answering = false;
-  async function tick() {
+async function pump() {
+  if (polling) return;
+  polling = true;
+  while (active) {
     let j;
-    try { j = await jget(`/api/jobs/${jid}`); }
-    catch { return setTimeout(tick, 800); }
-
-    progEl.textContent = j.progress || "";
-    const atBottom = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 40;
-    logEl.textContent = j.log.join("\n");
-    if (atBottom) logEl.scrollTop = logEl.scrollHeight;
-
+    try { j = await jget(`/api/jobs/${active.id}`); }
+    catch { await sleep(800); continue; }
+    if (!active) break;
+    snap = j;
+    notify();
     if (j.state === "waiting" && !answering) {
       answering = true;
       const value = await answerPrompt(j.prompt);
-      try { await jpost(`/api/jobs/${jid}/respond`, { value }); } catch (e) { toast(e.message, true); }
+      try { await jpost(`/api/jobs/${active.id}/respond`, { value }); }
+      catch (e) { toast(e.message, true); }
       answering = false;
-      return setTimeout(tick, 40);
+      continue;
     }
-    if (j.state === "done" || j.state === "error") {
-      cancelBtn.style.display = "none";
-      progEl.textContent = j.state === "error" ? "Error" : "Finished";
-      progEl.className = j.state === "error" ? "err" : "ok";
-      if (onDone) onDone(j);
-      return;
-    }
-    setTimeout(tick, 500);
+    if (j.state === "done" || j.state === "error") break;  // leave snapshot for views
+    await sleep(500);
   }
-  tick();
+  polling = false;
 }
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// Render the active job's progress + log into a container, kept live via a
+// subscription that self-removes once the container leaves the DOM.
+export function mountJobPane(container, { onDone } = {}) {
+  let finished = false;
+  let unsub = null;
+  const handler = (job) => {
+    if (!container.isConnected) { if (unsub) unsub(); return; }
+    if (!job) { container.innerHTML = ""; return; }
+    renderJobInto(container, job);
+    if ((job.state === "done" || job.state === "error") && !finished) {
+      finished = true;
+      if (onDone) onDone(job);
+    }
+  };
+  unsub = subscribeJob(handler);
+  return unsub;
+}
+
+function renderJobInto(container, job) {
+  const running = job.state === "running" || job.state === "waiting";
+  const head = running ? jobLabel(job.kind) + "…"
+             : job.state === "error" ? "Error" : "Finished";
+  container.innerHTML = `
+    <div class="field" style="justify-content:space-between;margin:0 0 6px">
+      <strong class="${job.state === "error" ? "err" : running ? "warn" : "ok"}">${head}</strong>
+      ${running ? `<button class="btn danger" data-cancel>Cancel</button>` : ``}
+    </div>
+    ${running ? `<div class="jobbar"><div></div></div>` : ``}
+    <div class="muted" style="margin:4px 0">${escapeHtml(job.progress || "")}</div>
+    <div class="log">${escapeHtml((job.log || []).join("\n"))}</div>`;
+  const cancel = container.querySelector("[data-cancel]");
+  if (cancel) cancel.onclick = () => cancelJob();
+  const log = container.querySelector(".log");
+  if (log) log.scrollTop = log.scrollHeight;
+}
+
+// ── Prompt handling (text / choice / editable import preview) ─────────────────
 
 async function answerPrompt(p) {
   if (p.kind === "preview") return await previewModal(p);
@@ -57,11 +124,10 @@ async function answerPrompt(p) {
     const k = await promptModal({ title: p.prompt, kind: "choice", options: p.options });
     return k ?? "";
   }
-  const v = await promptModal({ title: p.prompt.trim() || "Enter value", kind: "text" });
+  const v = await promptModal({ title: (p.prompt || "").trim() || "Enter value", kind: "text" });
   return v ?? "";
 }
 
-// Editable import preview: render rows, allow per-field edits, return {proceed, entries}.
 function previewModal(p) {
   return new Promise(resolve => {
     let done = false;

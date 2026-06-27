@@ -1,6 +1,6 @@
 // Sync view: pick a device, choose artists/albums, preview the plan, then mirror.
 import { jget, jpost, toast, escapeHtml, escapeAttr } from "./util.js";
-import { runJob } from "./jobs.js";
+import { startJob, mountJobPane } from "./jobs.js";
 
 let el;
 let device = "";
@@ -66,6 +66,7 @@ function renderBody() {
   body.querySelector("#selNone").onclick = () => { selectAll(false); };
   body.querySelector("#previewBtn").onclick = previewPlan;
   body.querySelector("#syncBtn").onclick = runSync;
+  mountJobPane(body.querySelector("#jobArea"), { kind: "sync" });
   renderList();
 }
 
@@ -191,12 +192,10 @@ async function previewPlan() {
   } catch (e) { panel.innerHTML = `<p class="err">${escapeHtml(e.message)}</p>`; }
 }
 
-function runSync() {
+async function runSync() {
   const selection = buildSelection();
   if (!Object.keys(selection).length) { toast("Nothing selected.", true); return; }
   const dry_run = el.querySelector("#dryRun").checked;
-  const btn = el.querySelector("#syncBtn");
-  btn.disabled = true;
-  runJob("sync", { device, selection, dry_run }, el.querySelector("#jobArea"),
-    { onDone: () => { btn.disabled = false; } });
+  try { await startJob("sync", { device, selection, dry_run }); }
+  catch (e) { toast(e.message, true); }
 }

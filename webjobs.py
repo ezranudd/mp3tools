@@ -425,6 +425,10 @@ class JobManager:
     def get(self, job_id: str) -> Job | None:
         return self.jobs.get(job_id)
 
+    def active(self) -> Job | None:
+        """The job currently running or waiting on input, if any."""
+        return self._active()
+
     def respond(self, job_id: str, value) -> bool:
         job = self.jobs.get(job_id)
         if not job:

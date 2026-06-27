@@ -3,6 +3,7 @@
 // Read-only in Browse mode; inline auto-saving fields in Edit mode.
 import { jget, jpost, toast, escapeHtml, escapeAttr } from "./util.js";
 import { isEdit, onModeChange } from "./mode.js";
+import { isBusy, subscribeJob } from "./jobs.js";
 import * as edit from "./edit.js";
 
 let CURRENT = null;   // { kind: "album" | "artist", path }
@@ -16,21 +17,28 @@ export async function show(container) {
   detailEl = container.querySelector("#detail");
   if (!subscribed) {
     subscribed = true;
-    // Re-render when the mode flips (only matters while the Browse view is mounted).
-    onModeChange(() => {
-      if (!treeEl || !treeEl.isConnected) return;
-      loadTree().then(() => {
-        if (!CURRENT) return;
-        if (CURRENT.kind === "album") {
-          highlightAlbum(CURRENT.path);
-          selectAlbum(CURRENT.path, albumNodeEl(CURRENT.path));
-        } else {
-          selectArtist(CURRENT.path);
-        }
-      });
+    // Re-render when the mode flips, or when a job starts/ends (edits get
+    // blocked while an operation runs). Only matters while Browse is mounted.
+    onModeChange(rerender);
+    let lastBusy = isBusy();
+    subscribeJob(() => {
+      if (isBusy() !== lastBusy) { lastBusy = isBusy(); rerender(); }
     });
   }
   await loadTree();
+}
+
+function rerender() {
+  if (!treeEl || !treeEl.isConnected) return;
+  loadTree().then(() => {
+    if (!CURRENT) return;
+    if (CURRENT.kind === "album") {
+      highlightAlbum(CURRENT.path);
+      selectAlbum(CURRENT.path, albumNodeEl(CURRENT.path));
+    } else {
+      selectArtist(CURRENT.path);
+    }
+  });
 }
 
 async function loadTree() {
@@ -72,7 +80,7 @@ function artistEl(artist) {
   head.className = "node artist";
   head.dataset.path = artist.path;
   head.innerHTML =
-    (isEdit() ? `<span class="nodeact" title="Edit artist">✎</span>` : "") +
+    (isEdit() && !isBusy() ? `<span class="nodeact" title="Edit artist">✎</span>` : "") +
     `<span class="caret">▸</span>${escapeHtml(artist.label)}`;
   const kids = document.createElement("div");
   kids.style.display = "none";
@@ -136,7 +144,7 @@ async function selectAlbum(path, el) {
   if (el) el.classList.add("sel");
   const st = await fetchAlbumState(path);
   if (!st || !isCurrent("album", path)) return;
-  detailEl.innerHTML = "";
+  detailEl.innerHTML = editPausedNotice();
   const wrap = document.createElement("div");
   detailEl.appendChild(wrap);
   renderAlbumInto(wrap, st);
@@ -150,6 +158,7 @@ async function selectArtist(path, headEl) {
   const artist = TREE.find(a => a.path === path);
   if (!artist) { detailEl.innerHTML = `<p class="muted">Artist not found.</p>`; return; }
   detailEl.innerHTML = `
+    ${editPausedNotice()}
     <div class="artisthead">
       <h2>${escapeHtml(artist.label)}</h2>
       <div class="sub">${artist.children.length} album${artist.children.length === 1 ? "" : "s"}</div>
@@ -183,7 +192,14 @@ async function refreshCurrent() {
 // ── Album rendering (into an arbitrary container, bound to a state object) ─────
 
 function renderAlbumInto(container, st) {
-  return isEdit() ? renderAlbumEditInto(container, st) : renderAlbumBrowseInto(container, st);
+  // Edits are paused while an operation runs — fall back to read-only.
+  if (isEdit() && !isBusy()) return renderAlbumEditInto(container, st);
+  return renderAlbumBrowseInto(container, st);
+}
+
+function editPausedNotice() {
+  return (isEdit() && isBusy())
+    ? `<div class="notice">Editing is paused while an operation is running.</div>` : "";
 }
 
 function albumHead(st, innerMeta) {
