@@ -16,6 +16,7 @@ from __future__ import annotations
 import re
 import sys
 import threading
+import time
 import traceback
 import uuid
 from dataclasses import dataclass, field
@@ -24,6 +25,21 @@ from pathlib import Path
 import settings as settings_mod
 
 _MAX_LOG_LINES = 5000
+
+
+def _fmt_duration(seconds: float) -> str:
+    seconds = int(max(0, seconds))
+    if seconds >= 3600:
+        return f"{seconds // 3600}:{(seconds % 3600) // 60:02d}:{seconds % 60:02d}"
+    return f"{seconds // 60}:{seconds % 60:02d}"
+
+
+def _eta(done_bytes: int, total_bytes: int, elapsed: float) -> str:
+    """' · ETA M:SS' from linear extrapolation, or '' when not meaningful yet."""
+    if done_bytes <= 0 or done_bytes >= total_bytes or elapsed <= 0.5:
+        return ""
+    remaining = (total_bytes - done_bytes) * elapsed / done_bytes
+    return " · ETA " + _fmt_duration(remaining)
 
 
 @dataclass
@@ -54,6 +70,7 @@ class Job:
         self.state = "running"                  # running | waiting | done | error
         self.log: list[str] = []
         self.progress = ""
+        self.percent: int | None = None          # 0-100 for a determinate bar, else None
         self.result: dict = {}
         self.error = ""
         self.prompt: _Prompt | None = None
@@ -72,9 +89,10 @@ class Job:
     def add_sep(self, text: str) -> None:
         self.append_log(f"\n  ──── {text} ────")
 
-    def set_progress(self, text: str) -> None:
+    def set_progress(self, text: str, percent: int | None = None) -> None:
         with self._lock:
             self.progress = text
+            self.percent = percent
 
     # ── interactive prompt round-trip (the heart) ─────────────────────────────
     def _ask(self, prompt: _Prompt):
@@ -149,6 +167,7 @@ class Job:
                 "state": self.state,
                 "log": list(self.log),
                 "progress": self.progress,
+                "percent": self.percent,
                 "prompt": self.prompt.to_json() if self.prompt else None,
                 "result": self.result,
                 "error": self.error,
@@ -358,14 +377,14 @@ def _run_sync(job: Job, params: dict) -> None:
         print("\nNothing to do — device already in sync.")
         return
 
-    print()
-    state = {"name": None}
+    start = time.monotonic()
 
     def on_progress(action, name, df, tf, db, tb):
-        if name and name != state["name"]:
-            state["name"] = name
-            print(f"  {action}: {name}")
-        job.set_progress(f"{df}/{tf} files · {sync.format_size(db)} / {sync.format_size(tb)}")
+        percent = int(db / tb * 100) if tb else (int(df / tf * 100) if tf else 0)
+        eta = "" if dry_run else _eta(db, tb, time.monotonic() - start)
+        job.set_progress(
+            f"{df}/{tf} files · {sync.format_size(db)} / {sync.format_size(tb)}{eta}",
+            percent=min(100, max(0, percent)))
 
     copied, rf, rd = sync.run_plan(plan, dry_run, on_progress=on_progress)
     verb_c = "Would copy" if dry_run else "Copied"

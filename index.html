@@ -56,9 +56,24 @@
   .jobbar > div { width:30%; height:100%; background:var(--accent); border-radius:2px;
                   animation:slide 1.2s ease-in-out infinite; }
   @keyframes slide { 0% { margin-left:-30%; } 100% { margin-left:100%; } }
+  /* Determinate variant: width set inline, no animation. */
+  .jobbar.det > div { width:0; margin-left:0; animation:none; transition:width .3s ease; }
   /* Read-only notice (e.g. editing paused during an operation) */
   .notice { background:var(--panel); border:1px solid var(--warn); color:var(--warn);
             border-radius:6px; padding:6px 10px; margin-bottom:12px; font-size:13px; }
+  /* Bottom player bar */
+  .player { display:none; flex:0 0 auto; align-items:center; gap:10px;
+            padding:8px 16px; background:var(--panel); border-top:1px solid var(--line); }
+  .player.show { display:flex; }
+  .player .pbtn { background:transparent; border:0; color:var(--fg); cursor:pointer;
+                  font-size:16px; line-height:1; padding:4px 6px; }
+  .player .pbtn:hover { color:var(--accent); }
+  .player .pbtn.play { font-size:18px; }
+  .player .ptitle { min-width:160px; max-width:38vw; overflow:hidden; text-overflow:ellipsis;
+                    white-space:nowrap; }
+  .player .ptime { color:var(--muted); font-size:12px; width:38px; text-align:center;
+                   font-variant-numeric:tabular-nums; }
+  .player .pseek { flex:1; accent-color:var(--accent); cursor:pointer; }
   .layout { flex:1; display:flex; min-height:0; }
   nav.sidebar { width:140px; flex:0 0 auto; background:var(--panel);
                 border-right:1px solid var(--line); padding:8px 0; }
@@ -104,11 +119,8 @@
   .node { padding:3px 10px; cursor:pointer; white-space:nowrap; user-select:none; }
   .node:hover { background:var(--panel); }
   .node.artist { font-weight:600; }
-  .node.album { padding-left:26px; }
-  .node.album.sel, .node.artist.sel { background:var(--accent); color:var(--on-accent);
-                                      border-radius:3px; }
-  .node.artist.sel .caret, .node.artist.sel .nodeact { color:var(--on-accent); }
-  .caret { display:inline-block; width:14px; color:var(--muted); }
+  .node.artist.sel { background:var(--accent); color:var(--on-accent); border-radius:3px; }
+  .node.artist.sel .nodeact { color:var(--on-accent); }
   .nodeact { float:right; color:var(--muted); padding:0 6px; }
   .nodeact:hover { color:var(--accent); }
   .artisthead { margin-bottom:14px; }
@@ -125,7 +137,7 @@
   th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line);
            vertical-align:middle; overflow:hidden; text-overflow:ellipsis;
            white-space:nowrap; }
-  th:first-child, td:first-child { width:46px; }
+  th:first-child, td:first-child { width:64px; }
   th:last-child, td:last-child { width:84px; }
   th { color:var(--muted); font-weight:500; font-size:12px; }
   td .num { color:var(--muted); }
@@ -141,12 +153,21 @@
   input.hdr.title { display:block; font-size:18px; font-weight:600; width:100%; margin:0 0 4px; }
   input.hdr.sub { display:inline-block; vertical-align:baseline; font-size:14px;
                   color:var(--muted); min-width:2ch; }
+  /* Track playback affordances */
+  tr.browserow { cursor:pointer; }
+  tr.browserow:hover { background:var(--panel); }
+  tr.playing td { color:var(--accent); }
+  .rowplay { cursor:pointer; background:transparent; border:0; color:var(--muted);
+             font:inherit; padding:0; }
+  .rowplay:hover { color:var(--accent); }
 
   /* generic page (audit, settings, job views) */
   .page { flex:1; overflow:auto; padding:16px 20px; }
   .page h2 { margin:0 0 12px; font-size:18px; }
   .field { display:flex; align-items:center; gap:10px; margin:8px 0; }
   .field label { min-width:280px; }
+  .devicelist { display:flex; flex-wrap:wrap; gap:8px; margin:2px 0 4px; }
+  .devbtn { display:flex; gap:8px; align-items:baseline; }
   .toggle { cursor:pointer; }
   .pill { display:inline-block; font-size:11px; padding:1px 7px; border-radius:10px;
           background:var(--panel); border:1px solid var(--line); color:var(--warn);
@@ -178,6 +199,8 @@
   <nav class="sidebar" id="sidebar"></nav>
   <section id="view"></section>
 </div>
+
+<div class="player" id="player"></div>
 
 <div class="modal" id="modal"><div class="box" id="modalBox"></div></div>
 <div class="toast" id="toast"></div>

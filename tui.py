@@ -521,45 +521,8 @@ class ImportSourceView(DirPickerView):
 # ── Device picker ─────────────────────────────────────────────────────────────
 
 def _mounted_devices() -> list[dict]:
-    skip_fs = {
-        "sysfs", "proc", "devtmpfs", "devpts", "tmpfs", "cgroup", "cgroup2",
-        "pstore", "bpf", "autofs", "mqueue", "hugetlbfs", "debugfs", "tracefs",
-        "fusectl", "configfs", "securityfs", "efivarfs", "overlay", "nsfs",
-        "ramfs", "squashfs",
-    }
-    skip_prefixes = ("/sys", "/proc", "/dev", "/run")
-    seen: set[Path] = set()
-    try:
-        with open("/proc/mounts") as f:
-            for line in f:
-                parts = line.split()
-                if len(parts) < 3:
-                    continue
-                mount = Path(parts[1])
-                if (parts[2] not in skip_fs
-                        and mount != Path("/")
-                        and not any(str(mount).startswith(p) for p in skip_prefixes)
-                        and mount.is_dir() and mount not in seen):
-                    seen.add(mount)
-    except OSError:
-        pass
-    for base in (Path("/media"), Path("/mnt")):
-        if not base.is_dir():
-            continue
-        for item in sorted(base.iterdir()):
-            if not item.is_dir() or item.name.startswith("."):
-                continue
-            subs = [s for s in item.iterdir() if s.is_dir() and not s.name.startswith(".")]
-            for sub in (sorted(subs) if subs else [item]):
-                seen.add(sub)
-    devices = []
-    for path in sorted(seen):
-        try:
-            usage = shutil.disk_usage(path)
-            devices.append({"path": path, "free": usage.free, "total": usage.total})
-        except OSError:
-            devices.append({"path": path, "free": None, "total": None})
-    return devices
+    from sync_library import detect_devices
+    return detect_devices()
 
 
 def _fmt_size(size: int | None) -> str:

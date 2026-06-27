@@ -82,13 +82,13 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // Render the active job's progress + log into a container, kept live via a
 // subscription that self-removes once the container leaves the DOM.
-export function mountJobPane(container, { onDone } = {}) {
+export function mountJobPane(container, { kind = null, log = true, onDone } = {}) {
   let finished = false;
   let unsub = null;
   const handler = (job) => {
     if (!container.isConnected) { if (unsub) unsub(); return; }
-    if (!job) { container.innerHTML = ""; return; }
-    renderJobInto(container, job);
+    if (!job || (kind && job.kind !== kind)) { container.innerHTML = ""; return; }
+    renderJobInto(container, job, log);
     if ((job.state === "done" || job.state === "error") && !finished) {
       finished = true;
       if (onDone) onDone(job);
@@ -98,22 +98,26 @@ export function mountJobPane(container, { onDone } = {}) {
   return unsub;
 }
 
-function renderJobInto(container, job) {
+function renderJobInto(container, job, showLog = true) {
   const running = job.state === "running" || job.state === "waiting";
   const head = running ? jobLabel(job.kind) + "…"
              : job.state === "error" ? "Error" : "Finished";
+  const bar = !running ? ""
+    : job.percent != null
+      ? `<div class="jobbar det"><div style="width:${job.percent}%"></div></div>`
+      : `<div class="jobbar"><div></div></div>`;
   container.innerHTML = `
     <div class="field" style="justify-content:space-between;margin:0 0 6px">
       <strong class="${job.state === "error" ? "err" : running ? "warn" : "ok"}">${head}</strong>
       ${running ? `<button class="btn danger" data-cancel>Cancel</button>` : ``}
     </div>
-    ${running ? `<div class="jobbar"><div></div></div>` : ``}
+    ${bar}
     <div class="muted" style="margin:4px 0">${escapeHtml(job.progress || "")}</div>
-    <div class="log">${escapeHtml((job.log || []).join("\n"))}</div>`;
+    ${showLog ? `<div class="log">${escapeHtml((job.log || []).join("\n"))}</div>` : ``}`;
   const cancel = container.querySelector("[data-cancel]");
   if (cancel) cancel.onclick = () => cancelJob();
-  const log = container.querySelector(".log");
-  if (log) log.scrollTop = log.scrollHeight;
+  const logEl = container.querySelector(".log");
+  if (logEl) logEl.scrollTop = logEl.scrollHeight;
 }
 
 // ── Prompt handling (text / choice / editable import preview) ─────────────────

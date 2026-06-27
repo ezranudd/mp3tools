@@ -4,9 +4,10 @@
 import { jget, jpost, toast, escapeHtml, escapeAttr } from "./util.js";
 import { isEdit, onModeChange } from "./mode.js";
 import { isBusy, subscribeJob } from "./jobs.js";
+import { playAlbum, subscribe as subscribePlayer, getCurrentPath } from "./player.js";
 import * as edit from "./edit.js";
 
-let CURRENT = null;   // { kind: "album" | "artist", path }
+let CURRENT = null;   // selected artist: { kind: "artist", path }
 let TREE = [];        // artist nodes from /api/tree
 let treeEl, detailEl;
 let subscribed = false;
@@ -24,21 +25,21 @@ export async function show(container) {
     subscribeJob(() => {
       if (isBusy() !== lastBusy) { lastBusy = isBusy(); rerender(); }
     });
+    subscribePlayer(updatePlayingHighlight);
   }
   await loadTree();
 }
 
+// Mark the row(s) whose data-path matches the currently playing track.
+function updatePlayingHighlight(path) {
+  if (!detailEl) return;
+  detailEl.querySelectorAll("tr[data-path]").forEach(tr =>
+    tr.classList.toggle("playing", tr.dataset.path === path));
+}
+
 function rerender() {
   if (!treeEl || !treeEl.isConnected) return;
-  loadTree().then(() => {
-    if (!CURRENT) return;
-    if (CURRENT.kind === "album") {
-      highlightAlbum(CURRENT.path);
-      selectAlbum(CURRENT.path, albumNodeEl(CURRENT.path));
-    } else {
-      selectArtist(CURRENT.path);
-    }
-  });
+  loadTree().then(() => { if (CURRENT) selectArtist(CURRENT.path); });
 }
 
 async function loadTree() {
@@ -54,71 +55,27 @@ async function loadTree() {
   }
 }
 
-// ── Tree nodes ────────────────────────────────────────────────────────────────
+// ── Tree nodes (flat artist list — click an artist to see all its albums) ─────
 
 function clearSel() {
   treeEl.querySelectorAll(".node.sel").forEach(n => n.classList.remove("sel"));
 }
-function albumNodeEl(path) {
-  return path ? treeEl.querySelector(`.node.album[data-path="${CSS.escape(path)}"]`) : null;
-}
 function artistNodeEl(path) {
   return path ? treeEl.querySelector(`.node.artist[data-path="${CSS.escape(path)}"]`) : null;
 }
-function expandArtist(headEl) {
-  const kids = headEl && headEl.nextElementSibling;
-  if (kids && kids.style.display === "none") {
-    kids.style.display = "block";
-    const c = headEl.querySelector(".caret");
-    if (c) c.textContent = "▾";
-  }
-}
 
 function artistEl(artist) {
-  const wrap = document.createElement("div");
   const head = document.createElement("div");
   head.className = "node artist";
   head.dataset.path = artist.path;
   head.innerHTML =
     (isEdit() && !isBusy() ? `<span class="nodeact" title="Edit artist">✎</span>` : "") +
-    `<span class="caret">▸</span>${escapeHtml(artist.label)}`;
-  const kids = document.createElement("div");
-  kids.style.display = "none";
-  for (const album of artist.children) kids.appendChild(albumEl(album));
-
-  const caret = head.querySelector(".caret");
-  caret.onclick = (e) => {                 // caret toggles expand without changing the view
-    e.stopPropagation();
-    const open = kids.style.display === "none";
-    kids.style.display = open ? "block" : "none";
-    caret.textContent = open ? "▾" : "▸";
-  };
+    escapeHtml(artist.label);
   head.onclick = (e) => {
     if (e.target.classList.contains("nodeact")) { edit.editArtist(artist, loadTree); return; }
-    expandArtist(head);
     selectArtist(artist.path, head);
   };
-  wrap.append(head, kids);
-  return wrap;
-}
-
-function albumEl(album) {
-  const el = document.createElement("div");
-  el.className = "node album";
-  el.textContent = album.label;
-  el.dataset.path = album.path;
-  el.onclick = (e) => { e.stopPropagation(); selectAlbum(album.path, el); };
-  return el;
-}
-
-// Expand the owning artist and mark an album .sel by its path (after a tree reload).
-function highlightAlbum(path) {
-  clearSel();
-  const el = albumNodeEl(path);
-  if (!el) return;
-  expandArtist(el.parentElement.previousElementSibling);
-  el.classList.add("sel");
-  el.scrollIntoView({ block: "nearest" });
+  return head;
 }
 
 // ── Selection ─────────────────────────────────────────────────────────────────
@@ -138,23 +95,11 @@ async function fetchAlbumState(path) {
   } catch (e) { toast(e.message, true); return null; }
 }
 
-async function selectAlbum(path, el) {
-  CURRENT = { kind: "album", path };
-  clearSel();
-  if (el) el.classList.add("sel");
-  const st = await fetchAlbumState(path);
-  if (!st || !isCurrent("album", path)) return;
-  detailEl.innerHTML = editPausedNotice();
-  const wrap = document.createElement("div");
-  detailEl.appendChild(wrap);
-  renderAlbumInto(wrap, st);
-}
-
 async function selectArtist(path, headEl) {
   CURRENT = { kind: "artist", path };
   clearSel();
   headEl = headEl || artistNodeEl(path);
-  if (headEl) { headEl.classList.add("sel"); expandArtist(headEl); }
+  if (headEl) headEl.classList.add("sel");
   const artist = TREE.find(a => a.path === path);
   if (!artist) { detailEl.innerHTML = `<p class="muted">Artist not found.</p>`; return; }
   detailEl.innerHTML = `
@@ -184,9 +129,7 @@ function isCurrent(kind, path) {
 }
 
 async function refreshCurrent() {
-  if (!CURRENT) return;
-  if (CURRENT.kind === "album") selectAlbum(CURRENT.path, albumNodeEl(CURRENT.path));
-  else selectArtist(CURRENT.path);
+  if (CURRENT) selectArtist(CURRENT.path);
 }
 
 // ── Album rendering (into an arbitrary container, bound to a state object) ─────
@@ -214,8 +157,8 @@ function renderAlbumBrowseInto(container, st) {
   const { tracks, artist, album, year, genre } = st;
   const sub = [artist || "(unknown artist)", year, genre].filter(Boolean).map(escapeHtml).join(" · ");
   const rows = tracks.map(t => `
-    <tr>
-      <td class="num">${escapeHtml((t.track || "").split("/")[0])}</td>
+    <tr class="browserow" data-path="${escapeAttr(t.path)}">
+      <td><span class="rowplay">▶</span> <span class="num">${escapeHtml((t.track || "").split("/")[0])}</span></td>
       <td>${escapeHtml(t.title || "")}</td>
       <td>${escapeHtml(t.artist || "")}</td>
       <td class="muted">${escapeHtml(t.bitrate ? t.bitrate + " kbps" : "")}</td>
@@ -228,13 +171,16 @@ function renderAlbumBrowseInto(container, st) {
       <thead><tr><th>#</th><th>Title</th><th>Artist</th><th>Rate</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>`;
+  container.querySelectorAll("tr.browserow").forEach((tr, i) =>
+    tr.onclick = () => playAlbum(tracks, i));
+  updatePlayingHighlight(getCurrentPath());
 }
 
 function renderAlbumEditInto(container, st) {
   const { tracks, artist, album, year, genre } = st;
   const rows = tracks.map(t => `
-    <tr>
-      <td class="num">${escapeHtml((t.track || "").split("/")[0])}</td>
+    <tr data-path="${escapeAttr(t.path)}">
+      <td><button class="rowplay" data-play title="Play">▶</button> <span class="num">${escapeHtml((t.track || "").split("/")[0])}</span></td>
       <td><input class="tag" data-path="${escapeAttr(t.path)}" data-frame="TIT2"
                  value="${escapeAttr(t.title || "")}"></td>
       <td><input class="tag" data-path="${escapeAttr(t.path)}" data-frame="TPE1"
@@ -277,6 +223,11 @@ function renderAlbumEditInto(container, st) {
     autosizeField(inp);
     inp.addEventListener("input", () => autosizeField(inp));
   });
+
+  // Play buttons (editing stays in the title/artist cells).
+  container.querySelectorAll("button[data-play]").forEach((b, i) =>
+    b.onclick = (e) => { e.stopPropagation(); playAlbum(tracks, i); });
+  updatePlayingHighlight(getCurrentPath());
 
   container.querySelector('[data-act="art"]').onclick = () => findArt(st);
   container.querySelector('[data-act="rmart"]').onclick = () => edit.removeArt(st.path, refreshCurrent);
@@ -325,16 +276,8 @@ async function commitAlbumField(st, op, value, current) {
     const res = await jpost("/api/edit/apply", { path: st.path, op, value });
     if (!res.ok || res.error) { toast(res.error || "Edit failed", true); return; }
     toast(res.desc || "Saved.");
-    if (CURRENT.kind === "artist") {
-      await loadTree();
-      selectArtist(CURRENT.path);
-    } else if (op === "album_genre" || res.new_path === st.path) {
-      selectAlbum(st.path, albumNodeEl(st.path));
-    } else {
-      await loadTree();
-      highlightAlbum(res.new_path);
-      selectAlbum(res.new_path, albumNodeEl(res.new_path));
-    }
+    await loadTree();
+    selectArtist(CURRENT.path);
   } catch (e) { toast(e.message, true); }
 }
 

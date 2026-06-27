@@ -339,6 +339,73 @@ def combined_plan(library: Path, device: Path, artists: list[ArtistInfo]) -> Syn
 
 # ── Web/headless helpers (no curses) ──────────────────────────────────────────
 
+_SKIP_FS = {
+    "sysfs", "proc", "devtmpfs", "devpts", "tmpfs", "cgroup", "cgroup2",
+    "pstore", "bpf", "autofs", "mqueue", "hugetlbfs", "debugfs", "tracefs",
+    "fusectl", "configfs", "securityfs", "efivarfs", "overlay", "nsfs",
+    "ramfs", "squashfs",
+}
+_SKIP_PREFIXES = ("/sys", "/proc", "/dev", "/run")
+_DEVICE_BASES = (Path("/media"), Path("/mnt"), Path("/run/media"))
+
+
+def detect_devices() -> list[dict]:
+    """Detect mounted volumes to sync to: real filesystems plus the per-user
+    mount points under /media, /mnt and /run/media. Returns
+    [{"path": Path, "free": int|None, "total": int|None}]."""
+    seen: set[Path] = set()
+    try:
+        with open("/proc/mounts") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) < 3:
+                    continue
+                mount = Path(parts[1])
+                if (parts[2] not in _SKIP_FS
+                        and mount != Path("/")
+                        and not any(str(mount).startswith(p) for p in _SKIP_PREFIXES)
+                        and mount.is_dir() and mount not in seen):
+                    seen.add(mount)
+    except OSError:
+        pass
+    for base in _DEVICE_BASES:
+        if not base.is_dir():
+            continue
+        for item in sorted(base.iterdir()):
+            if not item.is_dir() or item.name.startswith("."):
+                continue
+            try:
+                subs = [s for s in item.iterdir() if s.is_dir() and not s.name.startswith(".")]
+            except OSError:
+                subs = []
+            for sub in (sorted(subs) if subs else [item]):
+                seen.add(sub)
+    devices = []
+    for path in sorted(seen):
+        try:
+            usage = shutil.disk_usage(path)
+            devices.append({"path": path, "free": usage.free, "total": usage.total})
+        except OSError:
+            devices.append({"path": path, "free": None, "total": None})
+    return devices
+
+
+def device_rows(exclude: Path | None = None) -> list[dict]:
+    """JSON-safe detected devices for the web sync view (skipping the library)."""
+    rows = []
+    for d in detect_devices():
+        p = d["path"]
+        if exclude and (p == exclude or exclude in p.parents):
+            continue
+        rows.append({
+            "path": str(p), "name": p.name or str(p),
+            "free": d["free"], "total": d["total"],
+            "free_h": format_size(d["free"]) if d["free"] is not None else "?",
+            "total_h": format_size(d["total"]) if d["total"] is not None else "?",
+        })
+    return rows
+
+
 def artist_rows(library: Path, device: Path) -> list[dict]:
     """Artist-level rows for the web sync view (size + device status each)."""
     rows = []

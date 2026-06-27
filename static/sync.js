@@ -15,7 +15,12 @@ export function show(container) {
       were removed from the library; partial selections leave other device albums
       untouched.</p>
     <div class="field" style="margin-top:10px">
-      <label style="min-width:auto">Device folder</label>
+      <label style="min-width:auto">Detected devices</label>
+      <button class="btn" id="rescanBtn">Rescan</button>
+    </div>
+    <div id="deviceList" class="devicelist"></div>
+    <div class="field" style="margin-top:6px">
+      <label style="min-width:auto">Or enter a path</label>
       <input id="devPath" placeholder="/run/media/you/MUSIC" style="width:340px"
              value="${escapeAttr(device)}">
       <button class="btn primary" id="loadBtn">Load</button>
@@ -25,14 +30,41 @@ export function show(container) {
     </div>
     <div id="syncBody"></div>
   </div>`;
-  el.querySelector("#loadBtn").onclick = load;
+  el.querySelector("#loadBtn").onclick = () => load();
+  el.querySelector("#rescanBtn").onclick = loadDevices;
   el.querySelector("#devPath").onkeydown = e => { if (e.key === "Enter") load(); };
+  loadDevices();
   if (artists.length) renderBody();
 }
 
-async function load() {
-  device = el.querySelector("#devPath").value.trim();
+async function loadDevices() {
+  const host = el.querySelector("#deviceList");
+  host.innerHTML = `<span class="muted">Scanning…</span>`;
+  try {
+    const data = await jget("/api/sync/devices");
+    if (!data.devices.length) {
+      host.innerHTML = `<span class="muted">No removable devices detected — enter a path below.</span>`;
+      return;
+    }
+    host.innerHTML = "";
+    for (const d of data.devices) {
+      const b = document.createElement("button");
+      b.className = "btn devbtn" + (d.path === device ? " primary" : "");
+      b.innerHTML = `${escapeHtml(d.name)}
+        <span class="muted">${escapeHtml(d.free_h)} free / ${escapeHtml(d.total_h)}</span>`;
+      b.title = d.path;
+      b.onclick = () => { el.querySelector("#devPath").value = d.path; load(d.path); };
+      host.appendChild(b);
+    }
+  } catch (e) {
+    host.innerHTML = `<span class="err">${escapeHtml(e.message)}</span>`;
+  }
+}
+
+async function load(devPath) {
+  device = (devPath || el.querySelector("#devPath").value).trim();
   if (!device) { toast("Enter a device folder.", true); return; }
+  el.querySelector("#devPath").value = device;
   const body = el.querySelector("#syncBody");
   body.innerHTML = `<p class="muted">Scanning library and device…</p>`;
   try {
@@ -41,6 +73,8 @@ async function load() {
     artists = data.artists.map(a => ({
       ...a, mode: "none", expanded: false, loaded: false, albums: [],
     }));
+    el.querySelectorAll("#deviceList .devbtn").forEach(b =>
+      b.classList.toggle("primary", b.title === device));
     renderBody();
   } catch (e) {
     body.innerHTML = `<p class="err">${escapeHtml(e.message)}</p>`;
@@ -66,7 +100,7 @@ function renderBody() {
   body.querySelector("#selNone").onclick = () => { selectAll(false); };
   body.querySelector("#previewBtn").onclick = previewPlan;
   body.querySelector("#syncBtn").onclick = runSync;
-  mountJobPane(body.querySelector("#jobArea"), { kind: "sync" });
+  mountJobPane(body.querySelector("#jobArea"), { kind: "sync", log: false });
   renderList();
 }
 

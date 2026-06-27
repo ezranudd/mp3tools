@@ -133,6 +133,17 @@ def api_album(path: str = Query(...)) -> JSONResponse:
     return JSONResponse({"path": str(album), "tracks": tracks})
 
 
+# ── Audio streaming ───────────────────────────────────────────────────────────
+
+@app.get("/api/track")
+def api_track(path: str = Query(...)) -> FileResponse:
+    mp3 = _safe(path)
+    if not (mp3.is_file() and mp3.suffix.lower() == ".mp3"):
+        raise HTTPException(status_code=404, detail="track not found")
+    # FileResponse handles HTTP Range requests, so seeking/streaming work.
+    return FileResponse(mp3, media_type="audio/mpeg")
+
+
 # ── Cover art ─────────────────────────────────────────────────────────────────
 
 @app.get("/api/cover")
@@ -313,6 +324,11 @@ def api_set_settings(body: dict) -> JSONResponse:
 
 
 # ── Sync (mirror selected artists/albums to a device) ─────────────────────────
+
+@app.get("/api/sync/devices")
+def api_sync_devices() -> JSONResponse:
+    return JSONResponse({"devices": sync.device_rows(exclude=ROOT)})
+
 
 @app.get("/api/sync/artists")
 def api_sync_artists(device: str = Query(...)) -> JSONResponse:

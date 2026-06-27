@@ -112,6 +112,27 @@ def test_safe_rejects_outside_root(client):
     assert resp.status_code == 403
 
 
+def test_track_streams_audio(client):
+    tree = client.get("/api/tree").json()
+    album = tree["artists"][0]["children"][0]["path"]
+    track = client.get("/api/album", params={"path": album}).json()["tracks"][0]["path"]
+
+    full = client.get("/api/track", params={"path": track})
+    assert full.status_code == 200
+    assert full.headers["content-type"] == "audio/mpeg"
+    assert full.headers.get("accept-ranges") == "bytes"
+
+    # Range request → 206 partial content (enables seeking).
+    part = client.get("/api/track", params={"path": track}, headers={"Range": "bytes=0-99"})
+    assert part.status_code == 206
+    assert "content-range" in part.headers
+    assert len(part.content) == 100
+
+
+def test_track_rejects_outside_root(client):
+    assert client.get("/api/track", params={"path": "/etc/passwd"}).status_code == 403
+
+
 def test_settings_roundtrip(client):
     client.post("/api/settings", json={"cover_art": "both"})
     assert client.get("/api/settings").json()["cover_art"] == "both"
@@ -312,6 +333,39 @@ def test_sync_device_inside_library_rejected(tmp_path):
     c = _sync_client(tmp_path)
     resp = c.get("/api/sync/artists", params={"device": str(tmp_path / "Artist One")})
     assert resp.status_code == 400
+
+
+def test_sync_eta_helper():
+    from webjobs import _eta, _fmt_duration
+    assert _fmt_duration(95) == "1:35"
+    assert _fmt_duration(3725) == "1:02:05"
+    assert _eta(0, 100, 10) == ""          # nothing copied yet
+    assert _eta(100, 100, 10) == ""        # finished
+    assert _eta(50, 100, 0.2) == ""        # too early to estimate
+    assert _eta(50, 100, 1.0) == " · ETA 0:01"   # half done in 1s → ~1s left
+
+
+def test_sync_devices_endpoint(client):
+    data = client.get("/api/sync/devices").json()
+    assert "devices" in data and isinstance(data["devices"], list)
+
+
+def test_device_rows_excludes_library(tmp_path, monkeypatch):
+    import sync_library
+    inside = tmp_path / "Artist"
+    inside.mkdir()
+    fake = [
+        {"path": tmp_path, "free": 1, "total": 2},                 # the library itself
+        {"path": inside, "free": 1, "total": 2},                   # inside the library
+        {"path": Path("/run/media/x/USB"), "free": 100, "total": 200},
+    ]
+    monkeypatch.setattr(sync_library, "detect_devices", lambda: fake)
+    rows = sync_library.device_rows(exclude=tmp_path)
+    paths = [r["path"] for r in rows]
+    assert str(tmp_path) not in paths
+    assert str(inside) not in paths
+    assert "/run/media/x/USB" in paths
+    assert rows[0]["name"] == "USB" and rows[0]["free_h"]
 
 
 def test_edits_blocked_while_job_active(client, tmp_path):
