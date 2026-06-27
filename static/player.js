@@ -4,8 +4,23 @@ let audio = null;
 let bar = null;
 let queue = [];          // [{ path, title, artist, track }]
 let index = -1;
+let currentAlbumPath = null;   // album dir of the playing queue, for "jump to album"
+let reveal = null;             // callback to show the playing album in Browse
 const els = {};
 const subs = new Set();
+
+// Transport icons as inline SVG (24×24, fill:currentColor) — uniform size/baseline
+// across play/pause/skip, unlike the Unicode media glyphs.
+const SVG = (body) => `<svg viewBox="0 0 24 24" aria-hidden="true">${body}</svg>`;
+const ICON = {
+  prev: SVG(`<path d="M6 6h2v12H6z M20 6v12l-10.5-6z"/>`),
+  next: SVG(`<path d="M16 6h2v12h-2z M4 6l10.5 6L4 18z"/>`),
+  play: SVG(`<path d="M8 5v14l11-7z"/>`),
+  pause: SVG(`<path d="M7 5h3.5v14H7z M13.5 5H17v14h-3.5z"/>`),
+  locate: SVG(`<circle cx="12" cy="12" r="6" fill="none" stroke="currentColor" stroke-width="2"/>` +
+              `<circle cx="12" cy="12" r="1.6"/>` +
+              `<path stroke="currentColor" stroke-width="2" d="M12 2v3M12 19v3M2 12h3M19 12h3"/>`),
+};
 
 export function getCurrentPath() {
   return index >= 0 && queue[index] ? queue[index].path : null;
@@ -13,15 +28,17 @@ export function getCurrentPath() {
 export function subscribe(fn) { subs.add(fn); fn(getCurrentPath()); return () => subs.delete(fn); }
 function notify() { const p = getCurrentPath(); for (const fn of subs) fn(p); }
 
-export function initPlayer() {
+export function initPlayer(revealFn = null) {
+  reveal = revealFn;
   bar = document.getElementById("player");
   audio = new Audio();
 
   bar.innerHTML = `
-    <button class="pbtn" data-prev title="Previous">⏮︎</button>
-    <button class="pbtn play" data-play title="Play/Pause">▶︎</button>
-    <button class="pbtn" data-next title="Next">⏭︎</button>
-    <span class="ptitle" data-title></span>
+    <button class="pbtn" data-prev title="Previous">${ICON.prev}</button>
+    <button class="pbtn play" data-play title="Play/Pause">${ICON.play}</button>
+    <button class="pbtn" data-next title="Next">${ICON.next}</button>
+    <button class="pbtn pjump" data-jump title="Show in library">${ICON.locate}</button>
+    <span class="ptitle" data-title title="Show in library"></span>
     <span class="ptime" data-cur>0:00</span>
     <input type="range" class="pseek" data-seek min="0" max="1000" value="0">
     <span class="ptime" data-dur>0:00</span>`;
@@ -34,6 +51,8 @@ export function initPlayer() {
 
   bar.querySelector("[data-prev]").onclick = prev;
   bar.querySelector("[data-next]").onclick = next;
+  bar.querySelector("[data-jump]").onclick = jumpToAlbum;
+  els.title.onclick = jumpToAlbum;
   els.play.onclick = toggle;
 
   els.seek.oninput = () => {
@@ -46,19 +65,26 @@ export function initPlayer() {
     els.cur.textContent = fmt(audio.currentTime);
   });
   audio.addEventListener("loadedmetadata", () => { els.dur.textContent = fmt(audio.duration); });
-  audio.addEventListener("play", () => { els.play.textContent = "⏸︎"; });
-  audio.addEventListener("pause", () => { els.play.textContent = "▶︎"; });
+  audio.addEventListener("play", () => { els.play.innerHTML = ICON.pause; });
+  audio.addEventListener("pause", () => { els.play.innerHTML = ICON.play; });
   audio.addEventListener("ended", next);
 }
 
-export function playAlbum(tracks, startIndex = 0) {
+export function playAlbum(tracks, startIndex = 0, albumPath = null) {
   queue = (tracks || []).map(t => ({
     path: t.path,
     title: t.title || t.label || t.path,
     artist: t.artist || "",
     track: (t.track || "").split("/")[0],
   }));
+  currentAlbumPath = albumPath;
   playIndex(startIndex);
+}
+
+// Jump to the playing album in Browse (wired via initPlayer's reveal callback).
+function jumpToAlbum() {
+  if (!currentAlbumPath || !reveal) return;
+  reveal({ album_path: currentAlbumPath, track_path: getCurrentPath() });
 }
 
 function playIndex(i) {
@@ -79,7 +105,7 @@ export function toggle() {
 }
 export function next() {
   if (index < queue.length - 1) playIndex(index + 1);
-  else els.play.textContent = "▶︎";   // end of album
+  else els.play.innerHTML = ICON.play;   // end of album
 }
 export function prev() {
   if (audio.currentTime > 3 || index <= 0) audio.currentTime = 0;

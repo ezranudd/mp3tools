@@ -199,7 +199,7 @@ function renderAlbumBrowseInto(container, st) {
       <tbody>${rows}</tbody>
     </table>`;
   container.querySelectorAll("tr.browserow").forEach((tr, i) =>
-    tr.onclick = () => playAlbum(tracks, i));
+    tr.onclick = () => playAlbum(tracks, i, st.path));
   updatePlayingHighlight(getCurrentPath());
 }
 
@@ -253,7 +253,7 @@ function renderAlbumEditInto(container, st) {
 
   // Play buttons (editing stays in the title/artist cells).
   container.querySelectorAll("button[data-play]").forEach((b, i) =>
-    b.onclick = (e) => { e.stopPropagation(); playAlbum(tracks, i); });
+    b.onclick = (e) => { e.stopPropagation(); playAlbum(tracks, i, st.path); });
   updatePlayingHighlight(getCurrentPath());
 
   container.querySelector('[data-act="art"]').onclick = () => findArt(st);

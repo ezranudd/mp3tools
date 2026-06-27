@@ -84,6 +84,6 @@ async function playFrom(albumPath, trackPath) {
   try {
     const data = await jget("/api/album?path=" + encodeURIComponent(albumPath));
     const idx = Math.max(0, data.tracks.findIndex(t => t.path === trackPath));
-    playAlbum(data.tracks, idx);
+    playAlbum(data.tracks, idx, albumPath);
   } catch (e) { toast(e.message, true); }
 }

@@ -40,6 +40,15 @@ function activate(name) {
   }
 }
 
+// Jump from the player to the currently playing album in Browse. The artist dir
+// is the album path's parent; requestReveal must run before we (re)mount Browse.
+function revealPlaying({ album_path, track_path }) {
+  if (!album_path) return;
+  const artist_path = album_path.slice(0, album_path.lastIndexOf("/"));
+  browse.requestReveal({ artist_path, album_path, track_path });
+  activate("browse");
+}
+
 function buildNav() {
   for (const [name, label, , icon] of VIEWS) {
     const btn = document.createElement("button");
@@ -95,7 +104,7 @@ async function init() {
   buildThemeToggle();
   initBackground();
   buildJobIndicator();
-  initPlayer();
+  initPlayer(revealPlaying);
   initSearch(activate);
   try {
     const data = await jget("/api/tree");
