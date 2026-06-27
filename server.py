@@ -48,6 +48,10 @@ def _bg_file() -> Path:
 # Popped when the import job starts (which then owns cleanup of the dir).
 _UPLOADS: dict[str, Path] = {}
 
+# Source dir of the most recent import, used to bound /api/import/cover (the source
+# lives outside ROOT). Set when an import job starts.
+_IMPORT_SOURCE: Path | None = None
+
 
 def set_root(path) -> None:
     """Point the server at a library root (used by main() and tests)."""
@@ -167,9 +171,9 @@ def api_track(path: str = Query(...)) -> FileResponse:
 
 # ── Cover art ─────────────────────────────────────────────────────────────────
 
-@app.get("/api/cover")
-def api_cover(path: str = Query(...)) -> Response:
-    album = _safe(path)
+def _cover_response(album: Path) -> Response:
+    """Serve an album's cover: a cover.* image in the folder, else the first mp3's
+    embedded APIC. Raises 404 if neither exists. (Path validation is the caller's job.)"""
     if album.is_dir():
         for child in sorted(album.iterdir()):
             if child.is_file() and child.suffix.lower() in _IMAGE_EXTS \
@@ -190,6 +194,23 @@ def api_cover(path: str = Query(...)) -> Response:
         except Exception:
             pass
     raise HTTPException(status_code=404, detail="no cover art")
+
+
+@app.get("/api/cover")
+def api_cover(path: str = Query(...)) -> Response:
+    return _cover_response(_safe(path))
+
+
+@app.get("/api/import/cover")
+def api_import_cover(path: str = Query(...)) -> Response:
+    """Cover for a to-be-imported album folder. Bounded to the active import source
+    dir (which lives outside ROOT, so _safe/api_cover can't be used)."""
+    target = Path(path).expanduser().resolve()
+    if _IMPORT_SOURCE is None:
+        raise HTTPException(status_code=404, detail="no active import")
+    if target != _IMPORT_SOURCE and _IMPORT_SOURCE not in target.parents:
+        raise HTTPException(status_code=403, detail="path outside import source")
+    return _cover_response(target)
 
 
 # ── Tag writes ────────────────────────────────────────────────────────────────
@@ -489,6 +510,7 @@ class JobStart(BaseModel):
 
 @app.post("/api/jobs")
 def api_start_job(body: JobStart) -> JSONResponse:
+    global _IMPORT_SOURCE
     params: dict = {"path": str(ROOT), "dry_run": body.dry_run}
     if body.kind == "import":
         if body.upload_token:
@@ -505,6 +527,7 @@ def api_start_job(body: JobStart) -> JSONResponse:
             if not src.is_dir():
                 raise HTTPException(status_code=400, detail="source is not a directory")
             params["source"] = str(src)
+        _IMPORT_SOURCE = Path(params["source"])   # bounds /api/import/cover
     elif body.kind == "sync":
         params["device"] = str(_device(body.device))
         _validate_selection(body.selection)

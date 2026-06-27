@@ -122,8 +122,19 @@ function renderJobInto(container, job, showLog = true) {
 
 // ── Prompt handling (text / choice / editable import preview) ─────────────────
 
+// A view (e.g. Import) can supply a richer inline renderer for the preview prompt.
+// It returns {proceed, entries} | {proceed:false}, or null to defer to the modal.
+let previewRenderer = null;
+export function setPreviewRenderer(fn) { previewRenderer = fn; }
+
 async function answerPrompt(p) {
-  if (p.kind === "preview") return await previewModal(p);
+  if (p.kind === "preview") {
+    if (previewRenderer) {
+      const r = await previewRenderer(p);
+      if (r) return r;
+    }
+    return await previewModal(p);
+  }
   if (p.kind === "choice") {
     const k = await promptModal({ title: p.prompt, kind: "choice", options: p.options });
     return k ?? "";
@@ -143,6 +154,7 @@ function previewModal(p) {
         <td><input data-f="title" value="${escapeAttr(e.title)}" style="width:100%"></td>
         <td><input data-f="artist" value="${escapeAttr(e.artist)}" style="width:100%"></td>
         <td><input data-f="album" value="${escapeAttr(e.album)}" style="width:100%"></td>
+        <td><input data-f="genre" value="${escapeAttr(e.genre || "")}" style="width:100%"></td>
         <td><input data-f="year" value="${escapeAttr(e.year)}" style="width:60px"></td>
       </tr>`).join("");
     openModal(`
@@ -150,7 +162,7 @@ function previewModal(p) {
         ${p.has_lossless ? `<span class="pill">lossless present</span>` : ""}</h3>
       <p class="muted">Edit any field before importing. Lossless bitrate is chosen via the next prompt.</p>
       <div style="max-height:55vh;overflow:auto">
-      <table><thead><tr><th>File</th><th>#</th><th>Title</th><th>Artist</th><th>Album</th><th>Year</th></tr></thead>
+      <table><thead><tr><th>File</th><th>#</th><th>Title</th><th>Artist</th><th>Album</th><th>Genre</th><th>Year</th></tr></thead>
       <tbody>${rows}</tbody></table></div>
       <div class="row">
         <button class="btn" data-cancel>Cancel import</button>

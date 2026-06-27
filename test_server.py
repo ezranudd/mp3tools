@@ -393,12 +393,56 @@ def test_import_via_upload(tmp_path, tmp_path_factory):
     assert not upload_dir.exists(), "temp upload dir should be cleaned up after import"
 
 
+def test_import_preview_edits_genre(tmp_path, tmp_path_factory):
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("ffmpeg not available")
+    src = tmp_path_factory.mktemp("source")
+    _make_mp3(src / "song.mp3", TIT2="Tune", TPE1="Band", TPE2="Band",
+              TALB="Rec", TYER="2022", TRCK="1")
+    server.set_root(tmp_path)
+    c = TestClient(server.app)
+
+    def answer(prompt):
+        if prompt["kind"] == "preview":
+            entries = prompt["entries"]
+            assert "genre" in entries[0]            # genre round-trips
+            for e in entries:
+                e["genre"] = "Jazz"
+            return {"proceed": True, "entries": entries}
+        if prompt["kind"] == "choice" and prompt["options"]:
+            return prompt["options"][0]["key"]
+        return ""
+
+    jid = c.post("/api/jobs",
+                 json={"kind": "import", "source": str(src)}).json()["job_id"]
+    j = _poll(c, jid, answer)
+    assert j["state"] == "done", j.get("error")
+    imported = list(tmp_path.rglob("*.mp3"))
+    assert imported
+    assert str(ID3(imported[0], translate=False).get("TCON")) == "Jazz"
+
+
 def test_import_upload_rejects_traversal(client):
     token = client.post("/api/import/upload/start").json()["token"]
     resp = client.post("/api/import/upload/file",
                        params={"token": token, "path": "../evil.mp3"},
                        content=b"x", headers={"Content-Type": "audio/mpeg"})
     assert resp.status_code == 400
+
+
+def test_import_cover_endpoint(client, tmp_path, monkeypatch):
+    src = tmp_path / "incoming" / "Album"
+    src.mkdir(parents=True)
+    (src / "cover.jpg").write_bytes(b"\xff\xd8\xff\xe0jpegdata")
+    # No active import → 404.
+    monkeypatch.setattr(server, "_IMPORT_SOURCE", None)
+    assert client.get("/api/import/cover", params={"path": str(src)}).status_code == 404
+    # Bounded to the import source.
+    monkeypatch.setattr(server, "_IMPORT_SOURCE", tmp_path / "incoming")
+    ok = client.get("/api/import/cover", params={"path": str(src)})
+    assert ok.status_code == 200 and ok.content == b"\xff\xd8\xff\xe0jpegdata"
+    # Outside the source → 403.
+    assert client.get("/api/import/cover", params={"path": "/etc"}).status_code == 403
 
 
 def test_import_upload_unknown_token(client):

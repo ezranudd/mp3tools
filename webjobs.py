@@ -218,6 +218,7 @@ def _serialize_entries(entries) -> list[dict]:
             "albumartist": td.get("ALBUMARTIST", ""),
             "title": td.get("TIT2", ""),
             "album": td.get("TALB", ""),
+            "genre": td.get("TCON", ""),
             "year": td.get("YEAR", ""),
             "track": td.get("TRCK", ""),
             "bitrate": td.get("_MP3_BITRATE", ""),
@@ -231,7 +232,7 @@ def _apply_entry_edits(entries, edited) -> None:
         return
     by_i = {row.get("i"): row for row in edited if isinstance(row, dict)}
     field_map = {"artist": "TPE1", "albumartist": "ALBUMARTIST", "title": "TIT2",
-                 "album": "TALB", "year": "YEAR", "track": "TRCK"}
+                 "album": "TALB", "genre": "TCON", "year": "YEAR", "track": "TRCK"}
     for i, (_path, td) in enumerate(entries):
         row = by_i.get(i)
         if not row:
