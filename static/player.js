@@ -77,8 +77,8 @@ export function initPlayer(revealFn = null) {
     <img class="palbum noart" data-album alt="" title="Show in library"
          onerror="this.classList.add('noart')">
     <div class="pmeta">
-      <span class="ptitle" data-title title="Show in library"></span>
-      <span class="partist" data-artist title="Show in library"></span>
+      <span class="ptitle" data-title></span>
+      <span class="partist" data-artist></span>
     </div>
     <span class="pbitrate" data-bitrate></span>
     <div class="pseekrow">
@@ -98,8 +98,7 @@ export function initPlayer(revealFn = null) {
 
   bar.querySelector("[data-prev]").onclick = prev;
   bar.querySelector("[data-next]").onclick = next;
-  els.title.onclick = jumpToAlbum;
-  els.artist.onclick = jumpToAlbum;
+  // Title/artist are plain text; the album art is the "jump to album" affordance.
   els.album.onclick = jumpToAlbum;
   els.play.onclick = toggle;
 
@@ -128,20 +127,22 @@ function initElementBackend() {
   mAudio.addEventListener("playing", () => { mLastTime = mAudio.currentTime; });
   mAudio.addEventListener("timeupdate", () => { mLastTime = mAudio.currentTime; });
 
-  if ("mediaSession" in navigator) {
-    const ms = navigator.mediaSession;
-    // Register ONLY play/pause/prev/next. Do NOT touch any seek action
-    // (seekto/seekbackward/seekforward) — on iOS/WebKit, *calling* setActionHandler
-    // for a seek action (even with null) enables that command, and the lock screen
-    // then prefers the ±10s skip UI over previous/next TRACK buttons. Leaving them
-    // unregistered is what makes iOS show the track buttons (the progress bar still
-    // comes from setPositionState below). Wrap: unsupported actions throw.
-    const setH = (action, handler) => { try { ms.setActionHandler(action, handler); } catch { /* unsupported */ } };
-    setH("play", () => { if (!playing) toggle(); });
-    setH("pause", () => { if (playing) toggle(); });
-    setH("previoustrack", prev);
-    setH("nexttrack", next);
-  }
+  applyMediaHandlers();
+}
+
+// Register ONLY play/pause/prev/next — and NOTHING seek-related (no seekto,
+// seekbackward, seekforward, or setPositionState). On iOS/WebKit any seek/position
+// signal makes the lock screen prefer the ±10s skip UI over previous/next TRACK
+// buttons. Re-asserted on every track (updateMediaSession) in case iOS drops the
+// handlers when the media item changes. Wrap: unsupported actions throw.
+function applyMediaHandlers() {
+  if (!("mediaSession" in navigator)) return;
+  const ms = navigator.mediaSession;
+  const setH = (action, handler) => { try { ms.setActionHandler(action, handler); } catch { /* unsupported */ } };
+  setH("play", () => { if (!playing) toggle(); });
+  setH("pause", () => { if (playing) toggle(); });
+  setH("previoustrack", prev);
+  setH("nexttrack", next);
 }
 
 // Play queue[i] from `offset` seconds through the <audio> element.
@@ -239,16 +240,10 @@ function updateMediaSession() {
     navigator.mediaSession.metadata = new MediaMetadata({
       title: t.title || "", artist: t.artist || "", album: "", artwork });
   } catch { /* MediaMetadata unsupported */ }
-  // Feed the lock-screen scrubber so it reflects the real position/duration.
-  try {
-    if ("setPositionState" in navigator.mediaSession && mAudio && mAudio.duration) {
-      navigator.mediaSession.setPositionState({
-        duration: mAudio.duration,
-        position: Math.min(mAudio.currentTime || 0, mAudio.duration),
-        playbackRate: 1,
-      });
-    }
-  } catch { /* setPositionState unsupported */ }
+  // Deliberately NO setPositionState — a seekable position hint makes iOS show the
+  // ±10s skip controls instead of next/prev track. Re-assert the track handlers in
+  // case iOS cleared them when the media item changed.
+  applyMediaHandlers();
   updateMediaState();
 }
 
@@ -541,6 +536,23 @@ function startRaf() {
 }
 function stopRaf() { if (rafId) cancelAnimationFrame(rafId); rafId = 0; }
 
+// Scroll an overflowing label back and forth (mobile player) so the full text is
+// readable, instead of truncating. Falls back to the CSS ellipsis when it fits or
+// when the user prefers reduced motion.
+function applyMarquee(el) {
+  el.classList.remove("marquee");
+  el.style.removeProperty("--mq-shift");
+  el.style.removeProperty("--mq-dur");
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  requestAnimationFrame(() => {
+    const overflow = el.scrollWidth - el.clientWidth;
+    if (overflow <= 4) return;
+    el.style.setProperty("--mq-shift", `-${overflow}px`);
+    el.style.setProperty("--mq-dur", `${Math.max(6, overflow / 30 + 3).toFixed(1)}s`);
+    el.classList.add("marquee");
+  });
+}
+
 function reflectTrack() {
   const t = queue[index];
   if (IS_MOBILE) {
@@ -548,6 +560,8 @@ function reflectTrack() {
     // is hidden on desktop via CSS.
     els.title.textContent = t.title || "";
     els.artist.textContent = t.artist || "";
+    applyMarquee(els.title);
+    applyMarquee(els.artist);
   } else {
     const num = t.track ? t.track.padStart(2, "0") + ". " : "";
     els.title.textContent = num + t.title + (t.artist ? " — " + t.artist : "");

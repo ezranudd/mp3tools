@@ -146,8 +146,7 @@
   .player .palbum:hover { outline:1px solid var(--accent); }
   .player .palbum.noart { display:none; }
   .player .ptitle { min-width:160px; max-width:38vw; overflow:hidden; text-overflow:ellipsis;
-                    white-space:nowrap; cursor:pointer; }
-  .player .ptitle:hover { color:var(--accent); }
+                    white-space:nowrap; }
   /* The pmeta (title/artist) and pseekrow (cur/seek/dur) wrappers are layout-neutral
      on desktop — display:contents lets their children act as direct flex items, so
      the desktop bar is unchanged. The phone @media block re-flows them. */
@@ -160,6 +159,12 @@
   .player .pbitrate { display:none; flex:0 0 auto; color:var(--muted); font-size:11px;
                       white-space:nowrap; font-variant-numeric:tabular-nums; }
   .player .pseek { flex:1; accent-color:var(--accent); cursor:pointer; }
+  /* Marquee for an overflowing mobile player label (applied via .marquee from JS,
+     which also sets --mq-shift/--mq-dur). Holds at each end before reversing. */
+  @keyframes pmarquee {
+    0%, 12%   { transform:translateX(0); }
+    88%, 100% { transform:translateX(var(--mq-shift, 0px)); }
+  }
   .layout { flex:1; display:flex; min-height:0; }
   nav.sidebar { width:150px; flex:0 0 auto; background:var(--panel);
                 border-right:1px solid var(--line); padding:8px 0; }
@@ -414,13 +419,19 @@
        album art pinned far right; row 2 = current time, seek, duration. */
     .player { flex-wrap:wrap; gap:4px 8px; padding:6px 10px; }
     .player .pmeta { display:flex; flex-direction:column; justify-content:center;
-                     min-width:0; flex:1 1 0; order:2; }   /* basis 0 so a long title ellipsizes, not wraps */
+                     min-width:0; flex:1 1 0; order:2; overflow:hidden; }   /* basis 0 + clip for marquee */
     .player .ptitle { min-width:0; max-width:none; }
     .player .partist { display:block; min-width:0; overflow:hidden;
                        text-overflow:ellipsis; white-space:nowrap;
                        font-size:12px; color:var(--muted); }
+    /* When JS flags overflow, scroll the label instead of truncating it. */
+    .player .ptitle.marquee, .player .partist.marquee {
+      overflow:visible; text-overflow:clip;
+      animation:pmarquee var(--mq-dur, 8s) ease-in-out infinite alternate; }
     .player .pbitrate { display:inline-block; order:4; align-self:center; }
-    .player .palbum { order:5; margin-left:auto; }   /* far right of the bar */
+    .player .palbum { order:5; margin-left:auto;   /* far right of the bar */
+                      -webkit-tap-highlight-color:transparent; }
+    .player .palbum:hover { outline:none; }   /* no sticky accent outline on touch */
     .player .pseekrow { display:flex; align-items:center; gap:8px;
                         order:6; flex:1 1 100%; }
     .player .pseekrow .ptime { width:auto; min-width:40px; }
