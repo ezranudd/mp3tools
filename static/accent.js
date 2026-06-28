@@ -5,7 +5,8 @@ import { jget } from "./util.js";
 import { subscribe, getCurrentAlbumPath } from "./player.js";
 
 let enabled = false;
-let lastRGB = null;   // [r,g,b] extracted from the current cover, for theme re-derive
+let lastRGB = null;     // [r,g,b] extracted from the current cover, for theme re-derive
+let baseColor = null;   // [r,g,b] user-chosen fixed accent, or null = theme default
 
 // ── Colour helpers ────────────────────────────────────────────────────────────
 
@@ -65,8 +66,6 @@ function luminance([r, g, b]) {
   return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
 }
 
-const blend = (base, tint, t) => base.map((b, i) => b * (1 - t) + tint[i] * t);
-
 // ── Cover sampling ─────────────────────────────────────────────────────────────
 
 // Average the cover's pixels weighted by saturation, so a vibrant accent emerges
@@ -94,7 +93,17 @@ function extractColor(img) {
 
 // ── Apply / clear ──────────────────────────────────────────────────────────────
 
-const ACCENT_VARS = ["--accent", "--on-accent", "--bg", "--panel", "--line"];
+const ACCENT_VARS = ["--accent", "--on-accent", "--bg", "--panel", "--line", "--muted", "--code-bg"];
+
+// Surfaces recolored to the album hue, with a per-surface saturation cap and a
+// fallback colour (used if the theme var can't be read).
+const ART_SURFACES = [
+  ["--bg",      0.40, [30, 30, 46]],
+  ["--panel",   0.40, [39, 41, 61]],
+  ["--line",    0.45, [58, 61, 82]],
+  ["--code-bg", 0.40, [21, 22, 31]],
+  ["--muted",   0.18, [154, 160, 181]],   // text — keep it readable, just hinted
+];
 
 function clearAccent() {
   const root = document.documentElement;
@@ -102,51 +111,84 @@ function clearAccent() {
   delete root.dataset.art;
 }
 
-function applyAccent(rgb) {
-  const root = document.documentElement;
-  // Read the active theme's base palette with no inline overrides in the way.
-  for (const v of ACCENT_VARS) root.style.removeProperty(v);
-  const cs = getComputedStyle(root);
-  const baseBg = parseColor(cs.getPropertyValue("--bg")) || [30, 30, 46];
-  const basePanel = parseColor(cs.getPropertyValue("--panel")) || [39, 41, 61];
-  const baseLine = parseColor(cs.getPropertyValue("--line")) || [58, 61, 82];
-  const dark = root.dataset.theme !== "light";
-
-  // Accent: the art hue, made vivid with a theme-appropriate lightness.
+// Turn a source rgb into [accentHex, onAccentHex], made vivid with a
+// theme-appropriate lightness and a legible text colour over it.
+function accentFor(rgb) {
+  const dark = document.documentElement.dataset.theme !== "light";
   let [h, s] = rgb2hsl(rgb);
   s = clamp(s, 0.45, 0.95);
   const accent = hsl2rgb([h, s, dark ? 0.68 : 0.45]);
   const onAccent = luminance(accent) > 0.55 ? "#11131f" : "#ffffff";
+  return [toHex(accent), onAccent];
+}
 
-  root.style.setProperty("--accent", toHex(accent));
+// Recolor a base palette colour to `hue`, keeping its lightness; sat capped per surface.
+function recolor(baseRgb, hue, sat) {
+  const [, , l] = rgb2hsl(baseRgb);
+  return toHex(hsl2rgb([hue, sat, l]));
+}
+
+// Album-art tint: set the accent AND recolor every surface to the art's hue,
+// preserving each surface's theme lightness so text contrast is kept.
+function applyArtAccent(rgb) {
+  const root = document.documentElement;
+  // Read the active theme's base palette with no inline overrides in the way.
+  for (const v of ACCENT_VARS) root.style.removeProperty(v);
+  const cs = getComputedStyle(root);
+  const [hue, artSat] = rgb2hsl(rgb);
+
+  const [accent, onAccent] = accentFor(rgb);
+  root.style.setProperty("--accent", accent);
   root.style.setProperty("--on-accent", onAccent);
-  root.style.setProperty("--bg", toHex(blend(baseBg, rgb, 0.06)));
-  root.style.setProperty("--panel", toHex(blend(basePanel, rgb, 0.10)));
-  root.style.setProperty("--line", toHex(blend(baseLine, rgb, 0.14)));
+  for (const [v, cap, fallback] of ART_SURFACES) {
+    const base = parseColor(cs.getPropertyValue(v)) || fallback;
+    root.style.setProperty(v, recolor(base, hue, clamp(artSat, 0, cap)));
+  }
   root.dataset.art = "on";
+}
+
+// User-chosen fixed accent: set only --accent/--on-accent, no background wash.
+function applyBaseAccent(rgb) {
+  const root = document.documentElement;
+  for (const v of ACCENT_VARS) root.style.removeProperty(v);
+  delete root.dataset.art;
+  const [accent, onAccent] = accentFor(rgb);
+  root.style.setProperty("--accent", accent);
+  root.style.setProperty("--on-accent", onAccent);
+}
+
+// Fall back to the chosen accent, or fully revert to the theme default.
+function applyBaseOrClear() {
+  if (baseColor) applyBaseAccent(baseColor);
+  else clearAccent();
 }
 
 // ── Derivation pipeline ──────────────────────────────────────────────────────
 
+// Precedence: album-art accent (when enabled + cover available) → chosen base
+// colour → theme default.
 function derive() {
-  if (!enabled) { clearAccent(); return; }
+  if (!enabled) { applyBaseOrClear(); return; }
   const albumPath = getCurrentAlbumPath();
-  if (!albumPath) { lastRGB = null; clearAccent(); return; }
+  if (!albumPath) { lastRGB = null; applyBaseOrClear(); return; }
   const img = new Image();
   img.onload = () => {
     const rgb = extractColor(img);
-    if (rgb) { lastRGB = rgb; applyAccent(rgb); }
-    else { lastRGB = null; clearAccent(); }
+    if (rgb) { lastRGB = rgb; applyArtAccent(rgb); }
+    else { lastRGB = null; applyBaseOrClear(); }
   };
-  img.onerror = () => { lastRGB = null; clearAccent(); };
+  img.onerror = () => { lastRGB = null; applyBaseOrClear(); };
   img.src = "/api/cover?path=" + encodeURIComponent(albumPath);
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
 export async function initAccent() {
-  try { enabled = !!(await jget("/api/settings")).theme_accent_from_art; }
-  catch { enabled = false; }
+  try {
+    const s = await jget("/api/settings");
+    enabled = !!s.theme_accent_from_art;
+    baseColor = parseColor(s.theme_accent_color) || null;
+  } catch { enabled = false; baseColor = null; }
   subscribe(() => derive());   // fires now and on every track change
 }
 
@@ -155,9 +197,15 @@ export function setEnabled(on) {
   derive();
 }
 
+// Live-preview a chosen fixed accent ("" / invalid → theme default).
+export function setBaseColor(hex) {
+  baseColor = parseColor(hex) || null;
+  derive();
+}
+
 // Recompute against the current theme (e.g. after a dark/light switch) without
 // re-fetching the cover.
 export function refresh() {
-  if (enabled && lastRGB) applyAccent(lastRGB);
-  else clearAccent();
+  if (enabled && lastRGB) applyArtAccent(lastRGB);
+  else applyBaseOrClear();
 }

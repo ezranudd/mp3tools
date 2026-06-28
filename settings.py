@@ -10,6 +10,7 @@ they run against a library.
 """
 import json
 import copy
+import re
 from pathlib import Path
 
 SETTINGS_DIRNAME = ".mp3tools"
@@ -86,8 +87,11 @@ DEFAULTS: dict = {
     "background_mime":    "",         # web UI: mime of the uploaded bg image (set on upload)
     "background_readable": True,      # web UI: boost text contrast over the bg image
     "theme_accent_from_art": False,   # web UI: tint theme to the playing album's art
+    "theme_accent_color":   "",       # web UI: chosen accent hex (#rgb/#rrggbb), "" = theme default
     "import_bitrate":       320,      # web UI: default lossless→MP3 bitrate for import
 }
+
+_HEX_RE = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
 
 _VALID_BITRATES = frozenset((128, 160, 192, 256, 320))
 
@@ -146,6 +150,10 @@ def load(library_root: Path) -> dict:
                 settings["background_readable"] = data["background_readable"]
             if isinstance(data.get("theme_accent_from_art"), bool):
                 settings["theme_accent_from_art"] = data["theme_accent_from_art"]
+            if isinstance(data.get("theme_accent_color"), str):
+                val = data["theme_accent_color"].strip()
+                if val == "" or _HEX_RE.match(val):
+                    settings["theme_accent_color"] = val
             if data.get("import_bitrate") in _VALID_BITRATES:
                 settings["import_bitrate"] = data["import_bitrate"]
         except Exception:

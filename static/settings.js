@@ -1,7 +1,7 @@
 // Settings view: full editor for everything in settings.DEFAULTS.
 import { jget, jpost, toast, escapeHtml, escapeAttr, openModal, closeModal } from "./util.js";
 import { applyBackground, uploadBackground, clearBackground } from "./background.js";
-import { setEnabled as setAccentEnabled } from "./accent.js";
+import { setEnabled as setAccentEnabled, setBaseColor as setAccentBase } from "./accent.js";
 
 const BOOLS = [
   ["enforce_artist_equals_album_artist", "Enforce Artist = Album Artist"],
@@ -14,7 +14,18 @@ const BOOLS = [
 ];
 const SOURCES = ["itunes", "musicbrainz", "theaudiodb", "discogs"];
 
+// Accent presets: [label, hex]. "" = revert to the built-in theme accent.
+// accent.js normalises each hue to a theme-appropriate shade, so these are
+// just representative source colours.
+const ACCENT_PRESETS = [
+  ["Default", ""],
+  ["Blue", "#7aa2f7"], ["Purple", "#bb9af7"], ["Rose", "#f7768e"],
+  ["Red", "#ff6b6b"], ["Orange", "#ff9e64"], ["Yellow", "#e0af68"],
+  ["Green", "#9ece6a"], ["Teal", "#4abfaf"], ["Cyan", "#7dcfff"],
+];
+
 let container, cfg, dirty = false;
+let selectedAccent = "";   // current accent hex, "" = theme default
 
 export async function show(el) {
   container = el;
@@ -33,9 +44,49 @@ function checkbox(key, label, checked) {
     <input type="checkbox" class="toggle" data-bool="${escapeAttr(key)}" ${checked ? "checked" : ""}></div>`;
 }
 
+// Accent-color picker: preset swatches + a native custom-color swatch.
+function accentSwatches() {
+  const cur = selectedAccent.toLowerCase();
+  const presetHexes = ACCENT_PRESETS.map(([, h]) => h.toLowerCase());
+  const isCustom = cur !== "" && !presetHexes.includes(cur);
+  const customVal = /^#[0-9a-f]{6}$/i.test(selectedAccent) ? selectedAccent : "#7aa2f7";
+  const presets = ACCENT_PRESETS.map(([name, hex]) => {
+    const sel = hex.toLowerCase() === cur ? " sel" : "";
+    const cls = hex === "" ? "accentSwatch def" : "accentSwatch";
+    const style = hex ? ` style="background:${escapeAttr(hex)}"` : "";
+    return `<button type="button" class="${cls}${sel}" data-accent="${escapeAttr(hex)}" title="${escapeAttr(name)}"${style}></button>`;
+  }).join("");
+  return `${presets}<span class="accentSwatch custom${isCustom ? " sel" : ""}" title="Custom color">
+    <input type="color" id="accent_custom" value="${escapeAttr(customVal)}"></span>`;
+}
+
+// Toggle the .sel ring without rebuilding (avoids disrupting an open color picker).
+function markAccentSelected() {
+  const cur = selectedAccent.toLowerCase();
+  const presetHexes = ACCENT_PRESETS.map(([, h]) => h.toLowerCase());
+  container.querySelectorAll(".accentSwatch[data-accent]").forEach(btn =>
+    btn.classList.toggle("sel", (btn.dataset.accent || "").toLowerCase() === cur));
+  const custom = container.querySelector(".accentSwatch.custom");
+  if (custom) custom.classList.toggle("sel", cur !== "" && !presetHexes.includes(cur));
+}
+
+function selectAccent(hex) {
+  selectedAccent = hex || "";
+  setAccentBase(selectedAccent);   // live preview
+  dirty = true;
+  markAccentSelected();
+}
+
+function wireAccent() {
+  container.querySelectorAll(".accentSwatch[data-accent]").forEach(btn =>
+    btn.onclick = () => selectAccent(btn.dataset.accent));
+  container.querySelector("#accent_custom").oninput = (e) => selectAccent(e.target.value);
+}
+
 function render() {
   const ca = cfg.cover_art || "folder";
   const srcs = cfg.art_sources || {};
+  selectedAccent = cfg.theme_accent_color || "";
   container.innerHTML = `<div class="page">
     <h2>Settings</h2>
 
@@ -77,6 +128,8 @@ function render() {
     </div>
 
     <div class="card"><h4>Appearance</h4>
+      <div class="field"><label>Accent color</label>
+        <div class="accentSwatches">${accentSwatches()}</div></div>
       <div class="field"><label>Match theme color to album art</label>
         <input type="checkbox" class="toggle" id="accent_art" data-bool="theme_accent_from_art"
                ${cfg.theme_accent_from_art ? "checked" : ""}></div>
@@ -91,6 +144,7 @@ function render() {
   container.querySelector("#saveBtn").onclick = save;
   container.querySelector("#reloadBtn").onclick = () => show(container);
   wireBackground();
+  wireAccent();
   // Live-preview the album-art accent toggle.
   container.querySelector("#accent_art").onchange =
     (e) => setAccentEnabled(e.target.checked);
@@ -153,6 +207,7 @@ async function save() {
     background_blur: parseInt(container.querySelector("#bg_blur").value, 10),
     background_fit: container.querySelector("#bg_fit").value,
     background_readable: container.querySelector("#bg_readable").checked,
+    theme_accent_color: selectedAccent,
   };
   container.querySelectorAll("[data-bool]").forEach(c => body[c.dataset.bool] = c.checked);
   container.querySelectorAll("[data-src]").forEach(c => body.art_sources[c.dataset.src] = c.checked);
@@ -174,6 +229,7 @@ export async function beforeLeave() {
     cfg = await jget("/api/settings");
     applyBackground(cfg);
     setAccentEnabled(cfg.theme_accent_from_art);
+    setAccentBase(cfg.theme_accent_color);
   }
   dirty = false;
   return true;

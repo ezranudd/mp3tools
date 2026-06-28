@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>mp3tools</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<meta name="theme-color" content="#7aa2f7">
 <script>
   // Apply the theme before first paint to avoid a flash. Phones (coarse pointer)
   // follow the device's system light/dark; desktop uses the saved toggle value.
@@ -294,6 +296,19 @@
   .page h2 { margin:0 0 12px; font-size:18px; }
   .field { display:flex; align-items:center; gap:10px; margin:8px 0; }
   .field label { min-width:280px; }
+  /* Accent-color picker swatches */
+  .accentSwatches { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+  .accentSwatch { width:26px; height:26px; padding:0; border-radius:50%; cursor:pointer;
+                  border:2px solid var(--line); background:var(--panel);
+                  transition:transform .1s, box-shadow .1s; }
+  .accentSwatch:hover { transform:scale(1.12); }
+  .accentSwatch.sel { box-shadow:0 0 0 2px var(--bg), 0 0 0 4px var(--fg); }
+  /* "Default" swatch: diagonal split hinting "theme color". */
+  .accentSwatch.def { background:linear-gradient(135deg, var(--panel) 0 48%, var(--accent) 52% 100%); }
+  .accentSwatch.custom { background:conic-gradient(red, magenta, blue, cyan, lime, yellow, red);
+                         display:flex; align-items:center; justify-content:center; overflow:hidden; }
+  .accentSwatch.custom input[type=color] { width:200%; height:200%; border:0; padding:0;
+                                           background:transparent; cursor:pointer; opacity:0; }
   /* Import drag-and-drop zone */
   .dropzone { border:2px dashed var(--line); border-radius:8px; padding:28px 16px;
               text-align:center; cursor:pointer; color:var(--muted);
