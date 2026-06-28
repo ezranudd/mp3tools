@@ -44,6 +44,10 @@ async function activate(name) {
   }
   current = name;
   for (const btn of sidebar.children) btn.classList.toggle("active", btn.dataset.name === name);
+  // Mobile master-detail hooks live on #view: mark Browse, and always start on
+  // the master (artist list) when (re)entering a view.
+  viewEl.classList.toggle("browse", name === "browse");
+  viewEl.classList.remove("show-detail");
   viewEl.innerHTML = "";
   try {
     entry[2].show(viewEl);

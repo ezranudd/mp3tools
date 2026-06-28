@@ -9,6 +9,7 @@ import * as edit from "./edit.js";
 
 let CURRENT = null;   // selected artist: { kind: "artist", path }
 let TREE = [];        // artist nodes from /api/tree
+let rootEl;           // the #view container (holds #tree + #detail)
 let treeEl, detailEl;
 let subscribed = false;
 let pendingReveal = null;   // { artist_path, album_path, track_path? } from search
@@ -19,8 +20,19 @@ let genreSort = "az";       // az | date | rand
 // Ask Browse to jump to an album/track once it's (re)mounted.
 export function requestReveal(target) { pendingReveal = target; }
 
+// Mobile master-detail: reveal #detail over the artist tree (a visual no-op on
+// desktop, where both panes always show). A Back control returns to the tree.
+function enterDetail() { if (rootEl) rootEl.classList.add("show-detail"); }
+function exitDetail()  { if (rootEl) rootEl.classList.remove("show-detail"); }
+const BACK_BAR = `<div class="backbar"><button class="btn" data-back>‹ Artists</button></div>`;
+function wireBack() {
+  const b = detailEl.querySelector("[data-back]");
+  if (b) b.onclick = exitDetail;
+}
+
 export async function show(container) {
   container.innerHTML = `<nav id="tree"></nav><section id="detail"><p class="muted">Select an artist or album.</p></section>`;
+  rootEl = container;
   treeEl = container.querySelector("#tree");
   detailEl = container.querySelector("#detail");
   if (!subscribed) {
@@ -155,17 +167,20 @@ async function fetchAlbumState(path) {
 async function selectArtist(path, headEl) {
   CURRENT = { kind: "artist", path };
   clearSel();
+  enterDetail();
   headEl = headEl || artistNodeEl(path);
   if (headEl) headEl.classList.add("sel");
   const artist = TREE.find(a => a.path === path);
-  if (!artist) { detailEl.innerHTML = `<p class="muted">Artist not found.</p>`; return; }
+  if (!artist) { detailEl.innerHTML = `${BACK_BAR}<p class="muted">Artist not found.</p>`; wireBack(); return; }
   detailEl.innerHTML = `
+    ${BACK_BAR}
     ${editPausedNotice()}
     <div class="artisthead">
       <h2>${escapeHtml(artist.label)}</h2>
       <div class="sub">${artist.children.length} album${artist.children.length === 1 ? "" : "s"}</div>
     </div>
     <div id="artistAlbums"></div>`;
+  wireBack();
   const host = detailEl.querySelector("#artistAlbums");
   if (!artist.children.length) { host.innerHTML = `<p class="muted">No albums.</p>`; return; }
 
@@ -195,6 +210,7 @@ async function refreshCurrent() {
 async function showGenre(genre) {
   CURRENT = null;     // a grid, not an artist — leave it alone on job/mode rerenders
   clearSel();
+  enterDetail();
   genreName = genre;
   genreSort = "az";
   detailEl.innerHTML = `<p class="muted">Loading…</p>`;
@@ -203,6 +219,7 @@ async function showGenre(genre) {
   catch (e) { toast(e.message, true); return; }
   genreAlbums = data.albums || [];
   detailEl.innerHTML = `
+    ${BACK_BAR}
     <div class="artisthead genrehead">
       <h2>Genre · ${escapeHtml(genre)}</h2>
       <div class="sub">${genreAlbums.length} album${genreAlbums.length === 1 ? "" : "s"}</div>
@@ -214,6 +231,7 @@ async function showGenre(genre) {
       </div>
     </div>
     <div class="genregrid" id="genreGrid"></div>`;
+  wireBack();
   detailEl.querySelectorAll(".sortbtn").forEach(b =>
     b.onclick = () => { genreSort = b.dataset.sort; renderGenreGrid(); });
   renderGenreGrid();
@@ -298,7 +316,7 @@ function renderAlbumBrowseInto(container, st) {
       <h2>${escapeHtml(album || "(untitled)")}</h2>
       <div class="sub">${sub}</div>
       <div class="sub">${tracks.length} track${tracks.length === 1 ? "" : "s"}</div>`) + `
-    <table>
+    <table class="browsetable">
       <thead><tr><th>#</th><th>Title</th><th>Artist</th><th class="tdur">Time</th><th>Rate</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>`;

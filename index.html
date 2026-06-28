@@ -29,7 +29,8 @@
   ::-webkit-scrollbar-thumb:hover { background:var(--muted); }
   ::-webkit-scrollbar-corner { background:transparent; }
   body { margin:0; font:14px/1.4 system-ui, sans-serif; color:var(--fg);
-         background:var(--bg); height:100vh; display:flex; flex-direction:column; }
+         background:var(--bg); height:100vh; height:100dvh;   /* dvh: clears iOS toolbar */
+         display:flex; flex-direction:column; }
   /* Customizable full-window background image (foobar-style). */
   #bgLayer { position:fixed; inset:0; z-index:-1; overflow:hidden; display:none; }
   html[data-bg="on"] #bgLayer { display:block; }
@@ -127,6 +128,10 @@
                   border-radius:6px; }
   .player .pbtn:hover { color:var(--accent); }
   .player .pbtn svg { width:18px; height:18px; display:block; fill:currentColor; }
+  .player .palbum { width:32px; height:32px; flex:0 0 auto; object-fit:cover;
+                    border-radius:4px; background:var(--panel); cursor:pointer; }
+  .player .palbum:hover { outline:1px solid var(--accent); }
+  .player .palbum.noart { display:none; }
   .player .ptitle { min-width:160px; max-width:38vw; overflow:hidden; text-overflow:ellipsis;
                     white-space:nowrap; cursor:pointer; }
   .player .ptitle:hover { color:var(--accent); }
@@ -308,6 +313,56 @@
              background:var(--panel); }
   .art .cap { font-size:11px; color:var(--muted); margin-top:4px; }
   .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(140px,1fr)); gap:12px; }
+
+  /* Back control: hidden by default, revealed by the phone @media block below
+     (declared first so the media-query override wins at equal specificity). */
+  .backbar { display:none; align-items:center; margin:-4px 0 10px; }
+  .backbar button { gap:6px; }
+
+  /* ── Phones / small screens ─────────────────────────────────────────────────
+     Single-column, touch-first. Browse becomes master-detail (artist list ⇄
+     album detail) toggled by the #view.show-detail class from tree.js. */
+  @media (max-width: 760px) {
+    /* Header wraps; search takes its own full-width row. */
+    header { flex-wrap:wrap; gap:8px 10px; padding:8px 12px; }
+    header h1 { font-size:14px; }
+    .search { order:5; flex:1 1 100%; }
+    .search #searchInput { width:100%; }
+    .searchresults { min-width:auto; max-width:92vw; }
+
+    /* Sidebar nav → horizontal scrolling top bar. */
+    .layout { flex-direction:column; }
+    nav.sidebar { width:100%; flex:0 0 auto; display:flex; flex-direction:row;
+                  overflow-x:auto; padding:0; border-right:0;
+                  border-bottom:1px solid var(--line); }
+    nav.sidebar button { width:auto; flex:0 0 auto; padding:10px 14px;
+                         border-left:0; border-bottom:3px solid transparent; }
+    nav.sidebar button.active { border-left-color:transparent;
+                                border-bottom-color:var(--accent); }
+
+    /* Browse master-detail: show the tree OR the detail, not both. */
+    #view.browse #tree   { width:100%; flex:1 1 auto; }
+    #view.browse #detail { display:none; }
+    #view.browse.show-detail #tree   { display:none; }
+    #view.browse.show-detail #detail { display:block; width:100%; flex:1 1 auto;
+                                       padding:12px 14px; }
+    .backbar { display:flex; }   /* hidden on desktop (see base rule below) */
+
+    /* Big cover wastes vertical space on a phone. */
+    .albumhead { gap:12px; }
+    .cover, .importcover { width:120px; height:120px; }
+    .albummeta h2 { font-size:16px; }
+
+    /* Drop the non-essential table columns so #, Title, Duration fit. */
+    .browsetable th:nth-child(3), .browsetable td:nth-child(3),   /* Artist */
+    .browsetable th:nth-child(5), .browsetable td:nth-child(5) {  /* Bitrate */
+      display:none; }
+
+    /* Player bar: transport + title on row 1, full-width seek on row 2. */
+    .player { flex-wrap:wrap; gap:6px; padding:6px 10px; }
+    .player .ptitle { min-width:0; max-width:none; flex:1 1 auto; }
+    .player .pseek { flex:1 1 100%; order:5; height:24px; }
+  }
 </style>
 </head>
 <body>

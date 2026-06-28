@@ -1,9 +1,24 @@
 // Persistent gapless player. Lives in #player (sibling of #view) so it survives
-// navigation. Playback runs through the Web Audio API: each track is decoded to an
-// AudioBuffer and the next one is scheduled to start at the exact sample the current
-// ends (using the AudioContext clock), so albums play with no gap. MP3 encoder
-// delay/padding is parsed from the Xing/Info+LAME header and trimmed, since
-// decodeAudioData (Chromium) keeps that baked-in silence.
+// navigation.
+//
+// Two playback backends, chosen once at init:
+//   • Desktop — the Web Audio API. Each track is decoded to an AudioBuffer and the
+//     next is scheduled to start at the exact sample the current ends (using the
+//     AudioContext clock), so albums play with no gap. MP3 encoder delay/padding is
+//     parsed from the Xing/Info+LAME header and trimmed, since decodeAudioData keeps
+//     that baked-in silence.
+//   • Mobile (IS_MOBILE) — a plain <audio> element. Web Audio on iOS is muted by the
+//     hardware silent switch and has no lock-screen controls; an <audio> element
+//     plays through the media channel, supports MediaSession, and streams via Range
+//     (no full in-memory decode). Gapless is sacrificed on phones (a small gap at
+//     track boundaries). The queue/transport/UI below is shared; only the sound
+//     backend differs, branched at startPlayback/toggle/seek/elapsed.
+import { toast } from "./util.js";
+
+// Phones/tablets: touch, no hover. These get the <audio> backend.
+const IS_MOBILE = window.matchMedia("(hover: none) and (pointer: coarse)").matches;
+let mAudio = null;             // HTMLAudioElement (mobile backend only)
+
 let bar = null;
 let queue = [];          // [{ path, title, artist, track }]
 let index = -1;
@@ -54,12 +69,15 @@ export function initPlayer(revealFn = null) {
     <button class="pbtn" data-prev title="Previous">${ICON.prev}</button>
     <button class="pbtn play" data-play title="Play/Pause">${ICON.play}</button>
     <button class="pbtn" data-next title="Next">${ICON.next}</button>
+    <img class="palbum noart" data-album alt="" title="Show in library"
+         onerror="this.classList.add('noart')">
     <span class="ptitle" data-title title="Show in library"></span>
     <span class="ptime" data-cur>0:00</span>
     <input type="range" class="pseek" data-seek min="0" max="1000" value="0">
     <span class="ptime" data-dur>0:00</span>`;
 
   els.play = bar.querySelector("[data-play]");
+  els.album = bar.querySelector("[data-album]");
   els.title = bar.querySelector("[data-title]");
   els.cur = bar.querySelector("[data-cur]");
   els.dur = bar.querySelector("[data-dur]");
@@ -68,9 +86,95 @@ export function initPlayer(revealFn = null) {
   bar.querySelector("[data-prev]").onclick = prev;
   bar.querySelector("[data-next]").onclick = next;
   els.title.onclick = jumpToAlbum;
+  els.album.onclick = jumpToAlbum;
   els.play.onclick = toggle;
 
-  els.seek.oninput = () => { if (duration) seek(els.seek.value / 1000); };
+  els.seek.oninput = () => { if (curDuration()) seek(els.seek.value / 1000); };
+
+  if (IS_MOBILE) initElementBackend();
+}
+
+// ── Mobile <audio> backend ────────────────────────────────────────────────────
+
+function initElementBackend() {
+  mAudio = new Audio();
+  mAudio.preload = "auto";
+  mAudio.setAttribute("playsinline", "");
+  mAudio.style.display = "none";
+  bar.appendChild(mAudio);
+  mAudio.onended = () => {
+    if (index < queue.length - 1) startPlayback(index + 1, 0);
+    else { playing = false; els.play.innerHTML = ICON.play; stopRaf(); updateMediaState(); }
+  };
+  mAudio.onerror = () => toast("Could not play this track", true);
+
+  if ("mediaSession" in navigator) {
+    const ms = navigator.mediaSession;
+    ms.setActionHandler("play", () => { if (!playing) toggle(); });
+    ms.setActionHandler("pause", () => { if (playing) toggle(); });
+    ms.setActionHandler("previoustrack", prev);
+    ms.setActionHandler("nexttrack", next);
+    ms.setActionHandler("seekto", (d) => {
+      if (mAudio.duration && d.seekTime != null) { mAudio.currentTime = d.seekTime; updateProgress(); }
+    });
+  }
+}
+
+// Play queue[i] from `offset` seconds through the <audio> element.
+function mStart(i, offset) {
+  index = i;
+  playing = true;
+  bar.classList.add("show");
+  mAudio.src = "/api/track?path=" + encodeURIComponent(queue[i].path);
+  if (offset) {
+    mAudio.addEventListener("loadedmetadata",
+      () => { try { mAudio.currentTime = offset; } catch { /* ignore */ } }, { once: true });
+  }
+  const p = mAudio.play();
+  if (p) p.catch(err => toast("Playback failed: " + (err && err.message || err), true));
+  reflectTrack();
+  els.play.innerHTML = ICON.pause;
+  startRaf();
+}
+
+function mToggle() {
+  if (index < 0) return;
+  if (playing) {
+    mAudio.pause();
+    playing = false;
+    els.play.innerHTML = ICON.play;
+    stopRaf();
+  } else if (mAudio.ended || !mAudio.src) {
+    startPlayback(index, 0);          // end-of-track → restart
+  } else {
+    mAudio.play().catch(() => {});
+    playing = true;
+    els.play.innerHTML = ICON.pause;
+    startRaf();
+  }
+  updateMediaState();
+}
+
+// Mirror the current track to the OS (lock screen / Control Center).
+function updateMediaSession() {
+  if (!("mediaSession" in navigator)) return;
+  const t = queue[index];
+  if (!t) return;
+  const artwork = currentAlbumPath
+    ? [{ src: "/api/cover?path=" + encodeURIComponent(currentAlbumPath),
+         sizes: "500x500", type: "image/jpeg" }]
+    : [];
+  try {
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: t.title || "", artist: t.artist || "", album: "", artwork });
+  } catch { /* MediaMetadata unsupported */ }
+  updateMediaState();
+}
+
+function updateMediaState() {
+  if ("mediaSession" in navigator) {
+    navigator.mediaSession.playbackState = playing ? "playing" : "paused";
+  }
 }
 
 function ensureCtx() {
@@ -91,7 +195,7 @@ export function playAlbum(tracks, startIndex = 0, albumPath = null) {
     track: (t.track || "").split("/")[0],
   }));
   currentAlbumPath = albumPath;
-  if (!ensureCtx()) return;
+  if (!IS_MOBILE && !ensureCtx()) return;
   startPlayback(startIndex, 0);
 }
 
@@ -253,7 +357,9 @@ function onSourceEnded(e) {
 }
 
 async function startPlayback(i, offset) {
-  if (i < 0 || i >= queue.length || !ensureCtx()) return;
+  if (i < 0 || i >= queue.length) return;
+  if (IS_MOBILE) { mStart(i, offset); return; }
+  if (!ensureCtx()) return;
   gen += 1;
   const myGen = gen;
   stopSource(curSource); curSource = null;
@@ -276,6 +382,7 @@ async function startPlayback(i, offset) {
 // ── Transport ────────────────────────────────────────────────────────────────
 
 export function toggle() {
+  if (IS_MOBILE) { mToggle(); return; }
   if (index < 0 || !ctx) return;
   if (playing) {
     ctx.suspend();
@@ -302,6 +409,13 @@ export function prev() {
 }
 
 function seek(frac) {
+  if (IS_MOBILE) {
+    if (mAudio && mAudio.duration) {
+      mAudio.currentTime = Math.max(0, Math.min(1, frac)) * mAudio.duration;
+      updateProgress();
+    }
+    return;
+  }
   if (index < 0 || duration <= 0) return;
   const meta = cache.get(queue[index].path);
   if (!meta) return;
@@ -318,17 +432,24 @@ function seek(frac) {
 
 // ── Progress UI ────────────────────────────────────────────────────────────
 
+// Trimmed duration (s) of the current track, from whichever backend is active.
+function curDuration() {
+  return IS_MOBILE ? (mAudio && mAudio.duration ? mAudio.duration : 0) : duration;
+}
+
 function elapsed() {
   if (index < 0) return 0;
+  if (IS_MOBILE) return mAudio ? (mAudio.currentTime || 0) : 0;
   const e = playing ? startOffset + (ctx.currentTime - startCtxTime) : startOffset;
   return Math.max(0, Math.min(duration, e));
 }
 
 function updateProgress() {
   const e = elapsed();
-  els.seek.value = duration ? String(Math.round((e / duration) * 1000)) : "0";
+  const d = curDuration();
+  els.seek.value = d ? String(Math.round((e / d) * 1000)) : "0";
   els.cur.textContent = fmt(e);
-  els.dur.textContent = fmt(duration);
+  els.dur.textContent = fmt(d);
 }
 
 function startRaf() {
@@ -342,7 +463,14 @@ function reflectTrack() {
   const t = queue[index];
   const num = t.track ? t.track.padStart(2, "0") + ". " : "";
   els.title.textContent = num + t.title + (t.artist ? " — " + t.artist : "");
+  if (currentAlbumPath) {
+    els.album.src = "/api/cover?path=" + encodeURIComponent(currentAlbumPath);
+    els.album.classList.remove("noart");
+  } else {
+    els.album.classList.add("noart");
+  }
   updateProgress();
+  if (IS_MOBILE) updateMediaSession();
   notify();
 }
 
