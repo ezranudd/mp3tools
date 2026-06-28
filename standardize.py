@@ -169,6 +169,15 @@ def _subfolder_sort_key(p: Path) -> tuple:
     return (0, int(nums[-1]), p.name.lower()) if nums else (1, 0, p.name.lower())
 
 
+# A genuine disc subfolder ("CD1", "Disc 2", or a bare "2") — as opposed to a
+# "Bonus Track" / "Extras" subfolder, which must never get a TPOS disc number.
+_DISC_FOLDER_RE = re.compile(r"(?:cd|disc)\s*0*\d+|^\s*\d+\s*$", re.I)
+
+
+def _is_disc_folder(p: Path) -> bool:
+    return bool(_DISC_FOLDER_RE.search(p.name))
+
+
 def _music_subfolders(parent: Path) -> list[Path]:
     return sorted(
         [d for d in parent.iterdir()
@@ -180,29 +189,57 @@ def _music_subfolders(parent: Path) -> list[Path]:
     )
 
 
+def _collect_tracks(folder: Path) -> list[tuple[Path, int]]:
+    """(mp3, track-number) for every mp3 directly in *folder*, ordered by track
+    number (from TRCK, else a leading filename number, else last) then name."""
+    files: list[tuple[Path, int]] = []
+    for mp3 in folder.glob("*.mp3"):
+        sort_key = 9999
+        try:
+            tags = load_id3(mp3)
+            trck = tags.get("TRCK")
+            if trck:
+                n, _ = parse_track(str(trck.text[0]))
+                if n is not None:
+                    sort_key = n
+        except Exception:
+            m = re.match(r'^(\d+)', mp3.stem)
+            if m:
+                sort_key = int(m.group(1))
+        files.append((mp3, sort_key))
+    files.sort(key=lambda x: (x[1], x[0].name.lower()))
+    return files
+
+
 def _merge_one(album: Path, subfolders: list[Path], dry_run: bool,
                preserve_tpos: bool = False) -> dict:
-    """Merge subfolders into album folder. Returns stats."""
+    """Flatten *subfolders* into the *album* folder.
+
+    The album's own loose tracks (the main album) keep their place at the front;
+    each subfolder's tracks are appended after, in subfolder order (disc folders
+    by number, then "Bonus Track"-style folders last). The whole album is
+    renumbered as one sequence, so extras land at the end instead of colliding
+    with the main tracks' numbers. Returns stats.
+    """
     num_discs = len(subfolders)
-    # Collect files with disc context: (path, sort_key, disc_num, disc_total, within_disc_idx)
+
+    # Ordered sources: the parent's own loose tracks first (disc None), then each
+    # subfolder. Disc/TPOS numbering only applies to a clean multi-disc set — no
+    # loose parent tracks and every subfolder a real disc folder; otherwise we
+    # renumber sequentially so a "Bonus" folder appends without a bogus TPOS.
+    loose = _collect_tracks(album)
+    use_disc = (preserve_tpos and not loose
+                and all(_is_disc_folder(sf) for sf in subfolders))
+
+    sources: list[tuple[Path | None, list[tuple[Path, int]]]] = []
+    if loose:
+        sources.append((None, loose))
+    for sf in subfolders:
+        sources.append((sf, _collect_tracks(sf)))
+
+    # (mp3, sort_key, disc_num, disc_total, within_idx)
     all_mp3s: list[tuple[Path, int, int, int, int]] = []
-    for disc_idx, sf in enumerate(subfolders, 1):
-        files: list[tuple[Path, int]] = []
-        for mp3 in sf.glob("*.mp3"):
-            sort_key = 9999
-            try:
-                tags = load_id3(mp3)
-                trck = tags.get("TRCK")
-                if trck:
-                    n, _ = parse_track(str(trck.text[0]))
-                    if n is not None:
-                        sort_key = n
-            except Exception:
-                m = re.match(r'^(\d+)', mp3.stem)
-                if m:
-                    sort_key = int(m.group(1))
-            files.append((mp3, sort_key))
-        files.sort(key=lambda x: x[1])
+    for disc_idx, (_sf, files) in enumerate(sources, 1):
         disc_total = len(files)
         for within_idx, (mp3, sort_key) in enumerate(files, 1):
             all_mp3s.append((mp3, sort_key, disc_idx, disc_total, within_idx))
@@ -210,7 +247,7 @@ def _merge_one(album: Path, subfolders: list[Path], dry_run: bool,
     total = len(all_mp3s)
     global_width = 3 if total >= 100 else 2
 
-    # Determine album title: most common across all subfolders
+    # Album title: most common across every track being merged (incl. loose).
     album_titles: list[str] = []
     for mp3, _, _, _, _ in all_mp3s:
         try:
@@ -222,39 +259,44 @@ def _merge_one(album: Path, subfolders: list[Path], dry_run: bool,
             pass
     album_title = Counter(album_titles).most_common(1)[0][0] if album_titles else None
 
-    mode = "preserving disc numbers" if preserve_tpos else "renumbering sequentially"
+    mode = "preserving disc numbers" if use_disc else "renumbering sequentially"
+    order = ([f"(album: {len(loose)})"] if loose else []) + [sf.name for sf in subfolders]
     print(f"  Merging {num_discs} subfolder(s), {total} tracks ({mode})")
-    print(f"  Order: {', '.join(sf.name for sf in subfolders)}")
+    print(f"  Order: {', '.join(order)}")
     if album_title:
         print(f"  Album: {album_title}")
 
-    stats = {"moved": 0, "errors": 0}
+    # Plan every rename first, then apply in two phases (each file → a temp name
+    # → its final name) so renumbering in place can't clobber a not-yet-moved
+    # sibling that currently holds the target name.
+    plan: list[tuple[Path, str, str, str | None]] = []  # (mp3, new_name, trck, tpos)
     for seq, (mp3, sort_key, disc_num, disc_total, within_idx) in enumerate(all_mp3s, 1):
-        if preserve_tpos:
-            # Keep original per-disc track number; fall back to within-disc position if unknown.
+        if use_disc:
             track_num = sort_key if sort_key != 9999 else within_idx
-            disc_width = 3 if disc_total >= 100 else 2
+            width     = 3 if disc_total >= 100 else 2
             trck_val  = f"{track_num}/{disc_total}"
             tpos_val  = f"{disc_num}/{num_discs}"
             new_num   = track_num
-            width     = disc_width
         else:
             new_num   = seq
             trck_val  = f"{new_num}/{total}"
             tpos_val  = None
             width     = global_width
 
-        # Build new filename: keep rest-of-name, replace track prefix
         stem = mp3.stem
         m = re.match(r'^\d+[.\s-]+(.+)$', stem)
         rest = m.group(1) if m else stem
         new_name = f"{new_num:0{width}d}. {rest}.mp3"
-        new_path = album / new_name
 
-        disc_label = f"  [disc {disc_num}/{num_discs}]" if preserve_tpos else ""
-        print(f"  {mp3.parent.name}/{mp3.name}  ->  {new_name}{disc_label}")
+        disc_label = f"  [disc {disc_num}/{num_discs}]" if use_disc else ""
+        where = "" if mp3.parent == album else f"{mp3.parent.name}/"
+        print(f"  {where}{mp3.name}  ->  {new_name}{disc_label}")
+        plan.append((mp3, new_name, trck_val, tpos_val))
 
-        if not dry_run:
+    stats = {"moved": 0, "errors": 0}
+    if not dry_run:
+        staged: list[tuple[Path, str]] = []   # (temp_path, final_name)
+        for idx, (mp3, new_name, trck_val, tpos_val) in enumerate(plan):
             try:
                 tags = load_id3(mp3)
                 tags["TRCK"] = TRCK(encoding=1, text=trck_val)
@@ -263,10 +305,18 @@ def _merge_one(album: Path, subfolders: list[Path], dry_run: bool,
                 if album_title:
                     tags["TALB"] = TALB(encoding=1, text=album_title)
                 tags.save(mp3, v2_version=3, v1=0)
-                mp3.rename(new_path)
-                stats["moved"] += 1
+                tmp = album / f".mp3tools-merge-{idx:04d}.tmp"
+                mp3.rename(tmp)
+                staged.append((tmp, new_name))
             except Exception as e:
                 print(f"    ERROR: {e}")
+                stats["errors"] += 1
+        for tmp, new_name in staged:
+            try:
+                tmp.rename(album / new_name)
+                stats["moved"] += 1
+            except Exception as e:
+                print(f"    ERROR ({new_name}): {e}")
                 stats["errors"] += 1
 
     # Copy cover if present
