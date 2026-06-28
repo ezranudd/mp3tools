@@ -184,7 +184,9 @@ function renderImportPreview(p) {
 
   // Merge entries that will land in the same library album (album-artist + album +
   // year — matching the import's destination), so multi-disc folders show as one
-  // section. Order each album's tracks smartly: disc, then track#, then source path.
+  // section. Within each album, keep the server's merge_order_key discovery order
+  // (the single source of truth): a folder's own tracks first, then subfolders
+  // (Bonus Track / CD2) appended after — never interleaved.
   const groups = new Map();
   for (const e of p.entries) {
     const key = [(e.albumartist || e.artist), e.album, e.year]
@@ -193,8 +195,7 @@ function renderImportPreview(p) {
     groups.get(key).push(e);
   }
   const albums = [...groups.values()].map((rows, idx) => {
-    rows.sort((a, b) => discOf(a) - discOf(b) || trackOf(a) - trackOf(b)
-                        || a.src.localeCompare(b.src));
+    rows.sort((a, b) => a.i - b.i);   // preserve server discovery order
     return ({
     idx, folder: rows[0].src.slice(0, rows[0].src.lastIndexOf("/")), rows,
     hasLossless: rows.some(r => r.lossless),
@@ -229,19 +230,6 @@ function renderImportPreview(p) {
     okBtn.onclick = () => finish({ proceed: true, entries: collectEntries(host, albums) });
     host.querySelector("[data-cancel]").onclick = () => finish({ proceed: false });
   });
-}
-
-// Disc/track numbers for the smart initial order. Disc from TPOS, else the source
-// folder name (…CD2/Disc 2…); track from the leading integer of TRCK.
-function discOf(e) {
-  const t = parseInt(String(e.disc || "").split("/")[0], 10);
-  if (!isNaN(t)) return t;
-  const m = /(?:cd|disc)\s*0*(\d+)/i.exec(e.src || "");
-  return m ? parseInt(m[1], 10) : 1;
-}
-function trackOf(e) {
-  const t = parseInt(String(e.track || "").split("/")[0], 10);
-  return isNaN(t) ? 9999 : t;
 }
 
 function renderSection(album) {
