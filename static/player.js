@@ -130,19 +130,17 @@ function initElementBackend() {
 
   if ("mediaSession" in navigator) {
     const ms = navigator.mediaSession;
-    // Wrap: unsupported actions throw, which would abort the rest. Explicitly null
-    // the skip handlers so iOS shows previous/next TRACK buttons on the lock screen
-    // instead of the default ±10s skip.
+    // Register ONLY play/pause/prev/next. Do NOT touch any seek action
+    // (seekto/seekbackward/seekforward) — on iOS/WebKit, *calling* setActionHandler
+    // for a seek action (even with null) enables that command, and the lock screen
+    // then prefers the ±10s skip UI over previous/next TRACK buttons. Leaving them
+    // unregistered is what makes iOS show the track buttons (the progress bar still
+    // comes from setPositionState below). Wrap: unsupported actions throw.
     const setH = (action, handler) => { try { ms.setActionHandler(action, handler); } catch { /* unsupported */ } };
     setH("play", () => { if (!playing) toggle(); });
     setH("pause", () => { if (playing) toggle(); });
     setH("previoustrack", prev);
     setH("nexttrack", next);
-    setH("seekbackward", null);
-    setH("seekforward", null);
-    setH("seekto", (d) => {
-      if (mAudio.duration && d.seekTime != null) { mAudio.currentTime = d.seekTime; updateProgress(); }
-    });
   }
 }
 

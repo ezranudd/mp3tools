@@ -82,7 +82,10 @@
      The search toggle, back button and full-screen search overlay don't exist on
      the desktop layout (which has an inline header search + in-flow back bar). */
   .searchToggle { display:none; font-size:18px; }
-  .fab { display:none; }
+  /* Bare, themed glyph button (no native white chrome) — used for the back control. */
+  .fab { display:none; background:transparent; border:0; color:var(--fg);
+         cursor:pointer; padding:0; font:inherit; line-height:1; }
+  .fab:hover { color:var(--accent); }
   #searchOverlay { display:none; }
   /* Header search box + results dropdown */
   .search { position:relative; }
@@ -409,7 +412,7 @@
        album art pinned far right; row 2 = current time, seek, duration. */
     .player { flex-wrap:wrap; gap:4px 8px; padding:6px 10px; }
     .player .pmeta { display:flex; flex-direction:column; justify-content:center;
-                     min-width:0; flex:1 1 auto; order:2; }
+                     min-width:0; flex:1 1 0; order:2; }   /* basis 0 so a long title ellipsizes, not wraps */
     .player .ptitle { min-width:0; max-width:none; }
     .player .partist { display:block; min-width:0; overflow:hidden;
                        text-overflow:ellipsis; white-space:nowrap;
