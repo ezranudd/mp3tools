@@ -143,6 +143,20 @@ async function init() {
   }
   activate("browse");
   if (TRUSTED) initJobs();   // resume tracking a job that was already running
+  initForegroundWarmup();
+}
+
+// When the PWA returns to the foreground, the keep-alive socket Safari held may be
+// dead. Fire a cheap request to detect that and open a fresh connection early, so
+// the user's first tap doesn't pay the full fetch timeout+retry. Debounced so a
+// flurry of visibility toggles only probes once.
+function initForegroundWarmup() {
+  let timer = 0;
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible") return;
+    clearTimeout(timer);
+    timer = setTimeout(() => { jget("/api/whoami").catch(() => {}); }, 150);
+  });
 }
 
 init();

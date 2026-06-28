@@ -137,6 +137,10 @@
   .player .ptitle:hover { color:var(--accent); }
   .player .ptime { color:var(--muted); font-size:12px; width:38px; text-align:center;
                    font-variant-numeric:tabular-nums; }
+  /* Bitrate badge: shown only on mobile, where the browse table's bitrate column
+     is dropped. Hidden on desktop (the table already shows it). */
+  .player .pbitrate { display:none; flex:0 0 auto; color:var(--muted); font-size:11px;
+                      white-space:nowrap; font-variant-numeric:tabular-nums; }
   .player .pseek { flex:1; accent-color:var(--accent); cursor:pointer; }
   .layout { flex:1; display:flex; min-height:0; }
   nav.sidebar { width:150px; flex:0 0 auto; background:var(--panel);
@@ -367,6 +371,7 @@
     /* Player bar: transport + title on row 1, full-width seek on row 2. */
     .player { flex-wrap:wrap; gap:6px; padding:6px 10px; }
     .player .ptitle { min-width:0; max-width:none; flex:1 1 auto; }
+    .player .pbitrate { display:inline-block; }
     .player .pseek { flex:1 1 100%; order:5; height:24px; }
   }
 </style>

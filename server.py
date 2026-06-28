@@ -731,7 +731,8 @@ def main() -> None:
         import webview  # pywebview
         threading.Thread(
             target=lambda: uvicorn.run(app, host=host, port=args.port,
-                                       log_level="warning"),
+                                       log_level="warning",
+                                       timeout_keep_alive=65),
             daemon=True,
         ).start()
         webview.create_window("mp3tools", url)
@@ -744,7 +745,9 @@ def main() -> None:
                   "(read-only browse + playback)")
             print("  note: library is exposed read-only to the local network — "
                   "do not use on untrusted networks.")
-        uvicorn.run(app, host=host, port=args.port)
+        # Long keep-alive so the server doesn't close idle connections out from
+        # under an iOS PWA that still believes the socket is alive (default is 5s).
+        uvicorn.run(app, host=host, port=args.port, timeout_keep_alive=65)
 
 
 if __name__ == "__main__":

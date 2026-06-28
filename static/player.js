@@ -18,6 +18,11 @@ import { toast } from "./util.js";
 // Phones/tablets: touch, no hover. These get the <audio> backend.
 const IS_MOBILE = window.matchMedia("(hover: none) and (pointer: coarse)").matches;
 let mAudio = null;             // HTMLAudioElement (mobile backend only)
+let mWantPos = 0;              // position (s) to restore to after a reload
+let mRetries = 0;              // reloads attempted for the current track
+let mWatchdog = 0;             // setInterval id watching for a stalled stream
+let mLastTime = 0;             // last observed currentTime, for stall detection
+const M_MAX_RETRIES = 3;
 
 let bar = null;
 let queue = [];          // [{ path, title, artist, track }]
@@ -72,6 +77,7 @@ export function initPlayer(revealFn = null) {
     <img class="palbum noart" data-album alt="" title="Show in library"
          onerror="this.classList.add('noart')">
     <span class="ptitle" data-title title="Show in library"></span>
+    <span class="pbitrate" data-bitrate></span>
     <span class="ptime" data-cur>0:00</span>
     <input type="range" class="pseek" data-seek min="0" max="1000" value="0">
     <span class="ptime" data-dur>0:00</span>`;
@@ -81,6 +87,7 @@ export function initPlayer(revealFn = null) {
   els.title = bar.querySelector("[data-title]");
   els.cur = bar.querySelector("[data-cur]");
   els.dur = bar.querySelector("[data-dur]");
+  els.bitrate = bar.querySelector("[data-bitrate]");
   els.seek = bar.querySelector("[data-seek]");
 
   bar.querySelector("[data-prev]").onclick = prev;
@@ -103,10 +110,16 @@ function initElementBackend() {
   mAudio.style.display = "none";
   bar.appendChild(mAudio);
   mAudio.onended = () => {
+    stopWatchdog();
     if (index < queue.length - 1) startPlayback(index + 1, 0);
     else { playing = false; els.play.innerHTML = ICON.play; stopRaf(); updateMediaState(); }
   };
-  mAudio.onerror = () => toast("Could not play this track", true);
+  // A dropped connection (backgrounded PWA, slept radio) surfaces here or as a
+  // silent stall. Reload the source on a fresh connection rather than giving up;
+  // only surface an error once the retry budget is spent.
+  mAudio.onerror = () => mRecover();
+  mAudio.addEventListener("playing", () => { mLastTime = mAudio.currentTime; });
+  mAudio.addEventListener("timeupdate", () => { mLastTime = mAudio.currentTime; });
 
   if ("mediaSession" in navigator) {
     const ms = navigator.mediaSession;
@@ -124,17 +137,64 @@ function initElementBackend() {
 function mStart(i, offset) {
   index = i;
   playing = true;
+  mWantPos = offset || 0;
+  mRetries = 0;
   bar.classList.add("show");
-  mAudio.src = "/api/track?path=" + encodeURIComponent(queue[i].path);
+  mLoadSrc(offset || 0);
+  reflectTrack();
+  els.play.innerHTML = ICON.pause;
+  startRaf();
+  startWatchdog();
+}
+
+// (Re)point the <audio> element at the current track and start it at `offset`.
+// `bust` adds a cache-busting query so iOS opens a NEW connection on a retry
+// instead of reusing the dead socket that just failed.
+function mLoadSrc(offset, bust = 0) {
+  let src = "/api/track?path=" + encodeURIComponent(queue[index].path);
+  if (bust) src += "&_r=" + bust;
+  mAudio.src = src;
+  mLastTime = 0;
   if (offset) {
     mAudio.addEventListener("loadedmetadata",
       () => { try { mAudio.currentTime = offset; } catch { /* ignore */ } }, { once: true });
   }
   const p = mAudio.play();
-  if (p) p.catch(err => toast("Playback failed: " + (err && err.message || err), true));
-  reflectTrack();
-  els.play.innerHTML = ICON.pause;
-  startRaf();
+  if (p) p.catch(err => {
+    // Autoplay rejections (user-gesture) are surfaced; transient load failures
+    // are handled by the error/watchdog recovery path.
+    if (err && err.name !== "AbortError") toast("Playback failed: " + (err.message || err), true);
+  });
+}
+
+// Reload the current track on a fresh connection after a drop/stall.
+function mRecover() {
+  if (!playing) return;                 // user paused/stopped — nothing to recover
+  if (mRetries >= M_MAX_RETRIES) {
+    stopWatchdog();
+    toast("Could not play this track", true);
+    return;
+  }
+  mRetries += 1;
+  mWantPos = mAudio.currentTime || mWantPos;
+  mLoadSrc(mWantPos, mRetries);
+}
+
+// Watch for a silent stall: if we should be playing but currentTime hasn't moved
+// for ~10s, the stream is wedged — recover it.
+function startWatchdog() {
+  stopWatchdog();
+  let stuckSince = 0;
+  mWatchdog = setInterval(() => {
+    if (!playing || !mAudio) return;
+    if (mAudio.currentTime > mLastTime + 0.01 || mAudio.paused) { stuckSince = 0; return; }
+    if (!stuckSince) { stuckSince = Date.now(); return; }
+    if (Date.now() - stuckSince >= 10000) { stuckSince = 0; mRecover(); }
+  }, 2000);
+}
+
+function stopWatchdog() {
+  if (mWatchdog) { clearInterval(mWatchdog); mWatchdog = 0; }
 }
 
 function mToggle() {
@@ -193,6 +253,7 @@ export function playAlbum(tracks, startIndex = 0, albumPath = null) {
     title: t.title || t.label || t.path,
     artist: t.artist || "",
     track: (t.track || "").split("/")[0],
+    bitrate: t.bitrate || "",
   }));
   currentAlbumPath = albumPath;
   if (!IS_MOBILE && !ensureCtx()) return;
@@ -463,6 +524,7 @@ function reflectTrack() {
   const t = queue[index];
   const num = t.track ? t.track.padStart(2, "0") + ". " : "";
   els.title.textContent = num + t.title + (t.artist ? " — " + t.artist : "");
+  els.bitrate.textContent = t.bitrate ? t.bitrate + " kbps" : "";
   if (currentAlbumPath) {
     els.album.src = "/api/cover?path=" + encodeURIComponent(currentAlbumPath);
     els.album.classList.remove("noart");

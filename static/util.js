@@ -1,19 +1,58 @@
 // Shared helpers: fetch wrappers, escaping, toast, modal.
 
-export async function jget(url) {
-  const r = await fetch(url);
+// fetch() never times out on its own, so a half-open socket (common after an iOS
+// PWA is backgrounded or the WiFi radio sleeps) leaves a request hanging forever.
+// Abort after `ms` so the dead connection is dropped and a retry can open a fresh
+// one. The timer is cleared in finally so a fast response doesn't trip it.
+async function _fetchWithTimeout(url, opts = {}, ms = 8000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  try {
+    return await fetch(url, { ...opts, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// True for connection-level failures worth retrying on a fresh socket: an abort
+// (our timeout) or a network TypeError. A real HTTP error response is NOT one of
+// these — fetch resolves for 4xx/5xx, so those fall through to the caller as before.
+function _isConnError(err) {
+  return err && (err.name === "AbortError" || err instanceof TypeError);
+}
+
+async function _jsonOrThrow(r) {
   if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
   return r.json();
 }
 
+const _sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+
+export async function jget(url) {
+  // Retry idempotent GETs across a connection drop: 8s timeout, then short backoff.
+  const backoffs = [250, 600];
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await _jsonOrThrow(await _fetchWithTimeout(url, {}, 8000));
+    } catch (err) {
+      if (_isConnError(err) && attempt < backoffs.length) {
+        await _sleep(backoffs[attempt]);
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
 export async function jpost(url, body) {
-  const r = await fetch(url, {
+  // Mutations aren't retried (avoid double-submits), but still get a timeout so a
+  // dead socket fails fast instead of hanging.
+  const r = await _fetchWithTimeout(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
-  });
-  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
-  return r.json();
+  }, 8000);
+  return _jsonOrThrow(r);
 }
 
 export function escapeHtml(s) {
