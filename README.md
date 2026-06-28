@@ -210,6 +210,15 @@ In the browser, press `r` on an album to search and pick artwork interactively, 
 
 Art can be saved as a folder `cover.jpg`, embedded as an APIC frame, or both, depending on the library's cover art mode setting.
 
+> **Artwork & third-party APIs:** Album art is fetched on demand from third-party
+> services (iTunes, MusicBrainz / Cover Art Archive, TheAudioDB, Discogs) and saved
+> only to your own machine for your own files. Artwork is copyrighted by its
+> respective owners. You are responsible for complying with each provider's terms
+> of service and with applicable copyright law. TheAudioDB and Discogs require your
+> own API key/token (configured in Settings); none are bundled with this software.
+> The tool rate-limits requests per source to stay within those providers' usage
+> guidelines.
+
 ### Sync (`sync_library.py`)
 
 Interactive TUI for mirroring artist folders to a target device path. Select artists to include, then sync copies the album structure to the destination.

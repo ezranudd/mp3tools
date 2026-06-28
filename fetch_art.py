@@ -32,7 +32,7 @@ _MIN_INTERVALS = {
     "theaudiodb": 2.0,
     "discogs": 1.0,
 }
-_USER_AGENT = "mp3tools/1.0 (local library art fetcher)"
+_USER_AGENT = "mp3tools/1.0"
 _ARTWORK_SIZE_RE = re.compile(r"/(\d+)x(\d+)bb\.(jpg|jpeg|png)(?:\?|$)", re.I)
 
 
