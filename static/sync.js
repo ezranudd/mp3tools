@@ -1,6 +1,6 @@
 // Sync view: pick a device, choose artists/albums, preview the plan, then mirror.
 import { jget, jpost, toast, escapeHtml, escapeAttr } from "./util.js";
-import { startJob, mountJobPane } from "./jobs.js";
+import { startJob, mountJobPane, disableWhileBusy } from "./jobs.js";
 
 // Device-type icons (inline SVG, currentColor) — matches d.type from the server.
 const _svg = (body) => `<svg viewBox="0 0 24 24" aria-hidden="true">${body}</svg>`;
@@ -110,6 +110,7 @@ function renderBody() {
   body.querySelector("#selNone").onclick = () => { selectAll(false); };
   body.querySelector("#previewBtn").onclick = previewPlan;
   body.querySelector("#syncBtn").onclick = runSync;
+  disableWhileBusy(body.querySelector("#syncBtn"));   // no sync while a job runs
   mountJobPane(body.querySelector("#jobArea"), { kind: "sync", log: false });
   renderList();
 }

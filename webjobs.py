@@ -77,6 +77,7 @@ class Job:
         self.error = ""
         self.prompt: _Prompt | None = None
         self.cancelled = False
+        self._import_started: float | None = None   # monotonic clock for import ETA
         self._lock = threading.RLock()
         self._thread: threading.Thread | None = None
 
@@ -139,12 +140,15 @@ class Job:
         _apply_entry_edits(entries, res.get("entries"))
         return bool(res.get("proceed"))
 
-    def progress_fn(self, label: str, percent=None, done: bool = False) -> None:
-        if done:
-            self.set_progress("")
-            return
-        suffix = f" {percent:3d}%" if percent is not None else ""
-        self.set_progress(f"Converting {label}{suffix}")
+    def import_progress(self, done: int, total: int, fraction: float) -> None:
+        """Whole-import progress for the determinate bar + a header ETA.
+        `fraction` (0-1) includes the in-flight track's conversion progress."""
+        now = time.monotonic()
+        if self._import_started is None:
+            self._import_started = now
+        eta = _eta(fraction, 1.0, now - self._import_started)
+        pct = int(min(1.0, max(0.0, fraction)) * 100)
+        self.set_progress(f"{done}/{total}{eta}", percent=pct)
 
     # ── control / serialization ───────────────────────────────────────────────
     def respond(self, value) -> None:
@@ -381,7 +385,7 @@ def _run_import(job: Job, params: dict) -> None:
             cover_art_size=cfg.get("cover_art_embed_size", 500),
             settings=cfg,
             preview_fn=job.preview_fn,   # all editing is graphical; no text/choice prompts
-            progress=job.progress_fn,
+            overall=job.import_progress,  # total-progress bar + ETA (not per-file)
         )
         print("\nDone.")
     finally:

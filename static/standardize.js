@@ -1,5 +1,5 @@
 // Standardize view: launch a standardize job; prompts/progress via the global tracker.
-import { startJob, mountJobPane } from "./jobs.js";
+import { startJob, mountJobPane, disableWhileBusy } from "./jobs.js";
 import { toast } from "./util.js";
 
 export function show(el) {
@@ -19,10 +19,12 @@ export function show(el) {
     <div id="jobArea" style="margin-top:14px"></div>
   </div>`;
 
-  el.querySelector("#runBtn").onclick = async () => {
+  const runBtn = el.querySelector("#runBtn");
+  runBtn.onclick = async () => {
     const dry_run = el.querySelector("#dryRun").checked;
     try { await startJob("standardize", { dry_run }); }
     catch (e) { toast(e.message, true); }
   };
+  disableWhileBusy(runBtn);   // can't standardize while another operation runs
   mountJobPane(el.querySelector("#jobArea"), { kind: "standardize" });
 }

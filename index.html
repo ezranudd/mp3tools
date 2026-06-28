@@ -279,9 +279,12 @@
                    padding:14px 16px; }
   .importpreview h3 { margin:0 0 4px; }
   .importpreview .albumsection { margin-top:20px; }
-  .previewactions { position:sticky; bottom:0; display:flex; gap:8px;
-                    justify-content:flex-end; margin-top:16px; padding-top:12px;
-                    border-top:1px solid var(--line); background:var(--bg); }
+  /* Buttons stay pinned at the bottom while scrolling — just the buttons, no
+     full-width bar behind them (they keep their own .btn backgrounds). */
+  .previewactions { position:sticky; bottom:8px; display:flex; gap:8px;
+                    justify-content:flex-end; margin-top:16px;
+                    pointer-events:none; }
+  .previewactions > * { pointer-events:auto; }
   /* Import cover slot: source/found image, searching shimmer, or placeholder. */
   .importcover { width:200px; height:200px; flex:0 0 auto; border:1px solid var(--line);
                  border-radius:6px; background:var(--panel); cursor:pointer; overflow:hidden;

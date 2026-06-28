@@ -441,7 +441,7 @@ def import_tracks(source: Path, library: Path, dry_run: bool,
                   cover_art: str = "folder", cover_art_size: int = 500,
                   settings: dict | None = None,
                   *, preview_fn=None, ask_text=None, ask_choice=None,
-                  progress=None) -> None:
+                  progress=None, overall=None) -> None:
     print(f"Source  : {source}")
     print(f"Library : {library}")
     if dry_run:
@@ -534,6 +534,28 @@ def import_tracks(source: Path, library: Path, dry_run: bool,
     # Re-normalize in case the user edited tags in the preview
     _normalize_entries(entries)
 
+    # ── Overall progress (web UI total-progress bar + ETA) ──────────────────────
+    # `overall(done, total, fraction)` reports whole-import progress; every track
+    # ticks `processed` so the bar reaches 100%. The TUI/CLI pass `progress` (the
+    # per-file conversion bar) but not `overall`, so this is a no-op for them.
+    total_tracks = len(entries)
+    processed = 0
+
+    def _emit(sub: float = 0.0) -> None:
+        if not (overall and total_tracks):
+            return
+        frac = min(1.0, (processed + min(max(sub, 0.0), 1.0)) / total_tracks)
+        overall(processed, total_tracks, frac)
+
+    def _conv(name, pct=None, done=False):
+        # Forward to the original per-file progress (TUI bar / CLI), and feed the
+        # conversion percentage into the overall bar so it advances smoothly.
+        if progress:
+            progress(name, pct, done)
+        _emit(sub=(pct or 0) / 100.0)
+
+    _emit()
+
     # ── Group by tag-derived destination folder ────────────────────────────────
     by_dest: dict[tuple[str, str], list[tuple[Path, dict]]] = defaultdict(list)
     skipped = 0
@@ -541,6 +563,8 @@ def import_tracks(source: Path, library: Path, dry_run: bool,
         if not td.get("TPE1") or not td.get("ALBUMARTIST") or not td.get("TALB") or not td.get("YEAR"):
             print(f"  SKIP (missing Artist/Album Artist/Album/Year after prompts): {mp3.name}")
             skipped += 1
+            processed += 1
+            _emit()
             continue
         artist_dir = sanitize_name(td["ALBUMARTIST"])
         album_dir  = sanitize_name(f"{td['YEAR']} - {td['TALB']}")
@@ -575,6 +599,8 @@ def import_tracks(source: Path, library: Path, dry_run: bool,
                 if resolution == "skip":
                     print("  Skipped (existing album).\n")
                     stats["skipped"] += len(group)
+                    processed += len(group)
+                    _emit()
                     continue
                 offset = len(existing_mp3s)
 
@@ -639,6 +665,7 @@ def import_tracks(source: Path, library: Path, dry_run: bool,
 
         # ── Copy new files ─────────────────────────────────────────────────────
         for i, (src, td) in enumerate(group_sorted, offset + 1):
+          try:
             artist_safe = sanitize_name(td.get("TPE1") or artist_tag)
             title_safe  = sanitize_name(td.get("TIT2") or src.stem)
             new_name    = f"{str(i).zfill(width)}. {artist_safe} - {title_safe}.mp3"
@@ -667,7 +694,7 @@ def import_tracks(source: Path, library: Path, dry_run: bool,
                     cue_end   = td.get("_CUE_END")
                     if not convert_to_mp3_progress(src, tmp_path, lossless_bitrate,
                                                    cue_start, cue_end,
-                                                   progress=progress):
+                                                   progress=_conv):
                         stats["errors"] += 1
                         if tmp_path.exists():
                             tmp_path.unlink()
@@ -711,6 +738,9 @@ def import_tracks(source: Path, library: Path, dry_run: bool,
                     stats["errors"] += 1
                 else:
                     raise
+          finally:
+            processed += 1
+            _emit()
 
         # ── Cover image file ───────────────────────────────────────────────────
         if cover_art in ("folder", "both"):

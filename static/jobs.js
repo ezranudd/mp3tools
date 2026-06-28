@@ -19,6 +19,17 @@ function view() {
 function notify() { const v = view(); for (const fn of subs) fn(v); }
 
 export function subscribeJob(fn) { subs.add(fn); fn(view()); return () => subs.delete(fn); }
+
+// Keep a button disabled while any job is active (so a second operation can't
+// start mid-import). `alsoDisabled()` adds a view-specific condition. Self-cleans
+// once the button leaves the DOM.
+export function disableWhileBusy(btn, alsoDisabled = () => false) {
+  const unsub = subscribeJob(() => {
+    if (!btn.isConnected) { unsub(); return; }
+    btn.disabled = isBusy() || alsoDisabled();
+  });
+  return unsub;
+}
 export function getActiveJob() { return view(); }
 export function isBusy() { return !!(snap && (snap.state === "running" || snap.state === "waiting")); }
 export function isJobKind(kind) { return isBusy() && active && active.kind === kind; }

@@ -1,6 +1,6 @@
 // Import view: drag-and-drop folders into the browser (uploaded to a temp dir on
 // the server) OR point at a server-side path; preview + prompts via the global tracker.
-import { startJob, mountJobPane, setPreviewRenderer } from "./jobs.js";
+import { startJob, mountJobPane, setPreviewRenderer, disableWhileBusy, isBusy } from "./jobs.js";
 import { toast, escapeHtml, escapeAttr, openModal, closeModal, enableRowDrag } from "./util.js";
 
 const CONFIDENT_SCORE = 140;                 // mirrors fetch_art.CONFIDENT_MATCH_SCORE
@@ -64,6 +64,7 @@ export function show(el) {
   const upStatus = el.querySelector("#upStatus");
   dropped = [];
 
+  const noAudio = () => !dropped.some(d => isAudio(d.file.name));
   const refresh = () => {
     if (!dropped.length) { summary.textContent = ""; runBtn.disabled = true; return; }
     const folders = new Set(dropped.map(d => d.path.split("/")[0]));
@@ -72,7 +73,7 @@ export function show(el) {
     summary.textContent =
       `${folders.size} folder${folders.size === 1 ? "" : "s"} · ` +
       `${audio} audio · ${images} image${images === 1 ? "" : "s"}`;
-    runBtn.disabled = audio === 0;
+    runBtn.disabled = isBusy() || audio === 0;
     if (audio === 0) summary.textContent += " — no audio files found";
   };
 
@@ -108,13 +109,17 @@ export function show(el) {
     }
   };
 
-  el.querySelector("#runPathBtn").onclick = async () => {
+  const runPathBtn = el.querySelector("#runPathBtn");
+  runPathBtn.onclick = async () => {
     const source = el.querySelector("#srcPath").value.trim();
     if (!source) { toast("Enter a source folder.", true); return; }
     try { await startJob("import", { source }); }
     catch (e) { toast(e.message, true); }
   };
 
+  // Block starting an import while another operation (or this one) is running.
+  disableWhileBusy(runBtn, noAudio);
+  disableWhileBusy(runPathBtn);
   mountJobPane(el.querySelector("#jobArea"), { kind: "import", log: false });
 }
 
