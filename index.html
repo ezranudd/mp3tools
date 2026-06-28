@@ -332,6 +332,9 @@
 
     /* Sidebar nav → horizontal scrolling top bar. */
     .layout { flex-direction:column; }
+    /* Column layout: let #view shrink so the inner pane (#detail/#tree/.page)
+       scrolls, not the body — keeping the player bar pinned at the bottom. */
+    #view { min-height:0; }
     nav.sidebar { width:100%; flex:0 0 auto; display:flex; flex-direction:row;
                   overflow-x:auto; padding:0; border-right:0;
                   border-bottom:1px solid var(--line); }
