@@ -1,7 +1,7 @@
 // Entry point: top nav + view router.
 import { jget, toast } from "./util.js";
 import { getMode, setMode, onModeChange } from "./mode.js";
-import { getTheme, toggleTheme } from "./theme.js";
+import { getTheme, toggleTheme, initSystemTheme } from "./theme.js";
 import { initBackground } from "./background.js";
 import { subscribeJob, cancelJob, jobLabel, initJobs } from "./jobs.js";
 import { initPlayer } from "./player.js";
@@ -9,6 +9,7 @@ import { initSearch } from "./search.js";
 import * as accent from "./accent.js";
 import { escapeHtml } from "./util.js";
 import * as browse from "./tree.js";
+import { goBack } from "./tree.js";
 import * as audit from "./audit.js";
 import * as standardize from "./standardize.js";
 import * as importView from "./import.js";
@@ -24,6 +25,9 @@ const VIEWS = [
   ["settings", "Settings", settings, "⚙"],
 ];
 
+// Phones/tablets (touch, no hover): the mobile top bar + full-screen search live
+// here; the theme follows the OS rather than a manual toggle.
+const IS_MOBILE = window.matchMedia("(hover: none) and (pointer: coarse)").matches;
 const viewEl = document.getElementById("view");
 const sidebar = document.getElementById("sidebar");
 let current = null;
@@ -45,9 +49,11 @@ async function activate(name) {
   current = name;
   for (const btn of sidebar.children) btn.classList.toggle("active", btn.dataset.name === name);
   // Mobile master-detail hooks live on #view: mark Browse, and always start on
-  // the master (artist list) when (re)entering a view.
+  // the master (artist list) when (re)entering a view. The body mirror drives the
+  // floating back FAB, so clear it here too.
   viewEl.classList.toggle("browse", name === "browse");
   viewEl.classList.remove("show-detail");
+  document.body.classList.remove("show-detail");
   viewEl.innerHTML = "";
   try {
     entry[2].show(viewEl);
@@ -127,13 +133,16 @@ async function init() {
   } catch (e) {
     TRUSTED = false;   // fail safe to read-only
   }
+  document.body.classList.toggle("guest", !TRUSTED);   // drives mobile guest CSS
   buildNav();
   buildModeToggle();
-  buildThemeToggle();
+  if (IS_MOBILE) initSystemTheme(accent.refresh);   // follow OS theme, no toggle
+  else buildThemeToggle();
   initBackground();
   if (TRUSTED) buildJobIndicator();   // jobs are owner-only operations
   initPlayer(revealPlaying);
-  initSearch(activate);
+  initSearch(name => { closeSearch(); activate(name); });
+  initMobileControls();
   accent.initAccent();
   try {
     const data = await jget("/api/tree");
@@ -144,6 +153,41 @@ async function init() {
   activate("browse");
   if (TRUSTED) initJobs();   // resume tracking a job that was already running
   initForegroundWarmup();
+}
+
+// Mobile floating controls: a search toggle that opens the search field overlay,
+// and a back FAB that returns from an album/artist page to the artist list. Both
+// are inert on desktop (their CSS hides them); wiring them unconditionally is fine.
+function openSearch() {
+  document.body.classList.add("search-open");
+  const inp = document.getElementById("searchInput");
+  if (inp) { inp.focus(); inp.select(); }
+}
+function closeSearch() { document.body.classList.remove("search-open"); }
+
+function initMobileControls() {
+  // Relocate the search box into the full-screen overlay on phones so it escapes
+  // the header's backdrop-filter containing block (which otherwise traps the
+  // results panel to a tiny box). search.js binds by id, so this is transparent.
+  if (IS_MOBILE) {
+    const overlay = document.getElementById("searchOverlay");
+    const search = document.getElementById("search");
+    if (overlay && search) overlay.appendChild(search);
+  }
+
+  const toggle = document.getElementById("searchToggle");
+  if (toggle) toggle.onclick = () =>
+    document.body.classList.contains("search-open") ? closeSearch() : openSearch();
+
+  const close = document.getElementById("searchClose");
+  if (close) close.onclick = closeSearch;
+
+  const back = document.getElementById("backFab");
+  if (back) back.onclick = goBack;
+
+  document.addEventListener("keydown", e => {
+    if (e.key === "Escape" && document.body.classList.contains("search-open")) closeSearch();
+  });
 }
 
 // When the PWA returns to the foreground, the keep-alive socket Safari held may be

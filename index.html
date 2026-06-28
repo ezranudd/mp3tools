@@ -5,10 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>mp3tools</title>
 <script>
-  // Apply the saved theme before first paint to avoid a flash.
-  try { document.documentElement.dataset.theme =
-        localStorage.getItem("mp3tools-theme") === "light" ? "light" : "dark"; }
-  catch (e) { document.documentElement.dataset.theme = "dark"; }
+  // Apply the theme before first paint to avoid a flash. Phones (coarse pointer)
+  // follow the device's system light/dark; desktop uses the saved toggle value.
+  try {
+    var coarse = matchMedia("(hover: none) and (pointer: coarse)").matches;
+    document.documentElement.dataset.theme = coarse
+      ? (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark")
+      : (localStorage.getItem("mp3tools-theme") === "light" ? "light" : "dark");
+  } catch (e) { document.documentElement.dataset.theme = "dark"; }
 </script>
 <style>
   :root, :root[data-theme="dark"] {
@@ -74,6 +78,12 @@
   .iconbtn { background:transparent; border:1px solid var(--line); border-radius:6px;
              color:var(--fg); cursor:pointer; padding:5px 10px; font-size:14px; line-height:1; }
   .iconbtn:hover { border-color:var(--accent); }
+  /* Mobile-only controls: hidden on desktop, revealed in the phone @media block.
+     The search toggle, back button and full-screen search overlay don't exist on
+     the desktop layout (which has an inline header search + in-flow back bar). */
+  .searchToggle { display:none; font-size:18px; }
+  .fab { display:none; }
+  #searchOverlay { display:none; }
   /* Header search box + results dropdown */
   .search { position:relative; }
   .search #searchInput { width:240px; }
@@ -135,6 +145,11 @@
   .player .ptitle { min-width:160px; max-width:38vw; overflow:hidden; text-overflow:ellipsis;
                     white-space:nowrap; cursor:pointer; }
   .player .ptitle:hover { color:var(--accent); }
+  /* The pmeta (title/artist) and pseekrow (cur/seek/dur) wrappers are layout-neutral
+     on desktop — display:contents lets their children act as direct flex items, so
+     the desktop bar is unchanged. The phone @media block re-flows them. */
+  .player .pmeta, .player .pseekrow { display:contents; }
+  .player .partist { display:none; }
   .player .ptime { color:var(--muted); font-size:12px; width:38px; text-align:center;
                    font-variant-numeric:tabular-nums; }
   /* Bitrate badge: shown only on mobile, where the browse table's bitrate column
@@ -330,14 +345,36 @@
      Single-column, touch-first. Browse becomes master-detail (artist list ⇄
      album detail) toggled by the #view.show-detail class from tree.js. */
   @media (max-width: 760px) {
-    /* Header wraps; search takes its own full-width row. */
-    header { flex-wrap:wrap; gap:8px 10px; padding:8px 12px; }
-    header h1 { font-size:14px; }
-    .search { order:5; flex:1 1 100%; }
-    .search #searchInput { width:100%; }
-    .searchresults { min-width:auto; max-width:92vw; }
+    /* Declutter the top into a single slim in-flow bar (above the content, not
+       over it): back on the left (only on a detail page), search icon on the
+       right. Title, file path and the theme toggle are dropped on mobile. */
+    header { padding:calc(6px + env(safe-area-inset-top)) calc(10px + env(safe-area-inset-right))
+                     6px calc(10px + env(safe-area-inset-left));
+             gap:8px; z-index:30; }
+    header h1, header .root, header .modeToggle, #themeToggle, header .search { display:none; }
+    .searchToggle { display:inline-flex; align-items:center; justify-content:center;
+                    margin-left:auto; }   /* pinned to the right */
+    .fab.backFab { font-size:22px; line-height:1; padding:2px 8px; }
+    body.show-detail .fab.backFab { display:inline-flex; align-items:center; }
 
-    /* Sidebar nav → horizontal scrolling top bar. */
+    /* Full-screen search overlay (app.js moves #search inside it). Large, centered,
+       readable; only the small toggle icon shows when search is closed. */
+    body.search-open #searchOverlay {
+      display:block; position:fixed; inset:0; z-index:60; background:var(--bg);
+      padding:calc(10px + env(safe-area-inset-top)) 12px 12px; }
+    #searchOverlay #searchClose { position:absolute; z-index:1;
+      top:calc(10px + env(safe-area-inset-top)); right:12px; }
+    #searchOverlay .search { position:static; display:block; }
+    /* Leave room for the ✕ on the input row; results below stay full width. */
+    #searchOverlay #searchInput { width:calc(100% - 44px); font-size:16px; padding:10px 12px; }
+    #searchOverlay .searchresults { position:static; margin:12px 0 0; min-width:0;
+      max-width:none; max-height:calc(100dvh - 90px); box-shadow:none; }
+    #searchOverlay .searchrow { padding:10px 12px; font-size:16px; }
+    #searchOverlay .searchthumb { width:42px; height:42px; }
+
+    /* Sidebar nav → horizontal scrolling top bar (kept for a trusted owner on a
+       phone; hidden for guests, who only have the redundant 'Browse' tab). */
+    body.guest nav.sidebar { display:none; }
     .layout { flex-direction:column; }
     /* Column layout: let #view shrink so the inner pane (#detail/#tree/.page)
        scrolls, not the body — keeping the player bar pinned at the bottom. */
@@ -356,7 +393,7 @@
     #view.browse.show-detail #tree   { display:none; }
     #view.browse.show-detail #detail { display:block; width:100%; flex:1 1 auto;
                                        padding:12px 14px; }
-    .backbar { display:flex; }   /* hidden on desktop (see base rule below) */
+    .backbar { display:none; }   /* replaced by the back button in the top bar */
 
     /* Big cover wastes vertical space on a phone. */
     .albumhead { gap:12px; }
@@ -368,17 +405,35 @@
     .browsetable th:nth-child(5), .browsetable td:nth-child(5) {  /* Bitrate */
       display:none; }
 
-    /* Player bar: transport + title on row 1, full-width seek on row 2. */
-    .player { flex-wrap:wrap; gap:6px; padding:6px 10px; }
-    .player .ptitle { min-width:0; max-width:none; flex:1 1 auto; }
-    .player .pbitrate { display:inline-block; }
-    .player .pseek { flex:1 1 100%; order:5; height:24px; }
+    /* Player bar (mobile): row 1 = transport, title/artist (stacked), bitrate,
+       album art pinned far right; row 2 = current time, seek, duration. */
+    .player { flex-wrap:wrap; gap:4px 8px; padding:6px 10px; }
+    .player .pmeta { display:flex; flex-direction:column; justify-content:center;
+                     min-width:0; flex:1 1 auto; order:2; }
+    .player .ptitle { min-width:0; max-width:none; }
+    .player .partist { display:block; min-width:0; overflow:hidden;
+                       text-overflow:ellipsis; white-space:nowrap;
+                       font-size:12px; color:var(--muted); }
+    .player .pbitrate { display:inline-block; order:4; align-self:center; }
+    .player .palbum { order:5; margin-left:auto; }   /* far right of the bar */
+    .player .pseekrow { display:flex; align-items:center; gap:8px;
+                        order:6; flex:1 1 100%; }
+    .player .pseekrow .ptime { width:auto; min-width:40px; }
+    /* Thin custom track + small thumb (appearance:none disables the native big
+       white circle; it also drops accent-color's fill, so the thumb shows position). */
+    .player .pseek { flex:1 1 auto; -webkit-appearance:none; appearance:none;
+      height:4px; border-radius:2px; background:var(--line); }
+    .player .pseek::-webkit-slider-thumb { -webkit-appearance:none; appearance:none;
+      width:13px; height:13px; border-radius:50%; background:var(--accent); border:0; }
+    .player .pseek::-moz-range-thumb { width:13px; height:13px; border-radius:50%;
+      background:var(--accent); border:0; }
   }
 </style>
 </head>
 <body>
 <div id="bgLayer"><div id="bgImage"></div><div id="bgScrim"></div></div>
 <header>
+  <button class="fab backFab" id="backFab" title="Back to artists" aria-label="Back to artists">‹</button>
   <h1>mp3tools</h1>
   <span class="root" id="rootLabel"></span>
   <div class="search" id="search">
@@ -387,8 +442,12 @@
   </div>
   <div class="jobIndicator" id="jobIndicator"></div>
   <div class="modeToggle" id="modeToggle"></div>
+  <button class="iconbtn searchToggle" id="searchToggle" title="Search" aria-label="Search">⌕</button>
   <button class="iconbtn" id="themeToggle" title="Toggle light/dark"></button>
 </header>
+<!-- Mobile full-screen search overlay: app.js moves #search in here on phones so it
+     escapes the header's backdrop-filter containing block. Empty/hidden on desktop. -->
+<div id="searchOverlay"><button class="iconbtn" id="searchClose" title="Close search" aria-label="Close search">✕</button></div>
 <div class="layout">
   <nav class="sidebar" id="sidebar"></nav>
   <section id="view"></section>

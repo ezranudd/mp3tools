@@ -76,15 +76,21 @@ export function initPlayer(revealFn = null) {
     <button class="pbtn" data-next title="Next">${ICON.next}</button>
     <img class="palbum noart" data-album alt="" title="Show in library"
          onerror="this.classList.add('noart')">
-    <span class="ptitle" data-title title="Show in library"></span>
+    <div class="pmeta">
+      <span class="ptitle" data-title title="Show in library"></span>
+      <span class="partist" data-artist title="Show in library"></span>
+    </div>
     <span class="pbitrate" data-bitrate></span>
-    <span class="ptime" data-cur>0:00</span>
-    <input type="range" class="pseek" data-seek min="0" max="1000" value="0">
-    <span class="ptime" data-dur>0:00</span>`;
+    <div class="pseekrow">
+      <span class="ptime" data-cur>0:00</span>
+      <input type="range" class="pseek" data-seek min="0" max="1000" value="0">
+      <span class="ptime" data-dur>0:00</span>
+    </div>`;
 
   els.play = bar.querySelector("[data-play]");
   els.album = bar.querySelector("[data-album]");
   els.title = bar.querySelector("[data-title]");
+  els.artist = bar.querySelector("[data-artist]");
   els.cur = bar.querySelector("[data-cur]");
   els.dur = bar.querySelector("[data-dur]");
   els.bitrate = bar.querySelector("[data-bitrate]");
@@ -93,6 +99,7 @@ export function initPlayer(revealFn = null) {
   bar.querySelector("[data-prev]").onclick = prev;
   bar.querySelector("[data-next]").onclick = next;
   els.title.onclick = jumpToAlbum;
+  els.artist.onclick = jumpToAlbum;
   els.album.onclick = jumpToAlbum;
   els.play.onclick = toggle;
 
@@ -123,11 +130,17 @@ function initElementBackend() {
 
   if ("mediaSession" in navigator) {
     const ms = navigator.mediaSession;
-    ms.setActionHandler("play", () => { if (!playing) toggle(); });
-    ms.setActionHandler("pause", () => { if (playing) toggle(); });
-    ms.setActionHandler("previoustrack", prev);
-    ms.setActionHandler("nexttrack", next);
-    ms.setActionHandler("seekto", (d) => {
+    // Wrap: unsupported actions throw, which would abort the rest. Explicitly null
+    // the skip handlers so iOS shows previous/next TRACK buttons on the lock screen
+    // instead of the default ±10s skip.
+    const setH = (action, handler) => { try { ms.setActionHandler(action, handler); } catch { /* unsupported */ } };
+    setH("play", () => { if (!playing) toggle(); });
+    setH("pause", () => { if (playing) toggle(); });
+    setH("previoustrack", prev);
+    setH("nexttrack", next);
+    setH("seekbackward", null);
+    setH("seekforward", null);
+    setH("seekto", (d) => {
       if (mAudio.duration && d.seekTime != null) { mAudio.currentTime = d.seekTime; updateProgress(); }
     });
   }
@@ -228,6 +241,16 @@ function updateMediaSession() {
     navigator.mediaSession.metadata = new MediaMetadata({
       title: t.title || "", artist: t.artist || "", album: "", artwork });
   } catch { /* MediaMetadata unsupported */ }
+  // Feed the lock-screen scrubber so it reflects the real position/duration.
+  try {
+    if ("setPositionState" in navigator.mediaSession && mAudio && mAudio.duration) {
+      navigator.mediaSession.setPositionState({
+        duration: mAudio.duration,
+        position: Math.min(mAudio.currentTime || 0, mAudio.duration),
+        playbackRate: 1,
+      });
+    }
+  } catch { /* setPositionState unsupported */ }
   updateMediaState();
 }
 
@@ -522,8 +545,15 @@ function stopRaf() { if (rafId) cancelAnimationFrame(rafId); rafId = 0; }
 
 function reflectTrack() {
   const t = queue[index];
-  const num = t.track ? t.track.padStart(2, "0") + ". " : "";
-  els.title.textContent = num + t.title + (t.artist ? " — " + t.artist : "");
+  if (IS_MOBILE) {
+    // Phone bar shows the song title over the artist (no track number); .partist
+    // is hidden on desktop via CSS.
+    els.title.textContent = t.title || "";
+    els.artist.textContent = t.artist || "";
+  } else {
+    const num = t.track ? t.track.padStart(2, "0") + ". " : "";
+    els.title.textContent = num + t.title + (t.artist ? " — " + t.artist : "");
+  }
   els.bitrate.textContent = t.bitrate ? t.bitrate + " kbps" : "";
   if (currentAlbumPath) {
     els.album.src = "/api/cover?path=" + encodeURIComponent(currentAlbumPath);

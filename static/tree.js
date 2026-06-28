@@ -22,8 +22,18 @@ export function requestReveal(target) { pendingReveal = target; }
 
 // Mobile master-detail: reveal #detail over the artist tree (a visual no-op on
 // desktop, where both panes always show). A Back control returns to the tree.
-function enterDetail() { if (rootEl) rootEl.classList.add("show-detail"); }
-function exitDetail()  { if (rootEl) rootEl.classList.remove("show-detail"); }
+// The body.show-detail mirror drives the floating back FAB, which lives outside
+// #view and so can't key off rootEl's class.
+function enterDetail() {
+  if (rootEl) rootEl.classList.add("show-detail");
+  document.body.classList.add("show-detail");
+}
+function exitDetail() {
+  if (rootEl) rootEl.classList.remove("show-detail");
+  document.body.classList.remove("show-detail");
+}
+// Return to the artist list (wired to both the in-flow bar and the floating FAB).
+export function goBack() { exitDetail(); }
 const BACK_BAR = `<div class="backbar"><button class="btn" data-back>‹ Artists</button></div>`;
 function wireBack() {
   const b = detailEl.querySelector("[data-back]");
