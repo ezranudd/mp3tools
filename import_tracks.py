@@ -23,7 +23,7 @@ from mutagen import File as _AudioFile
 import settings as settings_mod
 from convert_lossless import (
     LOSSLESS_EXTENSIONS, find_lossless, read_lossless_tags,
-    read_cue_tracks,
+    read_cue_tracks, has_lame_header, _has_lame_binary, _lame_pipe_convert,
 )
 from chars import CHAR_REPLACEMENTS
 from import_preview import run_preview
@@ -183,7 +183,31 @@ def convert_to_mp3_progress(src: Path, dst: Path, bitrate: int,
                             start_time: float | None = None,
                             end_time: float | None = None,
                             progress=None) -> bool:
-    """Convert src to MP3 and report progress via callback or CLI progress bar."""
+    """Convert src to MP3 and report progress via callback or CLI progress bar.
+
+    Prefers the reference `lame` encoder (via convert_lossless._lame_pipe_convert)
+    so the output carries a correct gapless Xing/LAME header; ffmpeg's own
+    libmp3lame muxer writes dummy encoder delay/padding. The lame pipe can't emit
+    ffmpeg's -progress stream, so progress is reported as indeterminate. Tags are
+    re-applied by the caller, so the conversion itself need not preserve them.
+    """
+    if _has_lame_binary():
+        if progress:
+            progress(src.name, None)
+        else:
+            print(f"\r    Converting {_progress_bar(0, 1)}", end="", flush=True)
+        ok = _lame_pipe_convert(src, dst, bitrate, start_time, end_time)
+        if progress:
+            progress(src.name, 100, done=True)
+        else:
+            print()
+        if ok and not has_lame_header(dst):
+            print(f"    WARNING: {dst.name} has no valid LAME/Xing gapless header — gapless may break")
+        return ok
+
+    # Fallback: no `lame` binary — encode with ffmpeg directly (non-gapless).
+    print("    NOTE: `lame` not found — using ffmpeg (gapless header will be "
+          "incomplete; install lame for gapless output)")
     duration = _conversion_duration(src, start_time, end_time)
     try:
         cmd = ["ffmpeg", "-hide_banner", "-nostats", "-i", str(src)]
@@ -192,8 +216,9 @@ def convert_to_mp3_progress(src: Path, dst: Path, bitrate: int,
         if end_time is not None:
             cmd += ["-to", f"{end_time:.6f}"]
         cmd += [
-            "-acodec", "libmp3lame",
+            "-c:a", "libmp3lame",
             "-b:a", f"{bitrate}k",
+            "-map", "0:a",
             "-map_metadata", "0",
             "-f", "mp3",
             "-progress", "pipe:1",
@@ -246,6 +271,8 @@ def convert_to_mp3_progress(src: Path, dst: Path, bitrate: int,
         if rc != 0:
             print(f"    ffmpeg error: {' '.join(ffmpeg_output)[-300:].strip()}")
             return False
+        if not has_lame_header(dst):
+            print(f"    WARNING: {dst.name} has no LAME/Xing gapless header — gapless may break")
         return True
     except FileNotFoundError:
         print("    ERROR: ffmpeg not found. Install it: sudo apt install ffmpeg")

@@ -143,18 +143,130 @@ def prompt_bitrate(ask_choice=None) -> int | None:
             return None
 
 
-def convert_to_mp3(src: Path, dst: Path, bitrate: int,
-                   start_time: float | None = None,
-                   end_time: float | None = None) -> bool:
-    """Convert src lossless file to MP3 at bitrate kbps using ffmpeg. Returns True on success."""
+def _has_lame_binary() -> bool:
+    return shutil.which("lame") is not None
+
+
+# ffmpeg's libmp3lame muxer writes a LAME header but fills the encoder
+# delay/padding fields with these dummy bit-patterns instead of the real values,
+# so players cannot trim them and gapless playback breaks. The standalone `lame`
+# encoder writes the true values (delay 576 + computed padding).
+_DUMMY_DELAY_PADDING = {(0xAAA, 0xAAA), (0x555, 0x555)}
+
+
+def has_lame_header(path: Path) -> bool:
+    """True if the MP3 carries a Xing/Info + LAME gapless header with *real*
+    encoder delay/padding. ffmpeg's dummy fill (0xAAA/0x555) is treated as
+    missing, since players can't use it. Absence means gapless playback breaks."""
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(10)
+            skip = 0
+            if head[:3] == b"ID3":
+                skip = 10 + ((head[6] << 21) | (head[7] << 14)
+                             | (head[8] << 7) | head[9])
+            fh.seek(skip)
+            buf = fh.read(2048)  # the Xing/LAME info frame is the first audio frame
+        if not (b"Xing" in buf or b"Info" in buf):
+            return False
+        j = buf.find(b"LAME")            # 9-byte encoder-version string
+        if j < 0 or j + 24 > len(buf):
+            return False
+        # delay (12 bits) + padding (12 bits) live 21 bytes into the LAME tag
+        v = int.from_bytes(buf[j + 21:j + 24], "big")
+        delay, padding = v >> 12, v & 0xFFF
+        if (delay, padding) in _DUMMY_DELAY_PADDING:
+            return False
+        return delay > 0
+    except Exception:
+        return False
+
+
+def _apply_source_tags(src: Path, dst: Path) -> None:
+    """Copy the lossless source's tags onto the freshly-encoded MP3 with mutagen,
+    which rewrites only the ID3 frames and leaves the audio (and its LAME gapless
+    header) untouched. Used for the in-place standardize path, where the encoder
+    pipe produces an untagged MP3."""
+    try:
+        from mutagen.id3 import (ID3, ID3NoHeaderError, TPE1, TPE2, TIT2,
+                                 TALB, TYER, TCON, TRCK, TPOS)
+        tags = read_lossless_tags(src)
+        try:
+            id3 = ID3(str(dst))
+        except ID3NoHeaderError:
+            id3 = ID3()
+        framemap = {
+            "TPE1": (TPE1, tags.get("TPE1")),
+            "TPE2": (TPE2, tags.get("ALBUMARTIST")),
+            "TIT2": (TIT2, tags.get("TIT2")),
+            "TALB": (TALB, tags.get("TALB")),
+            "TYER": (TYER, tags.get("YEAR")),
+            "TCON": (TCON, tags.get("TCON")),
+            "TRCK": (TRCK, tags.get("TRCK")),
+            "TPOS": (TPOS, tags.get("TPOS")),
+        }
+        for key, (cls, val) in framemap.items():
+            if val:
+                id3[key] = cls(encoding=1, text=str(val))
+        id3.save(str(dst), v2_version=3, v1=0)
+    except Exception as e:
+        print(f"    WARNING: could not copy tags to {dst.name}: {e}")
+
+
+def _lame_pipe_convert(src: Path, dst: Path, bitrate: int,
+                       start_time: float | None = None,
+                       end_time: float | None = None) -> bool:
+    """Decode src with ffmpeg (dropping any embedded cover-art video stream via
+    -map 0:a) and pipe PCM to the reference `lame` encoder, which writes a correct
+    gapless Xing/LAME header. This is the only way to get real encoder
+    delay/padding — ffmpeg's own libmp3lame muxer writes dummy values."""
+    dec = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", str(src)]
+    if start_time is not None:
+        dec += ["-ss", f"{start_time:.6f}"]
+    if end_time is not None:
+        dec += ["-to", f"{end_time:.6f}"]
+    dec += ["-map", "0:a", "-c:a", "pcm_s16le", "-f", "wav", "pipe:1"]
+    enc = ["lame", "--quiet", "--cbr", "-b", str(bitrate), "-", str(dst)]
+    try:
+        p1 = subprocess.Popen(dec, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        p2 = subprocess.Popen(enc, stdin=p1.stdout, stderr=subprocess.PIPE)
+        p1.stdout.close()  # let ffmpeg get SIGPIPE if lame dies
+        _, enc_err = p2.communicate()
+        dec_err = p1.stderr.read()
+        p1.stderr.close()
+        p1.wait()
+        if p1.returncode != 0:
+            print(f"    ffmpeg error: {dec_err.decode('utf-8', 'replace')[-300:].strip()}")
+            if dst.exists():
+                dst.unlink()
+            return False
+        if p2.returncode != 0:
+            print(f"    lame error: {enc_err.decode('utf-8', 'replace')[-300:].strip()}")
+            if dst.exists():
+                dst.unlink()
+            return False
+        return True
+    except FileNotFoundError as e:
+        print(f"    ERROR: {e}")
+        return False
+    except Exception as e:
+        print(f"    ERROR: {e}")
+        return False
+
+
+def _ffmpeg_convert(src: Path, dst: Path, bitrate: int,
+                    start_time: float | None = None,
+                    end_time: float | None = None) -> bool:
+    """Fallback encoder used only when `lame` is not installed: ffmpeg libmp3lame
+    directly. Produces a working MP3 but with an incomplete gapless header."""
     try:
         cmd = ["ffmpeg", "-i", str(src)]
         if start_time is not None:
             cmd += ["-ss", f"{start_time:.6f}"]
         if end_time is not None:
             cmd += ["-to", f"{end_time:.6f}"]
-        cmd += ["-acodec", "libmp3lame", "-b:a", f"{bitrate}k",
-                "-map_metadata", "0", "-y", str(dst)]
+        cmd += ["-c:a", "libmp3lame", "-b:a", f"{bitrate}k",
+                "-map", "0:a", "-map_metadata", "0", "-y", str(dst)]
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
             print(f"    ffmpeg error: {result.stderr[-300:].strip()}")
@@ -166,6 +278,31 @@ def convert_to_mp3(src: Path, dst: Path, bitrate: int,
     except Exception as e:
         print(f"    ERROR: {e}")
         return False
+
+
+def convert_to_mp3(src: Path, dst: Path, bitrate: int,
+                   start_time: float | None = None,
+                   end_time: float | None = None) -> bool:
+    """Convert src lossless file to MP3 at bitrate kbps. Returns True on success.
+
+    Prefers piping ffmpeg-decoded PCM through the reference `lame` encoder, which
+    writes a correct gapless Xing/LAME header (real encoder delay + padding).
+    Falls back to ffmpeg's libmp3lame when `lame` is absent (non-gapless, warned).
+    Either way -map 0:a drops the source's embedded (often malformed) cover-art
+    video stream. Tags are copied from the source afterward via mutagen.
+    """
+    if _has_lame_binary():
+        ok = _lame_pipe_convert(src, dst, bitrate, start_time, end_time)
+    else:
+        print("    NOTE: `lame` not found — using ffmpeg (gapless header will be "
+              "incomplete; install lame for gapless output)")
+        ok = _ffmpeg_convert(src, dst, bitrate, start_time, end_time)
+    if not ok:
+        return False
+    _apply_source_tags(src, dst)
+    if not has_lame_header(dst):
+        print(f"    WARNING: {dst.name} has no valid LAME/Xing gapless header — gapless may break")
+    return True
 
 
 def _cue_to_secs(ts: str) -> float:
