@@ -89,6 +89,21 @@ export function escapeAttr(s) {
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 }
 
+// Human-readable duration spelled out in words: "1 hour 5 minutes", "45 minutes".
+export function fmtDurationLong(sec) {
+  const totalMin = Math.round(Math.max(0, sec || 0) / 60);
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  const parts = [];
+  if (h) parts.push(`${h} hour${h === 1 ? "" : "s"}`);
+  if (m) parts.push(`${m} minute${m === 1 ? "" : "s"}`);
+  if (!parts.length) {
+    const s = Math.floor(Math.max(0, sec || 0));
+    return `${s} second${s === 1 ? "" : "s"}`;  // sub-minute albums
+  }
+  return parts.join(" ");
+}
+
 let _toastTimer;
 export function toast(msg, isErr = false) {
   const t = document.getElementById("toast");

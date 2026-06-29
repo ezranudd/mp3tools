@@ -228,6 +228,7 @@ def _read_tags(path: Path) -> dict[str, str]:
         if audio.info:
             result["bitrate"] = str(int(audio.info.bitrate / 1000))
             result["length"] = _fmt_dur(audio.info.length)
+            result["length_sec"] = int(audio.info.length or 0)
         return result
     except Exception:
         return {}

@@ -1,7 +1,7 @@
 // Browse view: library tree (left) + detail (right).
 // Selecting an album shows that album; selecting an artist shows ALL its albums.
 // Read-only in Browse mode; inline auto-saving fields in Edit mode.
-import { jget, jpost, toast, escapeHtml, escapeAttr, enableRowDrag } from "./util.js";
+import { jget, jpost, toast, escapeHtml, escapeAttr, enableRowDrag, fmtDurationLong } from "./util.js";
 import { isEdit, onModeChange } from "./mode.js";
 import { isBusy, subscribeJob } from "./jobs.js";
 import { playAlbum, subscribe as subscribePlayer, getCurrentPath } from "./player.js";
@@ -314,6 +314,9 @@ function renderAlbumBrowseInto(container, st) {
   if (year) subParts.push(escapeHtml(year));
   if (genre) subParts.push(`<span class="genrelink" data-genre="${escapeAttr(genre)}">${escapeHtml(genre)}</span>`);
   const sub = subParts.join(" · ");
+  const totalSec = tracks.reduce((a, t) => a + (Number(t.length_sec) || 0), 0);
+  const countLabel = `${tracks.length} track${tracks.length === 1 ? "" : "s"}`;
+  const metaLine = totalSec > 0 ? `${countLabel} · ${fmtDurationLong(totalSec)}` : countLabel;
   const rows = tracks.map(t => `
     <tr class="browserow" data-path="${escapeAttr(t.path)}">
       <td><span class="rowplay">▶</span> <span class="num">${escapeHtml((t.track || "").split("/")[0])}</span></td>
@@ -325,7 +328,7 @@ function renderAlbumBrowseInto(container, st) {
   container.innerHTML = albumHead(st, `
       <h2>${escapeHtml(album || "(untitled)")}</h2>
       <div class="sub">${sub}</div>
-      <div class="sub">${tracks.length} track${tracks.length === 1 ? "" : "s"}</div>`) + `
+      <div class="sub">${metaLine}</div>`) + `
     <table class="browsetable">
       <thead><tr><th>#</th><th>Title</th><th>Artist</th><th class="tdur">Time</th><th>Rate</th></tr></thead>
       <tbody>${rows}</tbody>
@@ -339,6 +342,9 @@ function renderAlbumBrowseInto(container, st) {
 
 function renderAlbumEditInto(container, st) {
   const { tracks, artist, album, year, genre } = st;
+  const totalSec = tracks.reduce((a, t) => a + (Number(t.length_sec) || 0), 0);
+  const countLabel = `${tracks.length} track${tracks.length === 1 ? "" : "s"}`;
+  const metaLine = totalSec > 0 ? `${countLabel} · ${fmtDurationLong(totalSec)}` : countLabel;
   const rows = tracks.map(t => `
     <tr data-path="${escapeAttr(t.path)}">
       <td><span class="draghandle" title="Drag to reorder">⠿</span> <span class="num">${escapeHtml((t.track || "").split("/")[0])}</span></td>
@@ -356,7 +362,7 @@ function renderAlbumEditInto(container, st) {
         <input class="hdr sub" data-op="album_year" value="${escapeAttr(year)}" placeholder="Year"> ·
         <input class="hdr sub" data-op="album_genre" value="${escapeAttr(genre)}" placeholder="Genre">
       </div>
-      <div class="sub">${tracks.length} track${tracks.length === 1 ? "" : "s"}</div>
+      <div class="sub">${metaLine}</div>
       <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn danger" data-act="del">Delete album</button>
       </div>`) + `
