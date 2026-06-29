@@ -8,11 +8,18 @@ async function _fetchWithTimeout(url, opts = {}, ms = 8000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), ms);
   try {
-    return await fetch(url, { ...opts, signal: controller.signal });
+    // same-origin so the session cookie (remote-access mode) rides along.
+    return await fetch(url, { credentials: "same-origin", ...opts, signal: controller.signal });
   } finally {
     clearTimeout(timer);
   }
 }
+
+// In remote-access mode an expired/lost session makes the API return 401. app.js
+// registers a handler here to re-show the login gate from anywhere (any jget/
+// jpost), instead of each call site coping with it.
+let _authHandler = null;
+export function setAuthHandler(fn) { _authHandler = fn; }
 
 // True for connection-level failures worth retrying on a fresh socket: an abort
 // (our timeout) or a network TypeError. A real HTTP error response is NOT one of
@@ -22,7 +29,12 @@ function _isConnError(err) {
 }
 
 async function _jsonOrThrow(r) {
-  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+  if (r.status === 401 && _authHandler) _authHandler();   // session gone → login gate
+  if (!r.ok) {
+    const err = new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+    err.status = r.status;
+    throw err;
+  }
   return r.json();
 }
 

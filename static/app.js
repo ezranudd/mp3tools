@@ -1,5 +1,5 @@
 // Entry point: top nav + view router.
-import { jget, toast, clientId } from "./util.js";
+import { jget, jpost, toast, clientId, setAuthHandler, escapeAttr } from "./util.js";
 import { getMode, setMode, onModeChange } from "./mode.js";
 import { getTheme, toggleTheme, initSystemTheme } from "./theme.js";
 import { initBackground } from "./background.js";
@@ -16,10 +16,12 @@ import * as importView from "./import.js";
 import * as syncView from "./sync.js";
 import * as settings from "./settings.js";
 import * as devices from "./devices.js";
+import * as access from "./access.js";
 
 const VIEWS = [
   ["browse", "Browse", browse, "♪"],
   ["devices", "Devices", devices, "📡"],
+  ["access", "Access", access, "🔐"],
   ["audit", "Audit", audit, "✓"],
   ["standardize", "Standardize", standardize, "✦"],
   ["import", "Import", importView, "↧"],
@@ -131,13 +133,28 @@ function buildJobIndicator() {
   });
 }
 
-async function init() {
+let APP_STARTED = false;   // initApp() is idempotent — only the first call wires the UI
+
+// Entry: resolve our role, then either gate (login/pending) or start the app.
+async function boot() {
+  let who;
   try {
-    const who = await jget(WHOAMI_URL);
-    TRUSTED = !!who.trusted;
+    who = await jget(WHOAMI_URL);
   } catch (e) {
-    TRUSTED = false;   // fail safe to read-only
+    who = { role: "lan" };   // unreachable whoami → fail safe to read-only
   }
+  const role = who.role || (who.trusted ? "owner" : "lan");
+  if (role === "anonymous") return showLogin(who);
+  if (role === "pending")   return showPending();
+  if (role === "blocked")   return showBlocked();
+  hideAuthGate();
+  TRUSTED = role === "owner";
+  initApp();
+}
+
+function initApp() {
+  if (APP_STARTED) return;   // already wired (e.g. boot() re-ran after login)
+  APP_STARTED = true;
   document.body.classList.toggle("guest", !TRUSTED);   // drives mobile guest CSS
   buildNav();
   buildModeToggle();
@@ -149,15 +166,112 @@ async function init() {
   initSearch(name => { closeSearch(); activate(name); });
   initMobileControls();
   accent.initAccent();
-  try {
-    const data = await jget("/api/tree");
-    document.getElementById("rootLabel").textContent = data.root;
-  } catch (e) {
-    toast(e.message, true);
-  }
+  jget("/api/tree")
+    .then(data => { document.getElementById("rootLabel").textContent = data.root; })
+    .catch(e => toast(e.message, true));
   activate("browse");
   if (TRUSTED) initJobs();   // resume tracking a job that was already running
   initForegroundWarmup();
+}
+
+// ── Remote-access gates (only ever shown in --remote mode) ────────────────────
+
+function authGate() {
+  let el = document.getElementById("authgate");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "authgate";
+    document.body.appendChild(el);
+  }
+  el.style.display = "flex";
+  return el;
+}
+function hideAuthGate() {
+  const el = document.getElementById("authgate");
+  if (el) el.style.display = "none";
+}
+
+function showLogin(who) {
+  const warn = who && who.password_set === false
+    ? `<p class="err">No access password is set on the server yet.</p>` : "";
+  const el = authGate();
+  el.innerHTML = `<div class="authbox card">
+    <h2>Sign in</h2>
+    <p class="muted">This music library is private. Enter the access password.</p>
+    ${warn}
+    <input id="authpw" type="password" autocomplete="current-password" placeholder="Access password" style="width:100%">
+    <input id="authname" type="text" placeholder="Device name (optional, e.g. “Ezra’s phone”)" style="width:100%;margin-top:8px">
+    <div id="autherr" class="err" style="min-height:1.2em;margin:6px 0"></div>
+    <button id="authbtn" class="btn primary" style="width:100%">Sign in</button>
+  </div>`;
+  const pw = el.querySelector("#authpw");
+  const nm = el.querySelector("#authname");
+  const err = el.querySelector("#autherr");
+  const btn = el.querySelector("#authbtn");
+  pw.focus();
+  const submit = async () => {
+    err.textContent = "";
+    btn.disabled = true;
+    try {
+      const res = await jpost("/api/auth/login", {
+        password: pw.value, cid: clientId(), device_name: nm.value.trim(),
+      });
+      if (res.role === "pending") return showPending();
+      hideAuthGate();
+      await boot();   // member → start the app
+    } catch (e) {
+      err.textContent = e.message || "Sign-in failed";
+      btn.disabled = false;
+      pw.select();
+    }
+  };
+  btn.onclick = submit;
+  pw.onkeydown = e => { if (e.key === "Enter") submit(); };
+  nm.onkeydown = e => { if (e.key === "Enter") submit(); };
+}
+
+let _pendingTimer = 0;
+function showPending() {
+  const el = authGate();
+  el.innerHTML = `<div class="authbox card">
+    <h2>Waiting for approval</h2>
+    <p class="muted">Your device signed in, but the owner needs to approve it
+      before you can browse. This page will update automatically once approved.</p>
+    <div class="spinner" style="margin:14px 0">…</div>
+    <button id="authlogout" class="btn" style="width:100%">Cancel</button>
+  </div>`;
+  el.querySelector("#authlogout").onclick = async () => {
+    clearInterval(_pendingTimer); _pendingTimer = 0;
+    try { await jpost("/api/auth/logout", {}); } catch {}
+    showLogin({});
+  };
+  clearInterval(_pendingTimer);
+  _pendingTimer = setInterval(async () => {
+    let who;
+    try { who = await jget(WHOAMI_URL); } catch { return; }
+    if (who.role === "member" || who.role === "owner") {
+      clearInterval(_pendingTimer); _pendingTimer = 0;
+      hideAuthGate();
+      TRUSTED = who.role === "owner";
+      initApp();
+    } else if (who.role === "blocked") {
+      clearInterval(_pendingTimer); _pendingTimer = 0;
+      showBlocked();
+    }
+  }, 4000);
+}
+
+function showBlocked() {
+  const el = authGate();
+  el.innerHTML = `<div class="authbox card">
+    <h2>Access blocked</h2>
+    <p class="muted">This device has been blocked by the owner.</p>
+    <button id="authlogout" class="btn" style="width:100%">Sign out</button>
+  </div>`;
+  el.querySelector("#authlogout").onclick = async () => {
+    try { await jpost("/api/auth/logout", {}); } catch {}
+    showLogin({});
+  };
 }
 
 // Mobile floating controls: a search toggle that opens the search field overlay,
@@ -208,4 +322,12 @@ function initForegroundWarmup() {
   });
 }
 
-init();
+// A 401 from anywhere (remote session expired) drops back to the login gate,
+// unless we're already showing it.
+setAuthHandler(() => {
+  const el = document.getElementById("authgate");
+  if (el && el.style.display === "flex") return;
+  showLogin({});
+});
+
+boot();

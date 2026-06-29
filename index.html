@@ -208,6 +208,15 @@
                 padding:16px; width:min(720px,92vw); max-height:88vh; overflow:auto; }
   .modal .box h3 { margin:0 0 12px; }
   .modal .row { display:flex; gap:8px; justify-content:flex-end; margin-top:14px; }
+  /* Full-screen remote-access login / pending gate (only shown in --remote mode). */
+  #authgate { position:fixed; inset:0; background:var(--bg); display:none;
+              align-items:center; justify-content:center; z-index:60; padding:20px; }
+  #authgate .authbox { width:min(380px,94vw); }
+  #authgate .authbox h2 { margin:0 0 8px; }
+  #authgate input { margin-top:4px; padding:8px 10px; }
+  #authgate .spinner { text-align:center; font-size:24px; color:var(--muted);
+                       animation:authpulse 1.2s ease-in-out infinite; }
+  @keyframes authpulse { 0%,100%{opacity:.3} 50%{opacity:1} }
 
   /* tree + detail (browse) */
   #tree { width:340px; flex:0 0 auto; overflow:auto; border-right:1px solid var(--line);

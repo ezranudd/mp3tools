@@ -1,0 +1,33 @@
+# Example Caddy reverse proxy for mp3tools remote (internet) access.
+#
+# Caddy terminates HTTPS (auto Let's Encrypt) and forwards to the loopback-bound
+# app. The shared secret header is what lets the app know a request genuinely
+# came through this proxy — only then does it trust X-Forwarded-For, and proxied
+# requests can never be treated as the local owner. Keep the secret long, random,
+# and identical to the app's MP3TOOLS_PROXY_SECRET env var.
+#
+# Setup:
+#   1. Point a DNS A/AAAA record (music.example.com) at this host; open 80/443.
+#   2. export MP3TOOLS_PROXY_SECRET="$(openssl rand -hex 32)"
+#   3. python server.py ~/Music --set-password        # set the access password
+#   4. python server.py ~/Music --remote              # binds 127.0.0.1:8765
+#   5. MP3TOOLS_PROXY_SECRET=... caddy run --config ./Caddyfile
+#
+# The app must bind loopback only (the default with --remote); never expose its
+# HTTP port directly to the internet.
+
+music.example.com {
+	encode zstd gzip
+
+	reverse_proxy 127.0.0.1:8765 {
+		# Shared secret proving the request came via Caddy. Must equal the app's
+		# MP3TOOLS_PROXY_SECRET. Caddy reads it from its own environment here.
+		header_up X-Mp3tools-Proxy "{$MP3TOOLS_PROXY_SECRET}"
+
+		# Caddy sets X-Forwarded-For / X-Forwarded-Proto automatically; the app
+		# reads the client IP from the first X-Forwarded-For hop.
+	}
+
+	# Streaming audio: don't buffer, allow long-lived connections.
+	# (Caddy streams by default; large library files pass through fine.)
+}

@@ -11,8 +11,10 @@ The frontend is the build-step-free ``index.html`` served at ``/``.
 from __future__ import annotations
 
 import argparse
+import getpass
 import ipaddress
 import json
+import os
 import shutil
 import tempfile
 import threading
@@ -31,6 +33,7 @@ import browse
 import fetch_art
 import settings as settings_mod
 import sync_library as sync
+import webauth
 from webjobs import MANAGER
 
 # ── Library root ──────────────────────────────────────────────────────────────
@@ -39,8 +42,19 @@ ROOT: Path = Path.cwd()
 
 # True when started with --lan (bound to 0.0.0.0 for the local network). Only
 # affects what we print and the /api/whoami hint — guest gating keys off the
-# request's client IP, not this flag (see _is_trusted / the guest middleware).
+# request's client IP, not this flag (see _is_owner / the access middleware).
 LAN_MODE: bool = False
+
+# Remote (internet) access. Off by default → behaviour is identical to before:
+# loopback = owner, everyone else = read-only LAN guest, no auth involved. When
+# enabled (--remote), the app sits behind a TLS reverse proxy (Caddy) that adds
+# a shared secret header; only requests carrying it are treated as proxied, and
+# proxied traffic can NEVER be owner (see _is_owner). Remote devices must log in
+# (shared password) and be approved by the owner — see webauth + _access_gate.
+REMOTE_MODE: bool = False
+PROXY_SECRET: str = ""                   # from env MP3TOOLS_PROXY_SECRET
+TRUSTED_PROXY: str = "127.0.0.1"         # only this peer may set X-Forwarded-For
+_PROXY_HEADER = "x-mp3tools-proxy"
 
 _HERE = Path(__file__).resolve().parent
 _INDEX = _HERE / "index.html"
@@ -110,8 +124,7 @@ def _touch_presence(request: Request, cid: str | None, *, track_path: str | None
     """Upsert this client's presence record. Only overwrites the current track
     when *track_path* is given, so a /api/whoami ping refreshes last_seen without
     clobbering the song from the last /api/track request."""
-    client = request.client
-    ip = client.host if client is not None else "local"
+    ip = _real_client_ip(request)
     key = cid or ip
     ua = request.headers.get("user-agent", "")
     now = time.time()
@@ -351,17 +364,70 @@ def set_root(path) -> None:
     """Point the server at a library root (used by main() and tests)."""
     global ROOT
     ROOT = Path(path).expanduser().resolve()
+    webauth.configure(ROOT)
 
 
-def _is_trusted(request: Request) -> bool:
-    """Full access for loopback clients (the owner on the server machine);
-    everyone else on the network is a read-only guest. Missing client info
-    (e.g. in-process test calls) counts as trusted."""
+def _peer_is_loopback(request: Request) -> bool:
     client = request.client
     if client is None:
-        return True
+        return True                      # in-process / test calls
     host = client.host
     return host in ("127.0.0.1", "::1") or host.startswith("127.")
+
+
+def _via_proxy(request: Request) -> bool:
+    """True iff this request arrived through our trusted reverse proxy: it must
+    carry the shared secret header AND come from the proxy's own address. Only
+    then do we trust X-Forwarded-For — and such requests can never be owner."""
+    if not REMOTE_MODE or not PROXY_SECRET:
+        return False
+    if request.headers.get(_PROXY_HEADER) != PROXY_SECRET:
+        return False
+    return _peer_is_loopback(request) or (
+        request.client is not None and request.client.host == TRUSTED_PROXY)
+
+
+def _is_owner(request: Request) -> bool:
+    """Full access. Requires a DIRECT local socket — a proxied request (i.e. any
+    internet visitor) is structurally excluded, so remote traffic can never gain
+    owner/admin no matter what headers it forges."""
+    if _via_proxy(request):
+        return False
+    return _peer_is_loopback(request)
+
+
+# Backwards-compatible alias: "trusted" now means "owner" (the only full-access
+# role). Used by the settings GET filter and admin endpoints.
+_is_trusted = _is_owner
+
+
+def _real_client_ip(request: Request) -> str:
+    """The genuine client IP: the first X-Forwarded-For hop when (and only when)
+    the request came via the trusted proxy; otherwise the socket peer."""
+    if _via_proxy(request):
+        xff = request.headers.get("x-forwarded-for", "")
+        if xff:
+            return xff.split(",")[0].strip()
+    client = request.client
+    return client.host if client is not None else "local"
+
+
+def _role(request: Request) -> str:
+    """'owner' | 'member' | 'pending' | 'blocked' | 'lan' | 'anonymous'.
+    Library/UI gating keys off this. When REMOTE_MODE is off there are no proxied
+    requests, so only 'owner' and 'lan' occur — identical to the old model."""
+    if _is_owner(request):
+        return "owner"
+    if _via_proxy(request):
+        return webauth.resolve(request.cookies.get(webauth.COOKIE_NAME))
+    return "lan"                         # direct non-loopback client (LAN guest)
+
+
+def _require_owner(request: Request) -> None:
+    """Explicit backstop for owner-only routes (the gate already blocks them for
+    everyone else; this is defense-in-depth so a routing slip can't leak them)."""
+    if not _is_owner(request):
+        raise HTTPException(status_code=403, detail="owner only")
 
 
 def _safe(raw: str) -> Path:
@@ -414,19 +480,52 @@ _GUEST_GET_PATHS = frozenset({
 })
 
 
-def _guest_allowed(method: str, path: str) -> bool:
+def _member_allowed(method: str, path: str) -> bool:
+    """Read-only browse/play surface for LAN guests and approved remote members."""
     if method not in ("GET", "HEAD"):
         return False
     return path in _GUEST_GET_PATHS or path.startswith("/static/")
 
 
+# Minimal surface an unauthenticated/pending remote client may reach: just enough
+# to load the SPA shell, learn its role, and log in/out. Nothing else.
+_AUTH_SURFACE_GET = frozenset({"/", "/api/whoami"})
+_AUTH_SURFACE_POST = frozenset({"/api/auth/login", "/api/auth/logout"})
+
+
+def _auth_surface_allowed(method: str, path: str) -> bool:
+    if path.startswith("/static/") and method in ("GET", "HEAD"):
+        return True
+    if method in ("GET", "HEAD"):
+        return path in _AUTH_SURFACE_GET
+    if method == "POST":
+        return path in _AUTH_SURFACE_POST
+    return False
+
+
 @app.middleware("http")
-async def _guest_gate(request: Request, call_next):
-    # Loopback = owner (full access); any other client IP = read-only guest,
-    # restricted to the browse/play allowlist above.
-    if not _is_trusted(request) and not _guest_allowed(request.method, request.url.path):
-        return JSONResponse(status_code=403, content={"detail": "read-only guest"})
-    return await call_next(request)
+async def _access_gate(request: Request, call_next):
+    # Role-based gate. owner → everything; member/lan → read-only allowlist;
+    # pending/blocked → only the login surface (403); anonymous → login surface
+    # (401 so the SPA shows the login screen). Mutations stay owner-only, so the
+    # internet can never reach them.
+    role = _role(request)
+    method, path = request.method, request.url.path
+    if role == "owner":
+        return await call_next(request)
+    # Every non-owner may always reach the shell + login/logout (so even a member
+    # can sign out, and the SPA can always load to show its login/role state).
+    if _auth_surface_allowed(method, path):
+        return await call_next(request)
+    if role in ("member", "lan"):
+        if _member_allowed(method, path):
+            return await call_next(request)
+        return JSONResponse(status_code=403, content={"detail": "read-only"})
+    if role == "anonymous":
+        return JSONResponse(status_code=401, content={"detail": "login required"})
+    # pending or blocked
+    detail = "device blocked" if role == "blocked" else "awaiting approval"
+    return JSONResponse(status_code=403, content={"detail": detail})
 
 
 @app.middleware("http")
@@ -436,6 +535,36 @@ async def _no_cache_static(request, call_next):
     resp = await call_next(request)
     if request.url.path.startswith("/static/"):
         resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
+
+# Conservative CSP: 'unsafe-inline' is required because the SPA uses inline
+# style= attributes and a few inline onerror= image fallbacks (search/tree/
+# player/import). The high-value directives are still locked down (no plugins,
+# no framing, no <base> hijack, forms/XHR same-origin). Tightening to a nonce
+# would mean refactoring those inline handlers — tracked as future work.
+_CSP = ("default-src 'self'; "
+        "script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: blob:; "
+        "media-src 'self' blob:; "
+        "connect-src 'self'; "
+        "object-src 'none'; base-uri 'self'; form-action 'self'; "
+        "frame-ancestors 'none'")
+
+
+@app.middleware("http")
+async def _security_headers(request, call_next):
+    resp = await call_next(request)
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("X-Frame-Options", "DENY")
+    resp.headers.setdefault("Referrer-Policy", "no-referrer")
+    resp.headers.setdefault("Content-Security-Policy", _CSP)
+    # HSTS only when actually reached over TLS via the trusted proxy (never on
+    # plain-HTTP loopback, which would wrongly pin localhost to https).
+    if _via_proxy(request):
+        resp.headers.setdefault("Strict-Transport-Security",
+                                "max-age=63072000; includeSubDomains")
     return resp
 
 
@@ -456,10 +585,61 @@ def _node_json(node: browse.Node) -> dict:
 
 @app.get("/api/whoami")
 def api_whoami(request: Request, cid: str = Query(None)) -> JSONResponse:
-    """Bootstrap hint for the SPA: trusted owners get the full UI, guests get a
-    read-only browse/play UI. Doubles as a presence ping (cid, foreground warmup)."""
+    """Bootstrap hint for the SPA. Returns the caller's role so the SPA can show
+    the owner UI, a read-only browse/play UI, a login gate, or a waiting-for-
+    approval screen. Doubles as a presence ping (cid, foreground warmup)."""
     _touch_presence(request, cid)
-    return JSONResponse({"trusted": _is_trusted(request), "lan": LAN_MODE})
+    role = _role(request)
+    return JSONResponse({
+        "role": role,
+        "trusted": role == "owner",      # back-compat (SPA still reads this)
+        "remote": _via_proxy(request),
+        "lan": LAN_MODE,
+        # Only meaningful in remote mode; lets the login screen warn if the owner
+        # enabled --remote but never set a password.
+        "password_set": webauth.password_set() if REMOTE_MODE else False,
+    })
+
+
+# ── Remote authentication (shared password + device approval) ─────────────────
+
+@app.post("/api/auth/login")
+def api_login(request: Request, body: dict) -> JSONResponse:
+    """Authenticate a remote device with the shared access password. New devices
+    land in the pending queue until the owner approves them. Rate-limited."""
+    ip = _real_client_ip(request)
+    allowed, retry = webauth.login_allowed(ip)
+    if not allowed:
+        raise HTTPException(status_code=429,
+                            detail=f"too many attempts — retry in {retry}s")
+    body = body or {}
+    pw = str(body.get("password", ""))
+    cid = str(body.get("cid", "")).strip()
+    name = str(body.get("device_name", "")).strip()
+    time.sleep(0.25)                     # blunt brute-force / timing probes
+    if not webauth.verify_password(pw):
+        webauth.note_failure(ip)
+        raise HTTPException(status_code=401, detail="invalid password")
+    webauth.note_success(ip)
+    if not cid:
+        raise HTTPException(status_code=400, detail="missing device id")
+    if webauth.device_state(cid) == "blocked":
+        raise HTTPException(status_code=403, detail="device blocked")
+    state = webauth.register_pending(cid, ip, name)   # unknown → pending
+    token = webauth.create_session(cid, ip)
+    role = "member" if state == "approved" else "pending"
+    resp = JSONResponse({"role": role})
+    resp.set_cookie(webauth.COOKIE_NAME, token, max_age=webauth.SESSION_TTL,
+                    httponly=True, secure=True, samesite="strict", path="/")
+    return resp
+
+
+@app.post("/api/auth/logout")
+def api_logout(request: Request) -> JSONResponse:
+    webauth.destroy_session(request.cookies.get(webauth.COOKIE_NAME))
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(webauth.COOKIE_NAME, path="/")
+    return resp
 
 
 @app.get("/api/tree")
@@ -581,6 +761,97 @@ def api_admin_connections(limit: int = Query(200)) -> JSONResponse:
         merged.append(row)
     merged.sort(key=lambda c: c.get("connected_at", 0), reverse=True)
     return JSONResponse({"connections": merged[:limit]})
+
+
+# ── Admin: remote access control (owner-only) ─────────────────────────────────
+
+@app.get("/api/admin/access")
+def api_admin_access(request: Request) -> JSONResponse:
+    """The device whitelist + approval queue, enriched with live presence
+    (online/last-seen/location). Owner-only."""
+    _require_owner(request)
+    # Map cid → live presence so the list can show who's currently connected.
+    pres = {r.get("cid"): r for r in _active_presence() if r.get("cid")}
+    now = time.time()
+    devices = []
+    for d in webauth.list_devices():
+        cid = d["cid"]
+        p = pres.get(cid)
+        ip = (p or {}).get("ip") or d.get("ip", "")
+        devices.append({
+            "cid": cid,
+            "name": d.get("name", ""),
+            "state": d.get("state", "pending"),
+            "ip": ip,
+            "location": _location_for(ip) if ip else None,
+            "first_seen": d.get("first_seen"),
+            "approved_at": d.get("approved_at"),
+            "online": p is not None,
+            "last_seen": (p or {}).get("last_seen"),
+            "idle_seconds": int(now - p["last_seen"]) if p else None,
+        })
+    # Pending first, then online, then most-recently-seen.
+    devices.sort(key=lambda x: (x["state"] != "pending", not x["online"],
+                                -(x["last_seen"] or x["first_seen"] or 0)))
+    return JSONResponse({
+        "password_set": webauth.password_set(),
+        "remote_enabled": REMOTE_MODE,
+        "devices": devices,
+    })
+
+
+@app.post("/api/admin/access/approve")
+def api_admin_approve(request: Request, body: dict) -> JSONResponse:
+    _require_owner(request)
+    cid = str((body or {}).get("cid", "")).strip()
+    if not cid:
+        raise HTTPException(status_code=400, detail="missing cid")
+    webauth.approve(cid, str((body or {}).get("name", "")).strip())
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/admin/access/block")
+def api_admin_block(request: Request, body: dict) -> JSONResponse:
+    _require_owner(request)
+    cid = str((body or {}).get("cid", "")).strip()
+    if not cid:
+        raise HTTPException(status_code=400, detail="missing cid")
+    webauth.block(cid)
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/admin/access/revoke")
+def api_admin_revoke(request: Request, body: dict) -> JSONResponse:
+    _require_owner(request)
+    cid = str((body or {}).get("cid", "")).strip()
+    if not cid:
+        raise HTTPException(status_code=400, detail="missing cid")
+    webauth.revoke(cid)
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/admin/access/rename")
+def api_admin_rename(request: Request, body: dict) -> JSONResponse:
+    _require_owner(request)
+    cid = str((body or {}).get("cid", "")).strip()
+    name = str((body or {}).get("name", "")).strip()
+    if not cid:
+        raise HTTPException(status_code=400, detail="missing cid")
+    webauth.rename(cid, name)
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/admin/access/password")
+def api_admin_set_password(request: Request, body: dict) -> JSONResponse:
+    """Set/rotate the shared access password (owner-only; rotating logs everyone
+    out). Reachable from localhost even before --remote is enabled, so the owner
+    can provision a password from the Settings/Access UI."""
+    _require_owner(request)
+    pw = str((body or {}).get("password", ""))
+    if len(pw) < 8:
+        raise HTTPException(status_code=400, detail="password must be at least 8 characters")
+    webauth.set_password(pw)
+    return JSONResponse({"ok": True, "password_set": True})
 
 
 # ── Cover art ─────────────────────────────────────────────────────────────────
@@ -1062,8 +1333,19 @@ def _lan_ip() -> str:
         s.close()
 
 
+def _set_password_cli() -> None:
+    """Interactively set/rotate the remote-access password, then exit."""
+    pw = getpass.getpass("New access password: ")
+    if not pw:
+        raise SystemExit("aborted: empty password")
+    if pw != getpass.getpass("Confirm password: "):
+        raise SystemExit("aborted: passwords did not match")
+    webauth.set_password(pw)
+    print("Access password set. Existing remote sessions were invalidated.")
+
+
 def main() -> None:
-    global LAN_MODE
+    global LAN_MODE, REMOTE_MODE, PROXY_SECRET, TRUSTED_PROXY
     parser = argparse.ArgumentParser(description="mp3tools web UI")
     parser.add_argument("root", help="library root directory")
     parser.add_argument("--host", default="127.0.0.1")
@@ -1071,6 +1353,14 @@ def main() -> None:
     parser.add_argument("--lan", action="store_true",
                         help="serve to the local network (binds 0.0.0.0); "
                              "remote devices get read-only browse + playback")
+    parser.add_argument("--remote", action="store_true",
+                        help="enable authenticated internet access behind a TLS "
+                             "reverse proxy (Caddy). Requires env "
+                             "MP3TOOLS_PROXY_SECRET; see Caddyfile.")
+    parser.add_argument("--set-password", action="store_true",
+                        help="set/rotate the remote-access password, then exit")
+    parser.add_argument("--trusted-proxy", default="127.0.0.1",
+                        help="address the reverse proxy connects from (default 127.0.0.1)")
     parser.add_argument("--desktop", action="store_true",
                         help="open in a native window (requires pywebview)")
     args = parser.parse_args()
@@ -1079,11 +1369,26 @@ def main() -> None:
     if not ROOT.is_dir():
         parser.error(f"not a directory: {ROOT}")
 
+    if args.set_password:
+        _set_password_cli()
+        return
+
     host = args.host
     if args.lan:
         LAN_MODE = True
         if host == "127.0.0.1":          # honor an explicit --host if given
             host = "0.0.0.0"
+
+    if args.remote:
+        REMOTE_MODE = True
+        TRUSTED_PROXY = args.trusted_proxy
+        PROXY_SECRET = os.environ.get("MP3TOOLS_PROXY_SECRET", "")
+        if not PROXY_SECRET:
+            parser.error("--remote requires env MP3TOOLS_PROXY_SECRET to be set "
+                         "(a long random string shared with the reverse proxy)")
+        if not webauth.password_set():
+            parser.error("--remote requires an access password — run "
+                         f"'python server.py {args.root} --set-password' first")
 
     url = f"http://{host}:{args.port}"
     if args.desktop:
@@ -1093,7 +1398,8 @@ def main() -> None:
         threading.Thread(
             target=lambda: uvicorn.run(app, host=host, port=args.port,
                                        log_level="warning",
-                                       timeout_keep_alive=65),
+                                       timeout_keep_alive=65,
+                                       proxy_headers=False),
             daemon=True,
         ).start()
         webview.create_window("mp3tools", url)
@@ -1106,9 +1412,18 @@ def main() -> None:
                   "(read-only browse + playback)")
             print("  note: library is exposed read-only to the local network — "
                   "do not use on untrusted networks.")
+        if REMOTE_MODE:
+            print("  remote access: ENABLED behind a TLS reverse proxy "
+                  "(password + device approval required).")
+            print("  bound to loopback; point Caddy at this port (see Caddyfile).")
         # Long keep-alive so the server doesn't close idle connections out from
         # under an iOS PWA that still believes the socket is alive (default is 5s).
-        uvicorn.run(app, host=host, port=args.port, timeout_keep_alive=65)
+        # proxy_headers=False is critical: we must see the *real* socket peer (the
+        # reverse proxy) and do X-Forwarded-For ourselves, gated by the secret
+        # header (see _via_proxy). Letting uvicorn rewrite request.client from a
+        # spoofable X-Forwarded-For would bypass that gate.
+        uvicorn.run(app, host=host, port=args.port, timeout_keep_alive=65,
+                    proxy_headers=False)
 
 
 if __name__ == "__main__":
