@@ -71,6 +71,7 @@ DEFAULTS: dict = {
     "preserve_replay_gain": False,    # keep TXXX:REPLAYGAIN_* during step 4
     "preserve_tcmp":        False,    # keep/set TCMP=1 (iTunes compilation) during step 4
     "preserve_disc_numbers": False,   # write TPOS on merge; keep per-disc TRCK in steps 4/7/8
+    "preserve_gapless":     False,    # keep iTunSMPB/iTunPGAP gapless tags during step 4
     "eject_cd_after_import": False,   # eject disc when CD import finishes
     "art_sources": {
         "itunes":       True,
@@ -124,6 +125,8 @@ def load(library_root: Path) -> dict:
                 settings["preserve_tcmp"] = data["preserve_tcmp"]
             if isinstance(data.get("preserve_disc_numbers"), bool):
                 settings["preserve_disc_numbers"] = data["preserve_disc_numbers"]
+            if isinstance(data.get("preserve_gapless"), bool):
+                settings["preserve_gapless"] = data["preserve_gapless"]
             if isinstance(data.get("eject_cd_after_import"), bool):
                 settings["eject_cd_after_import"] = data["eject_cd_after_import"]
             if isinstance(data.get("art_sources"), dict):

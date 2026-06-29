@@ -306,6 +306,7 @@ def _run_standardize(job: Job, params: dict) -> None:
     preserve_replay_gain = cfg.get("preserve_replay_gain", False)
     preserve_tcmp = cfg.get("preserve_tcmp", False)
     preserve_disc_numbers = cfg.get("preserve_disc_numbers", False)
+    preserve_gapless = cfg.get("preserve_gapless", False)
     keep_apic = cover_art in ("embed", "both")
 
     at = job.ask_text
@@ -328,7 +329,8 @@ def _run_standardize(job: Job, params: dict) -> None:
         job.add_sep(f"Step {idx}: {name}")
         if fn is std.step_strip_tags:
             fn(root, dry_run, keep_apic=keep_apic, keep_replay_gain=preserve_replay_gain,
-               keep_tcmp=preserve_tcmp, keep_tpos=preserve_disc_numbers)
+               keep_tcmp=preserve_tcmp, keep_tpos=preserve_disc_numbers,
+               keep_gapless=preserve_gapless)
         elif fn is std.step_merge_subfolders:
             fn(root, dry_run, preserve_tpos=preserve_disc_numbers)
         elif fn is std.step_renumber_tracks:

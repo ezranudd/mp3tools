@@ -9,6 +9,7 @@ const BOOLS = [
   ["preserve_replay_gain", "Preserve replay gain tags"],
   ["preserve_tcmp", "Preserve iTunes compilation flag"],
   ["preserve_disc_numbers", "Preserve disc numbers on merge"],
+  ["preserve_gapless", "Preserve gapless tags (iTunSMPB/iTunPGAP)"],
   ["eject_cd_after_import", "Eject disc after CD import"],
   ["fetch_art_online", "Fetch missing art during Standardize"],
 ];

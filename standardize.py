@@ -637,10 +637,23 @@ def _is_replay_gain_key(key: str) -> bool:
     return key[:4] == "RVA2"
 
 
+_GAPLESS_DESCS = {"itunsmpb", "itunpgap"}
+
+
+def _is_gapless_key(key: str) -> bool:
+    """iTunes/Apple gapless metadata (iTunSMPB delay/padding, iTunPGAP flag),
+    stored as COMM/TXXX frames. Cannot be regenerated once stripped."""
+    if key.startswith("COMM:") or key.startswith("TXXX:"):
+        parts = key.split(":")
+        return len(parts) >= 2 and parts[1].lower() in _GAPLESS_DESCS
+    return False
+
+
 def step_strip_tags(root: Path, dry_run: bool, keep_apic: bool = False,
                     keep_replay_gain: bool = False,
                     keep_tcmp: bool = False,
-                    keep_tpos: bool = False) -> dict:
+                    keep_tpos: bool = False,
+                    keep_gapless: bool = False) -> dict:
     _header(4, "Strip extraneous tags")
     stats = {"files": 0, "tags_removed": 0, "albumartist_fixed": 0,
              "covers_extracted": 0, "tcmp_set": 0}
@@ -689,6 +702,7 @@ def step_strip_tags(root: Path, dry_run: bool, keep_apic: bool = False,
             if key[:4] not in keep
             and not (keep_replay_gain and _is_replay_gain_key(key))
             and not (want_tcmp and key == "TCMP")
+            and not (keep_gapless and _is_gapless_key(key))
         ]
 
         # Before discarding an APIC frame, save it as cover.jpg if no cover exists.
@@ -2104,6 +2118,7 @@ Examples:
     preserve_replay_gain    = sett.get("preserve_replay_gain", False)
     preserve_tcmp           = sett.get("preserve_tcmp", False)
     preserve_disc_numbers   = sett.get("preserve_disc_numbers", False)
+    preserve_gapless        = sett.get("preserve_gapless", False)
 
     # Parse optional step filter
     step_filter: set[int] | None = None
@@ -2140,7 +2155,8 @@ Examples:
             fn(root, args.dry_run, keep_apic=keep_apic,
                keep_replay_gain=preserve_replay_gain,
                keep_tcmp=preserve_tcmp,
-               keep_tpos=preserve_disc_numbers)
+               keep_tpos=preserve_disc_numbers,
+               keep_gapless=preserve_gapless)
         elif fn is step_merge_subfolders:
             fn(root, args.dry_run, preserve_tpos=preserve_disc_numbers)
         elif fn is step_renumber_tracks:

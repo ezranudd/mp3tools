@@ -27,6 +27,7 @@ from convert_lossless import (
 )
 from chars import CHAR_REPLACEMENTS
 from import_preview import run_preview
+from standardize import _is_gapless_key
 from mutagen.mp3 import MP3 as _MP3Info
 from mutagen.id3 import (
     ID3, ID3NoHeaderError,
@@ -734,8 +735,9 @@ def import_tracks(source: Path, library: Path, dry_run: bool,
                 except ID3NoHeaderError:
                     dtags = ID3()
 
+                keep_gapless = bool(settings and settings.get("preserve_gapless"))
                 for key in list(dtags.keys()):
-                    if key[:4] not in KEEP_TAGS:
+                    if key[:4] not in KEEP_TAGS and not (keep_gapless and _is_gapless_key(key)):
                         del dtags[key]
 
                 dtags["TPE1"] = TPE1(encoding=1, text=td.get("TPE1") or artist_tag)

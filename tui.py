@@ -785,6 +785,7 @@ class StandardizeView(AsyncOperationView):
         preserve_replay_gain = cfg.get("preserve_replay_gain", False)
         preserve_tcmp         = cfg.get("preserve_tcmp", False)
         preserve_disc_numbers = cfg.get("preserve_disc_numbers", False)
+        preserve_gapless      = cfg.get("preserve_gapless", False)
         keep_apic             = cover_art in ("embed", "both")
 
         ask_text   = self._make_ask_text()
@@ -812,7 +813,8 @@ class StandardizeView(AsyncOperationView):
                     fn(root, dry_run, keep_apic=keep_apic,
                        keep_replay_gain=preserve_replay_gain,
                        keep_tcmp=preserve_tcmp,
-                       keep_tpos=preserve_disc_numbers)
+                       keep_tpos=preserve_disc_numbers,
+                       keep_gapless=preserve_gapless)
                 elif fn is std_mod.step_merge_subfolders:
                     fn(root, dry_run, preserve_tpos=preserve_disc_numbers)
                 elif fn is std_mod.step_renumber_tracks:
@@ -1171,6 +1173,10 @@ class SettingsView(View):
         rows.append(("n",   f"  Preserve disc numbers on merge  [{v}]  "
                             f"(writes TPOS; keeps per-disc TRCK instead of renumbering)", a))
 
+        v, a = on(cfg.get("preserve_gapless", False))
+        rows.append(("g",   f"  Preserve gapless tags  [{v}]  "
+                            f"(keeps iTunSMPB/iTunPGAP during tag strip)", a))
+
         rows.append(("",    "", 0))
         rows.append(("",    "  CD Import", curses.color_pair(C_ARTIST) | curses.A_BOLD))
 
@@ -1300,6 +1306,9 @@ class SettingsView(View):
         elif key == "n":
             self.cfg["preserve_disc_numbers"] = not self.cfg.get(
                 "preserve_disc_numbers", False)
+        elif key == "g":
+            self.cfg["preserve_gapless"] = not self.cfg.get(
+                "preserve_gapless", False)
         elif key == "e":
             self.cfg["eject_cd_after_import"] = not self.cfg.get(
                 "eject_cd_after_import", False)
