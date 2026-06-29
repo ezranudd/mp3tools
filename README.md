@@ -42,7 +42,8 @@ python standardize.py -n ~/Music   # dry run
 | `musicbrainzngs`        | MusicBrainz metadata lookup for CD ripping         | `pip install musicbrainzngs`                         |
 | `discid` + `libdiscid0` | MusicBrainz disc ID from CD (preferred)            | `pip install discid` + `sudo apt install libdiscid0` |
 | `cdparanoia`            | CD audio extraction                                | `sudo apt install cdparanoia`                        |
-| `ffmpeg`                | WAV→FLAC and lossless→MP3 conversion               | `sudo apt install ffmpeg`                            |
+| `ffmpeg`                | WAV→FLAC and lossless decode for MP3 conversion    | `sudo apt install ffmpeg`                            |
+| `lame`                  | Gapless MP3 encoding (correct encoder delay/padding) | `sudo apt install lame`                            |
 | `cd-discid`             | CDDB disc ID fallback (when discid unavailable)    | `sudo apt install cd-discid`                         |
 | `cd-info`               | CD-Text reading                                    | `sudo apt install libcdio-utils`                     |
 | `fastapi` + `uvicorn`   | Optional web UI (see below)                        | `pip install -e ".[web]" --break-system-packages`    |
@@ -150,7 +151,7 @@ Runs up to 15 sequential fix steps. The core 13 steps always run; optional steps
 
 | Step | Name | Notes |
 |------|------|-------|
-| 0    | Convert lossless files | FLAC/ALAC → MP3 via ffmpeg |
+| 0    | Convert lossless files | FLAC/ALAC → gapless MP3 (ffmpeg decode → lame encode; falls back to ffmpeg if lame is missing) |
 | 1    | Merge disc subfolders | Flattens CD1/CD2/… into the album folder, renumbers tracks |
 | 2    | Fix missing tags | Auto-fills Year from folder name; prompts for Album, Genre, Title |
 | 3    | Enforce ID3v2.3 | Strips ID3v1, downgrades ID3v2.4, converts TDRC→TYER |
@@ -183,7 +184,7 @@ Copies tracks from a source directory into the library:
 
 - Reads existing tags or infers them from filenames
 - Normalizes and sanitizes all tag values
-- Optionally converts FLAC/ALAC source files to MP3 via ffmpeg
+- Optionally converts FLAC/ALAC source files to gapless MP3 (ffmpeg decode → lame encode)
 - Shows an interactive preview of the proposed import before writing anything
 - Prompts for any tags that couldn't be resolved automatically
 
@@ -255,6 +256,6 @@ All files are required to comply with the rules in `standard.md`, which covers:
 | `sync_library.py`    | Device sync (also runs standalone)                           |
 | `fetch_art.py`       | Multi-source artwork search and download                     |
 | `rip_cd.py`          | CD ripping, disc ID, and metadata lookup                     |
-| `convert_lossless.py`| FLAC/ALAC → MP3 conversion via ffmpeg                        |
+| `convert_lossless.py`| FLAC/ALAC → gapless MP3 (ffmpeg decode → lame encode)        |
 | `settings.py`        | Per-library settings (JSON stored as `{root}/.mp3tools`)     |
 | `termtext.py`        | Unicode-aware terminal layout (`cell_width`, `clip_cells`, …)|
