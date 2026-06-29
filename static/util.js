@@ -55,6 +55,19 @@ export async function jpost(url, body) {
   return _jsonOrThrow(r);
 }
 
+// Stable per-browser id, so the server can tell devices apart (the owner's
+// Devices view keys presence on this, not on the NAT-shared client IP). Sent as
+// a cid= query param on /api/whoami and /api/track.
+export function clientId() {
+  let id = localStorage.getItem("mp3tools_cid");
+  if (!id) {
+    id = (crypto.randomUUID && crypto.randomUUID()) ||
+      (Date.now().toString(36) + Math.random().toString(36).slice(2));
+    localStorage.setItem("mp3tools_cid", id);
+  }
+  return id;
+}
+
 export function escapeHtml(s) {
   return String(s ?? "").replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
 }

@@ -11,8 +11,13 @@ The frontend is the build-step-free ``index.html`` served at ``/``.
 from __future__ import annotations
 
 import argparse
+import ipaddress
+import json
 import shutil
 import tempfile
+import threading
+import time
+import urllib.request
 import uuid
 from pathlib import Path
 
@@ -56,6 +61,290 @@ _UPLOADS: dict[str, Path] = {}
 # Source dir of the most recent import, used to bound /api/import/cover (the source
 # lives outside ROOT). Set when an import job starts.
 _IMPORT_SOURCE: Path | None = None
+
+# ── Connected-device presence (passive) ───────────────────────────────────────
+# The owner's "Devices" view (TRUSTED-only /api/admin/clients) reads this. It is
+# populated as a *side effect* of requests clients already make — /api/track (the
+# current song) and /api/whoami (bootstrap + foreground pings) — so we add no
+# mutating endpoint and touch no guest rules. Keyed by a stable browser id (cid,
+# from localStorage) so devices behind one NAT IP don't merge; falls back to IP.
+_PRESENCE: dict[str, dict] = {}        # cid (or ip) → presence record
+_PRESENCE_LOCK = threading.Lock()
+_PRESENCE_TTL = 120                     # drop devices silent this many seconds
+
+
+def _classify_ua(ua: str) -> dict:
+    """Cheap, dependency-free User-Agent classification for the Devices view."""
+    u = ua or ""
+    lo = u.lower()
+    device = "mobile" if any(s in lo for s in
+                             ("mobi", "android", "iphone", "ipad", "ipod")) else "desktop"
+    if "android" in lo:
+        os_name = "Android"
+    elif any(s in lo for s in ("iphone", "ipad", "ipod")):
+        os_name = "iOS"
+    elif "windows" in lo:
+        os_name = "Windows"
+    elif "mac os" in lo or "macintosh" in lo:
+        os_name = "macOS"
+    elif "linux" in lo:
+        os_name = "Linux"
+    else:
+        os_name = "Unknown"
+    # Order matters: Edge/Chrome UAs also contain "Safari"; Chrome contains neither
+    # "Edg" first.
+    if "edg" in lo:
+        browser = "Edge"
+    elif "firefox" in lo:
+        browser = "Firefox"
+    elif "chrome" in lo or "crios" in lo:
+        browser = "Chrome"
+    elif "safari" in lo:
+        browser = "Safari"
+    else:
+        browser = "Unknown"
+    return {"device": device, "os": os_name, "browser": browser}
+
+
+def _touch_presence(request: Request, cid: str | None, *, track_path: str | None = None) -> None:
+    """Upsert this client's presence record. Only overwrites the current track
+    when *track_path* is given, so a /api/whoami ping refreshes last_seen without
+    clobbering the song from the last /api/track request."""
+    client = request.client
+    ip = client.host if client is not None else "local"
+    key = cid or ip
+    ua = request.headers.get("user-agent", "")
+    now = time.time()
+    with _PRESENCE_LOCK:
+        rec = _PRESENCE.get(key)
+        if rec is None:
+            # A new record == a new connection (session). session_id/connected_at
+            # let _active_presence finalize it to the connection log on prune.
+            rec = {"first_seen": now, "connected_at": now,
+                   "session_id": uuid.uuid4().hex[:12], "cid": cid or "",
+                   "track_path": None}
+            _PRESENCE[key] = rec
+        rec.update(ip=ip, user_agent=ua, last_seen=now, **_classify_ua(ua))
+        if track_path is not None:
+            rec["track_path"] = track_path
+
+
+def _active_presence() -> list[dict]:
+    """Prune stale (idle) entries — finalizing each to the connection log — and
+    return the survivors (copies)."""
+    cutoff = time.time() - _PRESENCE_TTL
+    with _PRESENCE_LOCK:
+        stale = [k for k, r in _PRESENCE.items() if r["last_seen"] < cutoff]
+        for key in stale:
+            _append_session(_PRESENCE.pop(key))
+        return [dict(r) for r in _PRESENCE.values()]
+
+
+# ── GeoIP location (best-effort, off the request path) ────────────────────────
+# Geographic location per device. LAN/private IPs are classified locally and
+# never sent anywhere; only genuinely public IPs are looked up via a free no-key
+# service (cached to disk). Resolution runs on a background daemon thread so it
+# never blocks a guest's audio request — the owner's admin poll picks up the
+# result on a later tick.
+_GEO_API = "http://ip-api.com/json/{ip}?fields=status,message,country,countryCode,regionName,city,isp,query"
+_GEO_CACHE: dict[str, dict] = {}        # ip ("__self__" = household) → geo dict ({} = looked-up-empty)
+_GEO_INFLIGHT: set[str] = set()         # IPs a worker thread is currently resolving
+_GEO_LOCK = threading.Lock()
+_GEO_LOADED = False
+
+
+def _ip_class(ip: str) -> str:
+    """'loopback' | 'private' | 'public'. Unparseable (e.g. the 'local'
+    sentinel) counts as loopback."""
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return "loopback"
+    if addr.is_loopback:
+        return "loopback"
+    if addr.is_private or addr.is_link_local:
+        return "private"
+    return "public"
+
+
+def _geo_cache_file() -> Path:
+    return settings_mod.settings_dir(ROOT) / "geoip-cache.json"
+
+
+def _geo_load() -> None:
+    """Lazily load the disk cache once (under the lock)."""
+    global _GEO_LOADED
+    if _GEO_LOADED:
+        return
+    try:
+        with open(_geo_cache_file(), encoding="utf-8") as fh:
+            data = json.load(fh)
+        if isinstance(data, dict):
+            _GEO_CACHE.update(data)
+    except Exception:
+        pass
+    _GEO_LOADED = True
+
+
+def _geo_persist() -> None:
+    """Write the (small) cache to disk. Caller holds _GEO_LOCK. Fail-soft."""
+    try:
+        d = settings_mod.settings_dir(ROOT)
+        d.mkdir(parents=True, exist_ok=True)
+        with open(_geo_cache_file(), "w", encoding="utf-8") as fh:
+            json.dump(_GEO_CACHE, fh)
+    except Exception:
+        pass
+
+
+def _geo_lookup(ip: str | None) -> dict:
+    """Blocking GeoIP request (mirrors fetch_art's urllib style). Returns
+    {city,region,country,isp} on success, else {} (so we don't retry forever).
+    *ip* None resolves the server's own public IP (household)."""
+    url = _GEO_API.format(ip=ip or "")
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "mp3tools/1.0"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read())
+    except Exception:
+        return {}
+    if data.get("status") != "success":
+        return {}
+    return {
+        "city": data.get("city", ""),
+        "region": data.get("regionName", ""),
+        "country": data.get("country", ""),
+        "country_code": data.get("countryCode", ""),
+        "isp": data.get("isp", ""),
+    }
+
+
+def _geo_resolve_async(key: str, ip: str | None) -> None:
+    """Spawn a daemon worker to resolve *ip* into _GEO_CACHE[key], unless one is
+    already in flight or it's already cached."""
+    with _GEO_LOCK:
+        _geo_load()
+        if key in _GEO_CACHE or key in _GEO_INFLIGHT:
+            return
+        _GEO_INFLIGHT.add(key)
+
+    def work() -> None:
+        result = _geo_lookup(ip)
+        with _GEO_LOCK:
+            _GEO_CACHE[key] = result
+            _GEO_INFLIGHT.discard(key)
+            _geo_persist()
+
+    threading.Thread(target=work, daemon=True).start()
+
+
+def _geo_get(key: str) -> dict | None:
+    """Cached geo for *key*, or None if not resolved yet (or resolved empty)."""
+    with _GEO_LOCK:
+        _geo_load()
+        return _GEO_CACHE.get(key) or None
+
+
+def _household_geo() -> dict | None:
+    """Approx city of the server's own public IP, shown for LAN clients."""
+    _geo_resolve_async("__self__", None)
+    return _geo_get("__self__")
+
+
+def _location_for(ip: str) -> dict:
+    """Display-ready location object for a client IP. Private/loopback IPs are
+    never sent off-box; public IPs are resolved in the background."""
+    cls = _ip_class(ip)
+    if cls == "loopback":
+        return {"label": "This device", "scope": "loopback"}
+    if cls == "private":
+        hh = _household_geo()
+        label = "Local network"
+        if hh and hh.get("city"):
+            label += f" · {hh['city']}, {hh.get('country_code') or hh.get('country', '')}"
+        return {"label": label, "scope": "private"}
+    # public
+    geo = _geo_get(ip)
+    if geo is None:
+        _geo_resolve_async(ip, ip)
+        return {"label": "Locating…", "scope": "public"}
+    if not geo.get("city") and not geo.get("country"):
+        return {"label": "Unknown", "scope": "public"}
+    place = ", ".join(p for p in (geo.get("city"), geo.get("country")) if p)
+    return {"label": place, "scope": "public", "isp": geo.get("isp", ""),
+            "region": geo.get("region", "")}
+
+
+# ── Connection log (durable, one line per finished session) ───────────────────
+_LOG_LOCK = threading.Lock()
+_LOG_CAP = 10000                        # keep at most this many lines
+
+
+def _log_file() -> Path:
+    return settings_mod.settings_dir(ROOT) / "connections.log"
+
+
+def _session_record(rec: dict, *, disconnected_at: float | None) -> dict:
+    """Shape a presence record into a connection-log / history row."""
+    start = rec.get("connected_at", rec.get("first_seen", 0))
+    end = disconnected_at if disconnected_at is not None else rec.get("last_seen", start)
+    return {
+        "session_id": rec.get("session_id", ""),
+        "cid": rec.get("cid", ""),
+        "ip": rec.get("ip", ""),
+        "device": rec.get("device", ""),
+        "os": rec.get("os", ""),
+        "browser": rec.get("browser", ""),
+        "location": _location_for(rec.get("ip", "")).get("label", ""),
+        "connected_at": start,
+        "disconnected_at": disconnected_at,
+        "duration_s": int(max(0, end - start)),
+    }
+
+
+def _append_session(rec: dict) -> None:
+    """Finalize a pruned presence record to the connection log. Caller holds
+    _PRESENCE_LOCK; this only touches the log file. Fail-soft."""
+    row = _session_record(rec, disconnected_at=rec.get("last_seen"))
+    with _LOG_LOCK:
+        try:
+            d = settings_mod.settings_dir(ROOT)
+            d.mkdir(parents=True, exist_ok=True)
+            path = _log_file()
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(row) + "\n")
+            _trim_log(path)
+        except Exception:
+            pass
+
+
+def _trim_log(path: Path) -> None:
+    """Cap the log at _LOG_CAP lines (caller holds _LOG_LOCK). Cheap & rare."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            lines = fh.readlines()
+        if len(lines) > _LOG_CAP:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.writelines(lines[-_LOG_CAP:])
+    except Exception:
+        pass
+
+
+def _read_log(limit: int) -> list[dict]:
+    """Last *limit* finished sessions from the connection log, oldest→newest."""
+    with _LOG_LOCK:
+        try:
+            with open(_log_file(), encoding="utf-8") as fh:
+                lines = fh.readlines()
+        except Exception:
+            return []
+    out = []
+    for line in lines[-limit:]:
+        try:
+            out.append(json.loads(line))
+        except Exception:
+            continue
+    return out
 
 
 def set_root(path) -> None:
@@ -166,9 +455,10 @@ def _node_json(node: browse.Node) -> dict:
 
 
 @app.get("/api/whoami")
-def api_whoami(request: Request) -> JSONResponse:
+def api_whoami(request: Request, cid: str = Query(None)) -> JSONResponse:
     """Bootstrap hint for the SPA: trusted owners get the full UI, guests get a
-    read-only browse/play UI."""
+    read-only browse/play UI. Doubles as a presence ping (cid, foreground warmup)."""
+    _touch_presence(request, cid)
     return JSONResponse({"trusted": _is_trusted(request), "lan": LAN_MODE})
 
 
@@ -214,12 +504,83 @@ def api_genre(name: str = Query("")) -> JSONResponse:
 # ── Audio streaming ───────────────────────────────────────────────────────────
 
 @app.get("/api/track")
-def api_track(path: str = Query(...)) -> FileResponse:
+def api_track(request: Request, path: str = Query(...), cid: str = Query(None)) -> FileResponse:
     mp3 = _safe(path)
     if not (mp3.is_file() and mp3.suffix.lower() == ".mp3"):
         raise HTTPException(status_code=404, detail="track not found")
+    _touch_presence(request, cid, track_path=str(mp3))
     # FileResponse handles HTTP Range requests, so seeking/streaming work.
     return FileResponse(mp3, media_type="audio/mpeg")
+
+
+# ── Admin: connected devices ──────────────────────────────────────────────────
+
+@app.get("/api/admin/clients")
+def api_admin_clients() -> JSONResponse:
+    """Connected devices and what each is playing. TRUSTED-only: deliberately
+    absent from _GUEST_GET_PATHS, so _guest_gate 403s non-loopback clients."""
+    now = time.time()
+    clients = []
+    for rec in _active_presence():
+        tp = rec.get("track_path")
+        now_playing = None
+        if tp:
+            mp3 = Path(tp)
+            try:
+                tags = browse.read_tags(mp3)
+                now_playing = {
+                    "path": tp,
+                    "title": tags.get("title") or browse.track_label(tags, mp3.name),
+                    "artist": tags.get("artist", ""),
+                    "album": tags.get("album", ""),
+                }
+            except Exception:
+                now_playing = {"path": tp, "title": mp3.name, "artist": "", "album": ""}
+        ip = rec["ip"]
+        clients.append({
+            "ip": ip,
+            "device": rec["device"],
+            "os": rec["os"],
+            "browser": rec["browser"],
+            "you": ip in ("127.0.0.1", "::1", "local") or ip.startswith("127."),
+            "location": _location_for(ip),
+            "now_playing": now_playing,
+            "first_seen": rec["first_seen"],
+            "last_seen": rec["last_seen"],
+            "idle_seconds": int(now - rec["last_seen"]),
+        })
+    clients.sort(key=lambda c: c["last_seen"], reverse=True)
+    return JSONResponse({"clients": clients})
+
+
+@app.get("/api/admin/connections")
+def api_admin_connections(limit: int = Query(200)) -> JSONResponse:
+    """Browsable connection history: finished sessions from the durable log plus
+    the currently-active ones (synthesized live). TRUSTED-only — deliberately
+    absent from _GUEST_GET_PATHS. Newest first."""
+    limit = max(1, min(limit, 2000))
+    conns = _read_log(limit)
+    active_ids = set()
+    for rec in _active_presence():
+        row = _session_record(rec, disconnected_at=None)
+        row["active"] = True
+        active_ids.add(row["session_id"])
+        conns.append(row)
+    # A session may exist both as a (just-finalized) log line and an active row
+    # in a race; prefer the active one.
+    seen = set()
+    merged = []
+    for row in conns:
+        sid = row.get("session_id")
+        if sid and sid in active_ids and not row.get("active"):
+            continue
+        if sid and sid in seen:
+            continue
+        if sid:
+            seen.add(sid)
+        merged.append(row)
+    merged.sort(key=lambda c: c.get("connected_at", 0), reverse=True)
+    return JSONResponse({"connections": merged[:limit]})
 
 
 # ── Cover art ─────────────────────────────────────────────────────────────────

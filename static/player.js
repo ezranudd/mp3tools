@@ -13,7 +13,13 @@
 //     (no full in-memory decode). Gapless is sacrificed on phones (a small gap at
 //     track boundaries). The queue/transport/UI below is shared; only the sound
 //     backend differs, branched at startPlayback/toggle/seek/elapsed.
-import { toast } from "./util.js";
+import { toast, clientId } from "./util.js";
+
+// Stream URL for a track, carrying our stable client id so the server's Devices
+// view can attribute "now playing" to this specific browser.
+function trackUrl(path) {
+  return "/api/track?path=" + encodeURIComponent(path) + "&cid=" + encodeURIComponent(clientId());
+}
 
 // Phones/tablets: touch, no hover. These get the <audio> backend.
 const IS_MOBILE = window.matchMedia("(hover: none) and (pointer: coarse)").matches;
@@ -163,7 +169,7 @@ function mStart(i, offset) {
 // `bust` adds a cache-busting query so iOS opens a NEW connection on a retry
 // instead of reusing the dead socket that just failed.
 function mLoadSrc(offset, bust = 0) {
-  let src = "/api/track?path=" + encodeURIComponent(queue[index].path);
+  let src = trackUrl(queue[index].path);
   if (bust) src += "&_r=" + bust;
   mAudio.src = src;
   mLastTime = 0;
@@ -287,7 +293,7 @@ function jumpToAlbum() {
 async function load(path) {
   const hit = cache.get(path);
   if (hit) return hit;
-  const resp = await fetch("/api/track?path=" + encodeURIComponent(path));
+  const resp = await fetch(trackUrl(path));
   const raw = await resp.arrayBuffer();
   // Parse BEFORE decodeAudioData — it detaches the ArrayBuffer.
   const g = parseGapless(new Uint8Array(raw));

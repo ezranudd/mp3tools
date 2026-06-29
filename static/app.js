@@ -1,5 +1,5 @@
 // Entry point: top nav + view router.
-import { jget, toast } from "./util.js";
+import { jget, toast, clientId } from "./util.js";
 import { getMode, setMode, onModeChange } from "./mode.js";
 import { getTheme, toggleTheme, initSystemTheme } from "./theme.js";
 import { initBackground } from "./background.js";
@@ -15,15 +15,20 @@ import * as standardize from "./standardize.js";
 import * as importView from "./import.js";
 import * as syncView from "./sync.js";
 import * as settings from "./settings.js";
+import * as devices from "./devices.js";
 
 const VIEWS = [
   ["browse", "Browse", browse, "♪"],
+  ["devices", "Devices", devices, "📡"],
   ["audit", "Audit", audit, "✓"],
   ["standardize", "Standardize", standardize, "✦"],
   ["import", "Import", importView, "↧"],
   ["sync", "Sync", syncView, "⇄"],
   ["settings", "Settings", settings, "⚙"],
 ];
+
+// cid lets the server's Devices view tell this browser apart from others.
+const WHOAMI_URL = "/api/whoami?cid=" + encodeURIComponent(clientId());
 
 // Phones/tablets (touch, no hover): the mobile top bar + full-screen search live
 // here; the theme follows the OS rather than a manual toggle.
@@ -128,7 +133,7 @@ function buildJobIndicator() {
 
 async function init() {
   try {
-    const who = await jget("/api/whoami");
+    const who = await jget(WHOAMI_URL);
     TRUSTED = !!who.trusted;
   } catch (e) {
     TRUSTED = false;   // fail safe to read-only
@@ -199,7 +204,7 @@ function initForegroundWarmup() {
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState !== "visible") return;
     clearTimeout(timer);
-    timer = setTimeout(() => { jget("/api/whoami").catch(() => {}); }, 150);
+    timer = setTimeout(() => { jget(WHOAMI_URL).catch(() => {}); }, 150);
   });
 }
 
