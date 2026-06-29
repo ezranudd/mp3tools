@@ -164,6 +164,7 @@ _GEO_CACHE: dict[str, dict] = {}        # ip ("__self__" = household) → geo di
 _GEO_INFLIGHT: set[str] = set()         # IPs a worker thread is currently resolving
 _GEO_LOCK = threading.Lock()
 _GEO_LOADED = False
+_GEO_CACHE_CAP = 2000                    # bound memory + the on-disk cache file
 
 
 def _ip_class(ip: str) -> str:
@@ -244,6 +245,13 @@ def _geo_resolve_async(key: str, ip: str | None) -> None:
     def work() -> None:
         result = _geo_lookup(ip)
         with _GEO_LOCK:
+            # Bound the cache (and its on-disk file): FIFO-evict the oldest
+            # non-household entry once at capacity. dict keeps insertion order.
+            if key not in _GEO_CACHE and len(_GEO_CACHE) >= _GEO_CACHE_CAP:
+                for k in _GEO_CACHE:
+                    if k != "__self__":
+                        del _GEO_CACHE[k]
+                        break
             _GEO_CACHE[key] = result
             _GEO_INFLIGHT.discard(key)
             _geo_persist()
@@ -402,12 +410,16 @@ _is_trusted = _is_owner
 
 
 def _real_client_ip(request: Request) -> str:
-    """The genuine client IP: the first X-Forwarded-For hop when (and only when)
-    the request came via the trusted proxy; otherwise the socket peer."""
+    """The genuine client IP, used for rate-limiting/presence/geo (never for
+    authorization). When the request came via our single trusted proxy, the real
+    client is the LAST X-Forwarded-For hop — the one Caddy appended. The earlier
+    hops are attacker-supplied (Caddy appends rather than replaces the header), so
+    reading the first hop would let a remote client spoof its IP and defeat the
+    per-IP login rate limiter."""
     if _via_proxy(request):
         xff = request.headers.get("x-forwarded-for", "")
         if xff:
-            return xff.split(",")[0].strip()
+            return xff.split(",")[-1].strip()
     client = request.client
     return client.host if client is not None else "local"
 
@@ -588,8 +600,13 @@ def api_whoami(request: Request, cid: str = Query(None)) -> JSONResponse:
     """Bootstrap hint for the SPA. Returns the caller's role so the SPA can show
     the owner UI, a read-only browse/play UI, a login gate, or a waiting-for-
     approval screen. Doubles as a presence ping (cid, foreground warmup)."""
-    _touch_presence(request, cid)
     role = _role(request)
+    # Don't let unauthenticated/blocked remote callers plant presence rows (which
+    # would later trigger owner-side GeoIP lookups for attacker-chosen IPs and
+    # pollute the Devices view). Only track real users: the owner, LAN guests, and
+    # password-authenticated remote devices.
+    if role in ("owner", "lan", "member", "pending"):
+        _touch_presence(request, cid)
     return JSONResponse({
         "role": role,
         "trusted": role == "owner",      # back-compat (SPA still reads this)
@@ -608,7 +625,8 @@ def api_login(request: Request, body: dict) -> JSONResponse:
     """Authenticate a remote device with the shared access password. New devices
     land in the pending queue until the owner approves them. Rate-limited."""
     ip = _real_client_ip(request)
-    allowed, retry = webauth.login_allowed(ip)
+    # Atomically consume one attempt (counts as a failure until note_success).
+    allowed, retry = webauth.login_attempt(ip)
     if not allowed:
         raise HTTPException(status_code=429,
                             detail=f"too many attempts — retry in {retry}s")
@@ -616,9 +634,12 @@ def api_login(request: Request, body: dict) -> JSONResponse:
     pw = str(body.get("password", ""))
     cid = str(body.get("cid", "")).strip()
     name = str(body.get("device_name", "")).strip()
-    time.sleep(0.25)                     # blunt brute-force / timing probes
+    # scrypt itself is the per-attempt cost and runs whether or not the password
+    # matches, so failure timing is already constant. We deliberately avoid an
+    # extra time.sleep() here: this sync endpoint runs on the bounded threadpool,
+    # and a held sleep per request is a cheap DoS amplifier. Brute force is capped
+    # by the per-IP rate limiter (login_attempt) above.
     if not webauth.verify_password(pw):
-        webauth.note_failure(ip)
         raise HTTPException(status_code=401, detail="invalid password")
     webauth.note_success(ip)
     if not cid:

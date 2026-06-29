@@ -302,36 +302,33 @@ def resolve(token: str | None) -> str:
 
 # ── login rate limiting (per real client IP) ──────────────────────────────────
 
-def login_allowed(ip: str) -> tuple[bool, int]:
-    """(allowed, retry_after_seconds). Locks an IP out with exponential backoff
-    once it passes _RL_FREE recent failures."""
-    now = time.time()
-    with _LOCK:
-        rec = _rl.get(ip)
-        if not rec or now - rec["last"] > _RL_WINDOW:
-            return True, 0
-        fails = rec["fails"]
-        if fails < _RL_FREE:
-            return True, 0
-        # Exponential backoff once past the free attempts (2s, 4s, 8s … capped).
-        lock = min(2 ** (fails - _RL_FREE + 1), _RL_CAP)
-        remaining = max(0, int(round(rec["last"] + lock - now)))
-        if remaining > 0:
-            return False, remaining
-        return True, 0
-
-
-def note_failure(ip: str) -> None:
+def login_attempt(ip: str) -> tuple[bool, int]:
+    """Atomically gate AND record one login attempt: returns
+    (allowed, retry_after_seconds). The check and the increment happen under a
+    single lock acquisition, so a concurrent burst from one IP can't all slip
+    past the free-attempt window before any failure is counted. Each attempt is
+    counted optimistically as a failure; note_success() clears it on a correct
+    password. Locks an IP out with exponential backoff past _RL_FREE attempts."""
     now = time.time()
     with _LOCK:
         rec = _rl.get(ip)
         if not rec or now - rec["last"] > _RL_WINDOW:
             rec = {"fails": 0, "last": now}
+        if rec["fails"] >= _RL_FREE:
+            # Exponential backoff (2s, 4s, 8s … capped). Don't move "last" while
+            # locked, so the lockout expires rather than sliding forever.
+            lock = min(2 ** (rec["fails"] - _RL_FREE + 1), _RL_CAP)
+            remaining = max(0, int(round(rec["last"] + lock - now)))
+            if remaining > 0:
+                return False, remaining
+        # Consume one attempt before we let the caller verify the password.
         rec["fails"] += 1
         rec["last"] = now
         _rl[ip] = rec
+        return True, 0
 
 
 def note_success(ip: str) -> None:
+    """Clear an IP's attempt counter after a correct password."""
     with _LOCK:
         _rl.pop(ip, None)

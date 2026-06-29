@@ -24,8 +24,12 @@ music.example.com {
 		# MP3TOOLS_PROXY_SECRET. Caddy reads it from its own environment here.
 		header_up X-Mp3tools-Proxy "{$MP3TOOLS_PROXY_SECRET}"
 
-		# Caddy sets X-Forwarded-For / X-Forwarded-Proto automatically; the app
-		# reads the client IP from the first X-Forwarded-For hop.
+		# Replace any client-supplied X-Forwarded-For with just the real client
+		# IP, so a remote client can't spoof its address (which would defeat the
+		# login rate limiter). With this reset the header has a single, trusted
+		# hop. The app independently also reads only the last hop as a belt-and-
+		# braces defense; keep this reset so both agree.
+		header_up X-Forwarded-For "{remote_host}"
 	}
 
 	# Streaming audio: don't buffer, allow long-lived connections.
