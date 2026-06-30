@@ -229,6 +229,19 @@
   .node.artist.sel .nodeact { color:var(--on-accent); }
   .nodeact { float:right; color:var(--muted); padding:0 6px; }
   .nodeact:hover { color:var(--accent); }
+  /* Browse mode switch. Desktop: compact tabs atop the index pane (the landing
+     screen is hidden). Mobile: the landing screen is the first level instead. */
+  #browseSelect { display:none; }
+  .browsetabs { display:flex; gap:6px; padding:2px 10px 8px; position:sticky; top:0;
+                background:var(--bg); z-index:1; }
+  .browsetabs button { flex:1; padding:6px 8px; font-size:13px; }
+  .browsetabs button.active { background:var(--accent); color:var(--on-accent);
+                              border-color:var(--accent); }
+  .node.genre { font-weight:600; }
+  .node.genre.sel { background:var(--accent); color:var(--on-accent); border-radius:3px; }
+  .node.genre.sel .nodeact, .node.genre.sel .gcount { color:var(--on-accent); }
+  .node.genre .gcount { float:right; color:var(--muted); font-size:12px; font-weight:400;
+                        margin-left:8px; }
   .artisthead { margin-bottom:14px; }
   .artisthead h2 { margin:0 0 2px; font-size:20px; }
   .albumsection { margin-top:24px; }
@@ -400,6 +413,8 @@
                     margin-left:auto; border:0; background:transparent; padding:0;
                     font-size:22px; line-height:1; }
     .fab.backFab { font-size:25px; line-height:1; padding:2px 8px; }
+    /* Back FAB shows once we've drilled past the landing screen (index or detail). */
+    body.show-index .fab.backFab,
     body.show-detail .fab.backFab { display:inline-flex; align-items:center; }
 
     /* Full-screen search overlay (app.js moves #search inside it). Large, centered,
@@ -432,9 +447,23 @@
     nav.sidebar button.active { border-left-color:transparent;
                                 border-bottom-color:var(--accent); }
 
-    /* Browse master-detail: show the tree OR the detail, not both. */
-    #view.browse #tree   { width:100%; flex:1 1 auto; }
-    #view.browse #detail { display:none; }
+    /* Browse three-level drill-down: select (landing) → index → detail.
+       Show exactly one pane per level. The compact desktop tabs are hidden — the
+       landing screen is the mode switch on mobile. */
+    .browsetabs { display:none; }
+    #view.browse #browseSelect { display:flex; flex-direction:column; gap:14px;
+                                 padding:24px 16px; align-items:stretch; }
+    #view.browse #tree, #view.browse #detail { display:none; }
+    .bigchoice { display:flex; flex-direction:column; align-items:center; gap:8px;
+                 padding:32px 16px; font-size:18px; font-weight:600; cursor:pointer;
+                 background:var(--panel); border:1px solid var(--line); border-radius:10px;
+                 color:inherit; }
+    .bigchoice.active { border-color:var(--accent); }
+    .bigchoice .bcicon { font-size:34px; line-height:1; }
+    /* index level */
+    #view.browse.show-index #browseSelect { display:none; }
+    #view.browse.show-index #tree { display:block; width:100%; flex:1 1 auto; }
+    /* detail level */
     #view.browse.show-detail #tree   { display:none; }
     #view.browse.show-detail #detail { display:block; width:100%; flex:1 1 auto;
                                        padding:12px 14px; }

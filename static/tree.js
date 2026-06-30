@@ -9,10 +9,13 @@ import * as edit from "./edit.js";
 
 let CURRENT = null;   // selected artist: { kind: "artist", path }
 let TREE = [];        // artist nodes from /api/tree
-let rootEl;           // the #view container (holds #tree + #detail)
-let treeEl, detailEl;
+let GENRES = [];      // [{genre, count}] from /api/genres
+let rootEl;           // the #view container (holds #browseSelect + #tree + #detail)
+let treeEl, indexEl, detailEl;
 let subscribed = false;
 let pendingReveal = null;   // { artist_path, album_path, track_path? } from search
+let browseMode = "artists"; // artists | genres — which index the left pane shows
+let browseLevel = "select"; // select | index | detail (mobile drill-down level)
 let genreAlbums = [];       // albums in the current genre grid
 let genreName = "";         // current genre being shown
 let genreSort = "az";       // az | date | rand
@@ -20,31 +23,51 @@ let genreSort = "az";       // az | date | rand
 // Ask Browse to jump to an album/track once it's (re)mounted.
 export function requestReveal(target) { pendingReveal = target; }
 
-// Mobile master-detail: reveal #detail over the artist tree (a visual no-op on
-// desktop, where both panes always show). A Back control returns to the tree.
-// The body.show-detail mirror drives the floating back FAB, which lives outside
-// #view and so can't key off rootEl's class.
-function enterDetail() {
-  if (rootEl) rootEl.classList.add("show-detail");
-  document.body.classList.add("show-detail");
+// Mobile drill-down: Browse has three levels — select (choose Artists/Genres),
+// index (the chosen list), detail (album list / genre grid). On desktop the levels
+// are visual no-ops (tabs + index + detail all show); the classes only drive the
+// mobile CSS and the floating back FAB (which lives outside #view, so it keys off
+// the body mirror). setLevel reflects the level as show-index / show-detail classes.
+function setLevel(level) {
+  browseLevel = level;
+  const idx = level === "index" || level === "detail";
+  const det = level === "detail";
+  for (const el of [rootEl, document.body]) {
+    if (!el) continue;
+    el.classList.toggle("show-index", idx);
+    el.classList.toggle("show-detail", det);
+  }
 }
-function exitDetail() {
-  if (rootEl) rootEl.classList.remove("show-detail");
-  document.body.classList.remove("show-detail");
-}
-// Return to the artist list (wired to both the in-flow bar and the floating FAB).
-export function goBack() { exitDetail(); }
-const BACK_BAR = `<div class="backbar"><button class="btn" data-back>‹ Artists</button></div>`;
+function enterDetail() { setLevel("detail"); }
+// Back goes up exactly one level: detail → index → select.
+export function goBack() { setLevel(browseLevel === "detail" ? "index" : "select"); }
+const BACK_BAR = `<div class="backbar"><button class="btn" data-back>‹ Back</button></div>`;
 function wireBack() {
   const b = detailEl.querySelector("[data-back]");
-  if (b) b.onclick = exitDetail;
+  if (b) b.onclick = goBack;
 }
 
 export async function show(container) {
-  container.innerHTML = `<nav id="tree"></nav><section id="detail"><p class="muted">Select an artist or album.</p></section>`;
+  container.innerHTML = `
+    <div id="browseSelect">
+      <button class="bigchoice" data-mode="artists"><span class="bcicon">♪</span><span>Artists</span></button>
+      <button class="bigchoice" data-mode="genres"><span class="bcicon">🎵</span><span>Genres</span></button>
+    </div>
+    <nav id="tree">
+      <div class="browsetabs">
+        <button data-mode="artists">Artists</button>
+        <button data-mode="genres">Genres</button>
+      </div>
+      <div id="indexList"></div>
+    </nav>
+    <section id="detail"><p class="muted">Select an artist or album.</p></section>`;
   rootEl = container;
   treeEl = container.querySelector("#tree");
+  indexEl = container.querySelector("#indexList");
   detailEl = container.querySelector("#detail");
+  // Both the big landing buttons (mobile) and the compact tabs (desktop) switch mode.
+  container.querySelectorAll("[data-mode]").forEach(b =>
+    b.onclick = () => setBrowseMode(b.dataset.mode));
   if (!subscribed) {
     subscribed = true;
     // Re-render when the mode flips, or when a job starts/ends (edits get
@@ -56,15 +79,46 @@ export async function show(container) {
     });
     subscribePlayer(updatePlayingHighlight);
   }
-  await loadTree();
+  // Start at the select level (mobile shows the two options; desktop shows
+  // everything side by side), with the default mode's index pre-loaded.
+  setLevel("select");
   if (pendingReveal) {
     const target = pendingReveal;
     pendingReveal = null;
+    browseMode = "artists";
+    await loadMode("artists");
     applyReveal(target);
+  } else {
+    await loadMode(browseMode);
   }
 }
 
+// Switch the active index between Artists and Genres and reflect it on the tabs.
+// Pure load — does not change the drill-down level.
+function loadMode(mode) {
+  browseMode = mode;
+  if (rootEl) rootEl.querySelectorAll("[data-mode]").forEach(b =>
+    b.classList.toggle("active", b.dataset.mode === mode));
+  return mode === "genres" ? loadGenres() : loadTree();
+}
+
+// User picked a mode (tab or landing button): load it and drill into the index.
+function setBrowseMode(mode) {
+  detailEl.innerHTML = `<p class="muted">Select ${mode === "genres" ? "a genre" : "an artist"}.</p>`;
+  setLevel("index");
+  loadMode(mode);
+}
+
+// The artist tree backs selectArtist(); make sure it's loaded even when the user
+// reached here genres-first (so the genre grid was the only thing fetched).
+async function ensureTree() {
+  if (TREE.length) return;
+  try { TREE = (await jget("/api/tree")).artists; }
+  catch (e) { toast(e.message, true); }
+}
+
 async function applyReveal({ artist_path, album_path, track_path }) {
+  await ensureTree();
   await selectArtist(artist_path);
   if (!isCurrent("artist", artist_path)) return;
   const sec = album_path
@@ -91,7 +145,7 @@ function updatePlayingHighlight(path) {
 function rerender() {
   if (!treeEl || !treeEl.isConnected) return;
   const anchor = captureAnchor();
-  loadTree().then(() => {
+  loadMode(browseMode).then(() => {
     if (CURRENT) selectArtist(CURRENT.path).then(() => restoreAnchor(anchor));
   });
 }
@@ -122,16 +176,48 @@ function restoreAnchor(a) {
 }
 
 async function loadTree() {
-  treeEl.innerHTML = `<p class="muted" style="padding:10px">Loading…</p>`;
+  indexEl.innerHTML = `<p class="muted" style="padding:10px">Loading…</p>`;
   try {
     const data = await jget("/api/tree");
     TREE = data.artists;
-    treeEl.innerHTML = "";
-    for (const artist of TREE) treeEl.appendChild(artistEl(artist));
-    if (!TREE.length) treeEl.innerHTML = `<p class="muted" style="padding:10px">Empty library.</p>`;
+    indexEl.innerHTML = "";
+    for (const artist of TREE) indexEl.appendChild(artistEl(artist));
+    if (!TREE.length) indexEl.innerHTML = `<p class="muted" style="padding:10px">Empty library.</p>`;
   } catch (e) {
-    treeEl.innerHTML = `<p class="err" style="padding:10px">${escapeHtml(e.message)}</p>`;
+    indexEl.innerHTML = `<p class="err" style="padding:10px">${escapeHtml(e.message)}</p>`;
   }
+}
+
+async function loadGenres() {
+  indexEl.innerHTML = `<p class="muted" style="padding:10px">Loading…</p>`;
+  try {
+    const data = await jget("/api/genres");
+    GENRES = data.genres || [];
+    indexEl.innerHTML = "";
+    for (const g of GENRES) indexEl.appendChild(genreNodeEl(g));
+    if (!GENRES.length) indexEl.innerHTML = `<p class="muted" style="padding:10px">No genres.</p>`;
+  } catch (e) {
+    indexEl.innerHTML = `<p class="err" style="padding:10px">${escapeHtml(e.message)}</p>`;
+  }
+}
+
+// A genre row in the index: name + album-count badge. In Edit mode (owner) a merge
+// glyph re-tags every album of this genre into another.
+function genreNodeEl(g) {
+  const head = document.createElement("div");
+  head.className = "node genre";
+  head.dataset.genre = g.genre;
+  head.innerHTML =
+    (isEdit() && !isBusy() ? `<span class="nodeact" title="Merge genre">⧉</span>` : "") +
+    `<span class="gname">${escapeHtml(g.genre)}</span><span class="gcount">${g.count}</span>`;
+  head.onclick = (e) => {
+    if (e.target.classList.contains("nodeact")) {
+      edit.mergeGenre(g.genre, GENRES, () => loadGenres());
+      return;
+    }
+    showGenre(g.genre, head);
+  };
+  return head;
 }
 
 // ── Tree nodes (flat artist list — click an artist to see all its albums) ─────
@@ -217,9 +303,10 @@ async function refreshCurrent() {
 
 // ── Genre grid (click an album's genre to see all same-genre albums) ──────────
 
-async function showGenre(genre) {
+async function showGenre(genre, headEl) {
   CURRENT = null;     // a grid, not an artist — leave it alone on job/mode rerenders
   clearSel();
+  if (headEl) headEl.classList.add("sel");
   enterDetail();
   genreName = genre;
   genreSort = "az";

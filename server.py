@@ -487,7 +487,7 @@ app = FastAPI(title="mp3tools web")
 # so new endpoints are private unless deliberately added. Static + "/" handle
 # the SPA; the SPA itself hides admin UI for guests (see /api/whoami).
 _GUEST_GET_PATHS = frozenset({
-    "/", "/api/tree", "/api/album", "/api/search", "/api/genre",
+    "/", "/api/tree", "/api/album", "/api/search", "/api/genre", "/api/genres",
     "/api/track", "/api/cover", "/api/background", "/api/settings",
     "/api/whoami",
 })
@@ -701,6 +701,11 @@ def api_search(q: str = Query(""), limit: int = Query(20)) -> JSONResponse:
 @app.get("/api/genre")
 def api_genre(name: str = Query("")) -> JSONResponse:
     return JSONResponse({"genre": name, "albums": browse.albums_by_genre(ROOT, name)})
+
+
+@app.get("/api/genres")
+def api_genres() -> JSONResponse:
+    return JSONResponse({"genres": browse.all_genres(ROOT)})
 
 
 # ── Audio streaming ───────────────────────────────────────────────────────────
@@ -1048,6 +1053,23 @@ def api_edit_apply(body: EditRequest) -> JSONResponse:
     ok, error = browse.apply_edits([edit])
     return JSONResponse({"ok": ok, "desc": edit.desc, "error": error,
                          "new_path": str(new_path)})
+
+
+class GenreMerge(BaseModel):
+    from_genre: str
+    to_genre: str
+
+
+@app.post("/api/genre/merge")
+def api_genre_merge(body: GenreMerge) -> JSONResponse:
+    _require_idle()
+    src, dst = body.from_genre.strip(), body.to_genre.strip()
+    if not src or not dst:
+        raise HTTPException(status_code=400, detail="genre names required")
+    if src.lower() == dst.lower():
+        raise HTTPException(status_code=400, detail="genres are the same")
+    ok, error, merged = browse.merge_genres(ROOT, src, dst)
+    return JSONResponse({"ok": ok, "merged": merged, "error": error})
 
 
 def _edit_new_path(edit, node: Path) -> Path:

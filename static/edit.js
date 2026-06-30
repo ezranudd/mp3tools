@@ -64,3 +64,32 @@ export async function editArtist(artist, onDone) {
   const title = choice === "artist_rename" ? "New album-artist name" : "Genre for all albums";
   await runEdit(artist.path, choice, title, choice === "artist_rename" ? artist.label : "", onDone);
 }
+
+// Genre-level (owner): merge every album of *fromGenre* into another genre. Target
+// is chosen from the other existing genres, or typed as a new name.
+export async function mergeGenre(fromGenre, genres, onDone) {
+  const options = (genres || [])
+    .map(g => g.genre)
+    .filter(name => name.toLowerCase() !== fromGenre.toLowerCase())
+    .map(name => ({ key: name, label: name }));
+  options.push({ key: "__custom__", label: "Type a new name…" });
+  const pick = await promptModal({
+    title: `Merge "${fromGenre}" into…`,
+    kind: "choice",
+    options,
+  });
+  if (!pick) return;
+  let target = pick;
+  if (pick === "__custom__") {
+    target = await promptModal({ title: `Merge "${fromGenre}" into:`, kind: "text", value: "" });
+    if (target == null) return;
+    target = target.trim();
+  }
+  if (!target || target.toLowerCase() === fromGenre.toLowerCase()) return;
+  try {
+    const res = await jpost("/api/genre/merge", { from_genre: fromGenre, to_genre: target });
+    if (res.ok && !res.error) toast(`Merged ${res.merged} album${res.merged === 1 ? "" : "s"} into "${target}".`);
+    else toast(res.error || "Merge failed", true);
+    if (onDone) onDone();
+  } catch (e) { toast(e.message, true); }
+}

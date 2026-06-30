@@ -61,8 +61,8 @@ async function activate(name) {
   // the master (artist list) when (re)entering a view. The body mirror drives the
   // floating back FAB, so clear it here too.
   viewEl.classList.toggle("browse", name === "browse");
-  viewEl.classList.remove("show-detail");
-  document.body.classList.remove("show-detail");
+  viewEl.classList.remove("show-detail", "show-index");
+  document.body.classList.remove("show-detail", "show-index");
   viewEl.innerHTML = "";
   try {
     entry[2].show(viewEl);

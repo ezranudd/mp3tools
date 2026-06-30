@@ -709,6 +709,43 @@ def albums_by_genre(root: Path, genre: str) -> list[dict]:
     return out
 
 
+def all_genres(root: Path) -> list[dict]:
+    """Every distinct genre in the library with its album count.
+
+    An album's genre is taken from its first track's TCON, mirroring
+    albums_by_genre(). Albums with no genre are skipped. Returns a list of
+    {"genre", "count"} sorted A-Z by genre (case-insensitive).
+    """
+    counts: dict[str, int] = {}
+    for artist in build_tree(root):
+        for album in artist.children:
+            if not album.children:
+                continue
+            genre = (read_tags(album.children[0].path).get("genre") or "").strip()
+            if not genre:
+                continue
+            counts[genre] = counts.get(genre, 0) + 1
+    return [{"genre": g, "count": n}
+            for g, n in sorted(counts.items(), key=lambda kv: kv[0].lower())]
+
+
+def merge_genres(root: Path, src: str, dst: str) -> tuple[bool, str, int]:
+    """Re-tag every album whose genre is *src* to *dst* (case-insensitive match).
+
+    Reuses the album_genre edit builder + apply_edits — no new tag logic.
+    Returns (ok, error_string, n_albums_changed).
+    """
+    edits: list[PendingEdit] = []
+    for a in albums_by_genre(root, src):
+        edit = build_edit(root, Path(a["album_path"]), "album_genre", dst)
+        if edit:
+            edits.append(edit)
+    if not edits:
+        return True, "", 0
+    ok, err = apply_edits(edits)
+    return ok, err, len(edits)
+
+
 def find_node(root: Path, path: Path) -> "Node | None":
     """Locate the Node whose .path == *path* within build_tree(root)."""
     path = Path(path)
