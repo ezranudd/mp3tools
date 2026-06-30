@@ -77,6 +77,7 @@ class Job:
         self.error = ""
         self.prompt: _Prompt | None = None
         self.cancelled = False
+        self.cancel_event = threading.Event()        # set by cancel(); polled by rip_cd.rip
         self._import_started: float | None = None   # monotonic clock for import ETA
         self._lock = threading.RLock()
         self._thread: threading.Thread | None = None
@@ -160,6 +161,7 @@ class Job:
 
     def cancel(self) -> None:
         self.cancelled = True
+        self.cancel_event.set()                      # aborts an in-flight rip subprocess
         with self._lock:
             p = self.prompt
         if p is not None and not p.event.is_set():
@@ -397,6 +399,55 @@ def _run_import(job: Job, params: dict) -> None:
             shutil.rmtree(source, ignore_errors=True)
 
 
+def _run_rip(job: Job, params: dict) -> None:
+    """Rip the CD in `device` to a temp dir, then hand off to the import flow —
+    the headless equivalent of the TUI's RipCDView → _CDImportView (tui.py:997)."""
+    import shutil
+    import tempfile
+
+    import rip_cd
+    from import_tracks import import_tracks
+
+    root = Path(params["path"])
+    device = params["device"]
+    dry_run = bool(params.get("dry_run", False))
+    cfg = settings_mod.load(root)
+    # Used by preview_fn to compute conflicts and the default lossless bitrate.
+    job.library_root = root
+    job.import_bitrate = cfg.get("import_bitrate", 320)
+
+    rip_dir = Path(tempfile.mkdtemp(prefix="mp3tools_rip_"))
+    ripped = False
+    try:
+        def progress_fn(track: int, total: int, pct: int) -> None:
+            if pct <= 0:
+                return
+            job.set_progress(f"Ripping track {track}/{total}", percent=pct)
+
+        ripped = rip_cd.rip(device, rip_dir,
+                            log_fn=job.append_log,
+                            progress_fn=progress_fn,
+                            cancel_event=job.cancel_event)
+        if not ripped or job.cancelled:
+            return
+
+        job.set_progress("")
+        job.add_sep("Importing ripped tracks")
+        import_tracks(
+            rip_dir, root, dry_run,
+            cover_art=cfg.get("cover_art", "folder"),
+            cover_art_size=cfg.get("cover_art_embed_size", 500),
+            settings=cfg,
+            preview_fn=job.preview_fn,   # all editing is graphical; no text/choice prompts
+            overall=job.import_progress,  # total-progress bar + ETA (not per-file)
+        )
+        print("\nDone.")
+    finally:
+        shutil.rmtree(rip_dir, ignore_errors=True)
+        if ripped and cfg.get("eject_cd_after_import"):
+            rip_cd.eject_device(device)
+
+
 def _run_sync(job: Job, params: dict) -> None:
     import shutil
     import sync_library as sync
@@ -445,6 +496,7 @@ _RUNNERS = {
     "standardize": _run_standardize,
     "import": _run_import,
     "sync": _run_sync,
+    "rip": _run_rip,
 }
 
 

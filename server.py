@@ -31,6 +31,7 @@ from pydantic import BaseModel
 import audit
 import browse
 import fetch_art
+import rip_cd
 import settings as settings_mod
 import sync_library as sync
 import webauth
@@ -1256,14 +1257,22 @@ async def api_import_upload_file(request: Request, token: str = Query(...),
     return JSONResponse({"ok": True})
 
 
-# ── Jobs (interactive operations: standardize, import, sync) ──────────────────
+# ── Rip (CD → temp dir → import) ──────────────────────────────────────────────
+
+@app.get("/api/rip/devices")
+def api_rip_devices() -> JSONResponse:
+    """Optical drives present on the host running the server (owner-only)."""
+    return JSONResponse({"devices": [str(d) for d in rip_cd.detect_cd_devices()]})
+
+
+# ── Jobs (interactive operations: standardize, import, sync, rip) ─────────────
 
 class JobStart(BaseModel):
-    kind: str                  # "standardize" | "import" | "sync"
+    kind: str                  # "standardize" | "import" | "sync" | "rip"
     dry_run: bool = False
     source: str = ""           # import only: source directory (may be outside root)
     upload_token: str = ""     # import only: drag-and-drop upload session token
-    device: str = ""           # sync only: device directory (outside root)
+    device: str = ""           # sync: device dir; rip: optical device path
     selection: dict = {}       # sync only: {artist_path: "all" | [album_paths]}
 
 
@@ -1291,6 +1300,11 @@ def api_start_job(body: JobStart) -> JSONResponse:
         params["device"] = str(_device(body.device))
         _validate_selection(body.selection)
         params["selection"] = body.selection
+    elif body.kind == "rip":
+        valid = {str(d) for d in rip_cd.detect_cd_devices()}
+        if body.device not in valid:
+            raise HTTPException(status_code=400, detail="unknown CD device")
+        params["device"] = body.device
     try:
         job = MANAGER.start(body.kind, params)
     except ValueError as e:

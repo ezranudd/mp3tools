@@ -10,7 +10,7 @@ let polling = false;
 let answering = false;
 const subs = new Set();
 
-const LABELS = { sync: "Sync", standardize: "Standardize", import: "Import" };
+const LABELS = { sync: "Sync", standardize: "Standardize", import: "Import", rip: "Rip CD" };
 export function jobLabel(kind) { return LABELS[kind] || "Operation"; }
 
 function view() {

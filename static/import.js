@@ -19,10 +19,8 @@ const wanted = (name) => KEEP_EXTS.has(extOf(name));
 const isAudio = (name) => AUDIO_EXTS.includes(extOf(name));
 
 let dropped = [];   // [{ file, path }] collected from a drop / folder pick
-let pageEl = null;  // the mounted Import view, for the inline preview renderer
 
 export function show(el) {
-  pageEl = el;
   setPreviewRenderer(renderImportPreview);
   el.innerHTML = `<div class="page">
     <h2>Import</h2>
@@ -181,11 +179,13 @@ function readAllEntries(reader) {
 
 // Registered with jobs.js: render the preview prompt inline in the Import view.
 // Returns {proceed, entries} | {proceed:false}, or null to fall back to the modal
-// (e.g. when the Import view isn't currently mounted). Fully graphical: tags, cover
-// art (auto-searched in the background), and lossless bitrate are all edited here.
-function renderImportPreview(p) {
-  const host = pageEl && pageEl.isConnected ? pageEl.querySelector("#importPreview") : null;
-  if (!host) return null;
+// (e.g. when no host view is currently mounted). Fully graphical: tags, cover art
+// (auto-searched in the background), and lossless bitrate are all edited here.
+// The host is whichever mounted view (Import or Rip) carries an #importPreview div;
+// it is looked up document-wide so the same renderer drives both views.
+export function renderImportPreview(p) {
+  const host = document.querySelector("#importPreview");
+  if (!host || !host.isConnected) return null;
 
   // Merge entries that will land in the same library album (album-artist + album +
   // year — matching the import's destination), so multi-disc folders show as one

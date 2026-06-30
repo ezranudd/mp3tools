@@ -2,7 +2,7 @@
 
 > **Disclaimer:** This software is intended for managing music you own legally. Do not use it to copy, distribute, or rip media in violation of copyright law or any applicable terms of service.
 
-A terminal-based music library manager for maintaining a locally standardized MP3 collection. Covers everything from tagging and renaming to CD ripping and device sync.
+A web-based music library manager for maintaining a locally standardized MP3 collection. Covers everything from tagging and renaming to CD ripping and device sync, all from the browser.
 
 ## Installation
 
@@ -10,29 +10,30 @@ A terminal-based music library manager for maintaining a locally standardized MP
 pip install -e . --break-system-packages
 ```
 
-This registers the `mp3tools` command. After installation, launch the TUI from anywhere:
+This registers the `mp3tools` command, which launches the web server for a library:
 
 ```bash
-mp3tools
+mp3tools ~/Music                  # or: mp3tools-web ~/Music
+# → http://127.0.0.1:8765
 ```
 
-Or run individual scripts directly from the project directory:
+The headless command-line tools also run directly from the project directory:
 
 ```bash
-python tui.py
 python audit.py ~/Music
 python standardize.py ~/Music
 python standardize.py -n ~/Music   # dry run
+python import_tracks.py ~/Downloads/NewAlbum ~/Music
 ```
 
 ## Requirements
 
 ### Required
 
-| Package   | Purpose                          | Install                        |
-|-----------|----------------------------------|--------------------------------|
-| `mutagen` | ID3 tag reading/writing          | `pip install mutagen`          |
-| `wcwidth` | Unicode terminal width           | `pip install wcwidth`          |
+| Package              | Purpose                          | Install                        |
+|----------------------|----------------------------------|--------------------------------|
+| `mutagen`            | ID3 tag reading/writing          | `pip install mutagen`          |
+| `fastapi` + `uvicorn`| Web server                       | installed by `pip install -e .`|
 
 ### Optional
 
@@ -46,21 +47,16 @@ python standardize.py -n ~/Music   # dry run
 | `lame`                  | Gapless MP3 encoding (correct encoder delay/padding) | `sudo apt install lame`                            |
 | `cd-discid`             | CDDB disc ID fallback (when discid unavailable)    | `sudo apt install cd-discid`                         |
 | `cd-info`               | CD-Text reading                                    | `sudo apt install libcdio-utils`                     |
-| `fastapi` + `uvicorn`   | Optional web UI (see below)                        | `pip install -e ".[web]" --break-system-packages`    |
-| `pywebview`             | `--desktop` native-window mode for the web UI      | `pip install -e ".[desktop]" --break-system-packages`|
+| `pywebview`             | `--desktop` native-window mode                     | `pip install -e ".[desktop]" --break-system-packages`|
 
 ## Web UI
 
-An optional browser interface for previewing cover art and editing track tags.
-It is a thin [FastAPI](https://fastapi.tiangolo.com/) shell over the same library
-modules the TUI uses — no business logic is duplicated.
+The browser interface is the primary way to use mp3tools. It is a thin
+[FastAPI](https://fastapi.tiangolo.com/) shell over the shared library modules —
+no business logic is duplicated.
 
 ```bash
-# install the web extra (pulls in fastapi + uvicorn)
-pip install -e ".[web]" --break-system-packages
-
-# serve a library, then open the printed URL
-python server.py ~/Music          # or: mp3tools-web ~/Music
+mp3tools ~/Music                  # or: python server.py ~/Music
 # → http://127.0.0.1:8765
 ```
 
@@ -70,23 +66,27 @@ The left nav switches between views:
   inline (**Save tags**), rename the album, change year/genre, move it to a
   different album artist, **Find artwork** (search online sources and apply a
   cover), or **Remove art**. Edit an artist (rename / set genre) from the ✎ on
-  its row. All structural edits go through the same builders the TUI uses.
+  its row. Built-in gapless player.
 - **Audit** — read-only compliance scan, grouped by album with category labels.
 - **Standardize** — runs the full pipeline using your saved Settings. Interactive
   steps (fill missing tags, confirm deletions, choose lossless bitrate) prompt
   right in the browser.
-- **Import** — copy tracks from a source folder into the library; review an
-  editable preview, then answer any prompts.
-- **Sync** — mirror selected artists/albums to a device: enter the device path,
-  tick what to sync (tri-state per artist, expand for individual albums), preview
-  the plan (files/bytes to copy & delete vs. free space), then run it.
+- **Import** — copy tracks from a dragged-in folder (or a server-side path) into
+  the library; review an editable preview (tags, cover art, lossless bitrate),
+  then import.
+- **Import CD** — rip the disc in the server's optical drive to FLAC, look up
+  metadata (MusicBrainz → gnudb → CD-Text), then review the same editable import
+  preview before the tracks land in the library.
+- **Sync** — mirror selected artists/albums to a device: pick an auto-detected
+  device, tick what to sync (tri-state per artist, expand for individual albums),
+  preview the plan (files/bytes to copy & delete vs. free space), then run it.
 - **Settings** — edit every option (cover-art mode, preserve flags, art sources,
   API keys) and save to `{root}/.mp3tools`.
 
-Standardize, Import and Sync run as background **jobs** with a live log; the
-browser polls each job and surfaces its prompts as dialogs (the same callback
-contract the TUI uses). Only one operation runs at a time. Tag rules (ID3v2.3,
-`TPE2` album-artist, etc.) are enforced by the shared modules exactly as in the TUI.
+Standardize, Import, Import CD and Sync run as background **jobs** with a live
+log; the browser polls each job and surfaces its prompts as dialogs. Only one
+operation runs at a time. Tag rules (ID3v2.3, `TPE2` album-artist, etc.) are
+enforced by the shared modules.
 
 Pass `--host`/`--port` to change the bind address, or `--desktop` (requires the
 `desktop` extra) to open in a native window instead of a browser tab.
@@ -94,7 +94,7 @@ Pass `--host`/`--port` to change the bind address, or `--desktop` (requires the
 ### Sharing on the local network (read-only)
 
 ```bash
-python server.py ~/Music --lan
+mp3tools ~/Music --lan
 # → http://127.0.0.1:8765            (this machine: full access)
 # → http://192.168.1.50:8765         (local network: read-only browse + playback)
 ```
@@ -105,26 +105,16 @@ by client IP: requests from the machine running the server (loopback) get the
 full UI; every other device is a **read-only guest** — no audit, standardize,
 import, sync, tag/art editing, or settings changes (the server returns `403` and
 the guest UI hides those controls). There is no login. Only use `--lan` on a
-network you trust.
+network you trust. For authenticated internet access behind a TLS reverse proxy,
+see `--remote` and the `Caddyfile`.
 
-> **Heads-up:** edits, standardize, import and sync all write to disk. Point the
-> server at a copy of your library if you want to experiment safely.
->
-> CD ripping is not in the web UI yet — use the TUI for that.
+> **Heads-up:** edits, standardize, import, rip and sync all write to disk. Point
+> the server at a copy of your library if you want to experiment safely.
 
 ## Features
 
-### TUI (`tui.py`)
-
-The TUI is a curses-based screen-stack interface. The main menu provides access to all workflows:
-
-- **Browse** — navigate the library tree, view and edit tags inline, fetch or remove cover art per album or artist
-- **Audit** — read-only scan; reports every compliance violation with counts and per-file detail
-- **Standardize** — runs all fix steps in sequence (see [Standardization Steps](#standardization-steps))
-- **Import** — copy tracks from a source directory into the library, normalizing tags and optionally converting lossless files; shows a preview before committing
-- **Sync** — mirror selected artist folders to a device path
-- **Rip CD** — rip a CD to FLAC, look up metadata from MusicBrainz → gnudb → CD-Text, then pass the output straight to the import workflow
-- **Settings** — configure per-library options (cover art mode, online art sources, optional standardization steps)
+The browser views above are backed by these modules, each of which also has a
+headless command-line entry point (except where noted):
 
 ### Audit (`audit.py`)
 
@@ -185,8 +175,8 @@ Copies tracks from a source directory into the library:
 - Reads existing tags or infers them from filenames
 - Normalizes and sanitizes all tag values
 - Optionally converts FLAC/ALAC source files to gapless MP3 (ffmpeg decode → lame encode)
-- Shows an interactive preview of the proposed import before writing anything
-- Prompts for any tags that couldn't be resolved automatically
+- In the browser, shows an editable preview (tags, cover art, lossless bitrate)
+  before writing; on the CLI, prints a summary and proceeds non-interactively
 
 ### CD Ripping (`rip_cd.py`)
 
@@ -196,7 +186,9 @@ Rips a CD to FLAC using cdparanoia, then looks up metadata in order:
 2. **gnudb (CDDB)** — via `cd-discid` or `python-discid` TOC data
 3. **CD-Text** — reads metadata embedded on the disc via `cd-info`
 
-Tags are written to the FLAC files and the output directory is passed directly to the import workflow.
+Tags are written to the FLAC files and the output is fed straight into the import
+workflow. In the web UI this is the **Import CD** view: the server (which owns the
+optical drive) rips locally, then presents the editable import preview.
 
 ### Artwork (`fetch_art.py`)
 
@@ -207,7 +199,9 @@ Multi-source artwork search with per-source rate limiting:
 - **TheAudioDB** — requires API key in settings
 - **Discogs** — interactive-only (requires Discogs token); not used in batch fetch
 
-In the browser, press `r` on an album to search and pick artwork interactively, or on an artist to batch-fetch for all albums under it. Press `x` to remove folder art, embedded art, or both.
+In the browser, use **Find artwork** on an album to search and pick artwork, or on
+an artist to batch-fetch for all albums under it, and **Remove art** to delete
+folder art, embedded art, or both.
 
 Art can be saved as a folder `cover.jpg`, embedded as an APIC frame, or both, depending on the library's cover art mode setting.
 
@@ -222,7 +216,9 @@ Art can be saved as a folder `cover.jpg`, embedded as an APIC frame, or both, de
 
 ### Sync (`sync_library.py`)
 
-Interactive TUI for mirroring artist folders to a target device path. Select artists to include, then sync copies the album structure to the destination.
+Mirrors selected artist folders to a target device path. Auto-detects mounted
+devices, builds a copy/delete plan against the device, and applies it. Driven
+from the **Sync** view.
 
 ## Library Standard
 
@@ -247,15 +243,16 @@ All files are required to comply with the rules in `standard.md`, which covers:
 
 | Module               | Role                                                         |
 |----------------------|--------------------------------------------------------------|
-| `tui.py`             | TUI entry point and screen-stack main loop                   |
+| `server.py`          | FastAPI web server (`mp3tools` entry point)                  |
+| `webjobs.py`         | Background job runner (standardize / import / rip / sync)    |
+| `webauth.py`         | Remote-access auth: password, device whitelist, sessions     |
 | `audit.py`           | Read-only compliance scanner                                 |
 | `standardize.py`     | 15-step library fixer                                        |
-| `browse.py`          | Interactive library browser (also runs standalone)           |
+| `browse.py`          | Library tree, tag I/O, and edit logic (web Browse core)      |
 | `import_tracks.py`   | Track import and tag normalization                           |
-| `import_preview.py`  | Import preview screen (used by TUI and standalone)           |
-| `sync_library.py`    | Device sync (also runs standalone)                           |
+| `sync_library.py`    | Device detection, sync planning, and mirroring               |
 | `fetch_art.py`       | Multi-source artwork search and download                     |
 | `rip_cd.py`          | CD ripping, disc ID, and metadata lookup                     |
 | `convert_lossless.py`| FLAC/ALAC → gapless MP3 (ffmpeg decode → lame encode)        |
 | `settings.py`        | Per-library settings (JSON stored as `{root}/.mp3tools`)     |
-| `termtext.py`        | Unicode-aware terminal layout (`cell_width`, `clip_cells`, …)|
+| `chars.py`           | Shared character-normalization table                         |

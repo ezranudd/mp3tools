@@ -13,6 +13,7 @@ import { goBack } from "./tree.js";
 import * as audit from "./audit.js";
 import * as standardize from "./standardize.js";
 import * as importView from "./import.js";
+import * as ripView from "./rip.js";
 import * as syncView from "./sync.js";
 import * as settings from "./settings.js";
 import * as devices from "./devices.js";
@@ -25,6 +26,7 @@ const VIEWS = [
   ["audit", "Audit", audit, "✓"],
   ["standardize", "Standardize", standardize, "✦"],
   ["import", "Import", importView, "↧"],
+  ["rip", "Import CD", ripView, "💿"],
   ["sync", "Sync", syncView, "⇄"],
   ["settings", "Settings", settings, "⚙"],
 ];

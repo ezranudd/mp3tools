@@ -6,15 +6,14 @@ build-backend = "setuptools.build_meta"
 name = "mp3tools"
 version = "1.0.0"
 requires-python = ">=3.8"
-dependencies = ["mutagen", "wcwidth"]
+dependencies = ["mutagen", "fastapi", "uvicorn"]
 
 [project.optional-dependencies]
-web = ["fastapi", "uvicorn"]
-desktop = ["fastapi", "uvicorn", "pywebview"]
+desktop = ["pywebview"]
 
 [project.scripts]
-mp3tools = "tui:main"
+mp3tools = "server:main"
 mp3tools-web = "server:main"
 
 [tool.setuptools]
-py-modules = ["tui", "audit", "browse", "import_tracks", "standardize", "convert_lossless", "import_preview", "sync_library", "termtext", "settings", "fetch_art", "rip_cd", "ui", "chars", "server", "webjobs"]
+py-modules = ["audit", "browse", "import_tracks", "standardize", "convert_lossless", "sync_library", "settings", "fetch_art", "rip_cd", "chars", "server", "webjobs", "webauth"]

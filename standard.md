@@ -175,7 +175,7 @@ Groups files by album folder. For each folder that has any missing required tags
 - **Album, Genre**: prompted interactively, applied to all files in the folder.
 - **Title**: prompted per file; if the filename contains ` - `, the portion after it is offered as a suggestion.
 
-In the TUI, text prompts are answered inline. In CLI mode, `input()` is used.
+In the web UI, text prompts are answered in a browser dialog. In CLI mode, `input()` is used.
 
 ### Step 3 — Enforce ID3v2.3
 
@@ -287,10 +287,10 @@ These are stored per-library in `{library_root}/.mp3tools` and control condition
 
 | Command / Script     | Purpose                                                   |
 |----------------------|-----------------------------------------------------------|
-| `mp3tools` / `tui.py` | TUI — primary entry point; browse, audit, standardize, import, sync, rip |
+| `mp3tools` / `server.py` | Web UI — primary entry point; browse, audit, standardize, import, sync, rip |
 | `audit.py`           | Scan and report all compliance issues (read-only)         |
 | `standardize.py`     | Run all fixes in order; prompts for missing tags          |
-| `browse.py`          | Browse library in an interactive terminal tree (standalone) |
+| `browse.py`          | Library tree, tag I/O, and edit logic (web Browse core)   |
 | `import_tracks.py`   | Copy and tag tracks from a source directory               |
 | `sync_library.py`    | Mirror selected artist folders to a device path           |
 | `fetch_art.py`       | Multi-source album artwork search and download            |

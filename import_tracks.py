@@ -26,7 +26,6 @@ from convert_lossless import (
     read_cue_tracks, has_lame_header, _has_lame_binary, _lame_pipe_convert,
 )
 from chars import CHAR_REPLACEMENTS
-from import_preview import run_preview
 from standardize import _is_gapless_key
 from mutagen.mp3 import MP3 as _MP3Info
 from mutagen.id3 import (
@@ -338,8 +337,7 @@ def read_tags(mp3: Path) -> dict | None:
 
 # ── Prompting ──────────────────────────────────────────────────────────────────
 
-def fill_album_tags(group: list[tuple[Path, dict]], label: str, dry_run: bool,
-                    *, ask_text=None) -> None:
+def fill_album_tags(group: list[tuple[Path, dict]], label: str, dry_run: bool) -> None:
     """Auto-fill/suggest album tags in place — never prompts. Year←folder/1900,
     Genre←'Unknown', Album Artist←Artist, and propagate any Artist/Album value found
     on one track to the rest. Truly-missing Artist/Album are left blank for the UI."""
@@ -363,7 +361,7 @@ def fill_album_tags(group: list[tuple[Path, dict]], label: str, dry_run: bool,
             td["ALBUMARTIST"] = td["TPE1"]
 
 
-def fill_track_tags(mp3: Path, td: dict, dry_run: bool, *, ask_text=None) -> None:
+def fill_track_tags(mp3: Path, td: dict, dry_run: bool) -> None:
     """Suggest a Title from the filename if missing — never prompts."""
     if td.get("TIT2"):
         return
@@ -465,11 +463,28 @@ def _try_fetch_art(artist: str, album: str, settings: dict, max_size: int) -> tu
         return None
 
 
+def _headless_preview(entries, has_lossless: bool, default_bitrate: int = 320) -> bool:
+    """Non-interactive preview for the CLI (no curses): print a one-line summary per
+    track, default the lossless→MP3 bitrate so those entries survive the post-preview
+    filter, and always proceed. The web UI uses a graphical preview_fn instead."""
+    print(f"\nImporting {len(entries)} track(s):")
+    for path, td in entries:
+        num = td.get("TRCK", "") or "?"
+        title = td.get("TIT2") or Path(path).name
+        artist = td.get("TPE1", "")
+        print(f"  {num:>3}. {artist} - {title}".rstrip(" -"))
+        if (has_lossless and Path(path).suffix.lower() in LOSSLESS_EXTENSIONS
+                and td.get("_LOSSLESS_BITRATE") is None):
+            td["_LOSSLESS_BITRATE"] = default_bitrate
+    if has_lossless:
+        print(f"  (lossless files convert to MP3 at {default_bitrate} kbps)")
+    return True
+
+
 def import_tracks(source: Path, library: Path, dry_run: bool,
                   cover_art: str = "folder", cover_art_size: int = 500,
                   settings: dict | None = None,
-                  *, preview_fn=None, ask_text=None, ask_choice=None,
-                  progress=None, overall=None) -> None:
+                  *, preview_fn=None, progress=None, overall=None) -> None:
     print(f"Source  : {source}")
     print(f"Library : {library}")
     if dry_run:
@@ -526,9 +541,9 @@ def import_tracks(source: Path, library: Path, dry_run: bool,
     for src_folder in sorted(by_src):
         group = by_src[src_folder]
         label = src_folder.name if src_folder != source else source.name
-        fill_album_tags(group, label, dry_run, ask_text=ask_text)
+        fill_album_tags(group, label, dry_run)
         for mp3, td in group:
-            fill_track_tags(mp3, td, dry_run, ask_text=ask_text)
+            fill_track_tags(mp3, td, dry_run)
 
     # ── Normalize tags in memory ───────────────────────────────────────────────
     def _normalize_entries(elist):
@@ -542,7 +557,12 @@ def import_tracks(source: Path, library: Path, dry_run: bool,
     _normalize_entries(entries)
 
     # ── Import preview ─────────────────────────────────────────────────────────
-    _preview = preview_fn or run_preview
+    # The web UI always supplies a graphical preview_fn. The CLI has no UI, so it
+    # falls back to a non-interactive summary that defaults the lossless bitrate
+    # (otherwise those entries are dropped below) and proceeds.
+    default_bitrate = (settings or {}).get("import_bitrate", 320)
+    _preview = preview_fn or (lambda elist, has_loss: _headless_preview(
+        elist, has_loss, default_bitrate))
     proceed = _preview(entries, bool(all_lossless))
     if not proceed:
         print("\nImport aborted.")
