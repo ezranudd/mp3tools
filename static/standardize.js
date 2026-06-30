@@ -26,5 +26,6 @@ export function show(el) {
     catch (e) { toast(e.message, true); }
   };
   disableWhileBusy(runBtn);   // can't standardize while another operation runs
-  mountJobPane(el.querySelector("#jobArea"), { kind: "standardize" });
+  // Step bar by default; the full change log is tucked behind "Show details".
+  mountJobPane(el.querySelector("#jobArea"), { kind: "standardize", collapsible: true });
 }

@@ -61,5 +61,6 @@ export async function show(el) {
 
   // Block ripping while any job is active or no drive is selected.
   disableWhileBusy(ripBtn, () => !sel.value);
-  mountJobPane(el.querySelector("#jobArea"), { kind: "rip", log: true });
+  // Just the progress bar + a tracks/percent/ETA line — no raw rip log.
+  mountJobPane(el.querySelector("#jobArea"), { kind: "rip", log: false });
 }

@@ -318,16 +318,28 @@ def _run_standardize(job: Job, params: dict) -> None:
     print(f"Cover art : {cover_art}")
     print(f"Mode      : {'DRY RUN' if dry_run else 'LIVE'}")
 
-    job.set_progress("Step 0: Convert lossless files")
+    # Determinate progress across all phases we'll actually run (the optional ones
+    # are known from cfg up front): lossless + the core STEPS + embed? + fetch?
+    n_steps = len(std.STEPS)
+    total_phases = 1 + n_steps
+    if cover_art in ("embed", "both"):
+        total_phases += 1
+    if fetch_art_online:
+        total_phases += 1
+    done_phases = 0
+
+    job.set_progress("Convert lossless files", percent=int(done_phases / total_phases * 100))
     job.add_sep("Step 0: Convert lossless files")
     step_convert_lossless(root, dry_run, ask_choice=ac)
+    done_phases += 1
 
     for idx, fn in enumerate(std.STEPS, 1):
         if job.cancelled:
             print("\nCancelled.")
             break
         name = _STD_STEP_NAMES[idx - 1] if idx <= len(_STD_STEP_NAMES) else fn.__name__
-        job.set_progress(f"Step {idx}: {name}")
+        job.set_progress(f"Step {idx}/{n_steps} · {name}",
+                         percent=int(done_phases / total_phases * 100))
         job.add_sep(f"Step {idx}: {name}")
         if fn is std.step_strip_tags:
             fn(root, dry_run, keep_apic=keep_apic, keep_replay_gain=preserve_replay_gain,
@@ -355,18 +367,22 @@ def _run_standardize(job: Job, params: dict) -> None:
             fn(root, dry_run, ask_choice=ac)
         else:
             fn(root, dry_run)
+        done_phases += 1
 
     if cover_art in ("embed", "both") and not job.cancelled:
-        job.set_progress("Step 15: Embed cover art")
+        job.set_progress("Embed cover art", percent=int(done_phases / total_phases * 100))
         job.add_sep("Step 15: Embed cover art")
         std.step_embed_cover_art(root, dry_run, max_size=cover_art_size,
                                  delete_covers=(cover_art == "embed"))
+        done_phases += 1
 
     if fetch_art_online and not job.cancelled:
-        job.set_progress("Step 16: Fetch missing album art online")
+        job.set_progress("Fetch missing album art online",
+                         percent=int(done_phases / total_phases * 100))
         job.add_sep("Step 16: Fetch missing album art online")
         std.step_fetch_missing_art(root, dry_run, settings=cfg,
                                    cover_art=cover_art, max_size=cover_art_size)
+        done_phases += 1
 
     print("\nDone.")
 
@@ -419,10 +435,21 @@ def _run_rip(job: Job, params: dict) -> None:
     rip_dir = Path(tempfile.mkdtemp(prefix="mp3tools_rip_"))
     ripped = False
     try:
+        # rip_cd.rip() reports sector progress (0-100) for the *current* track;
+        # turn that into an overall fraction so the bar advances monotonically,
+        # and attach an ETA. Shown as e.g. "Track 4/11 · 38% · ETA 2:14".
+        rip_started: float | None = None
+
         def progress_fn(track: int, total: int, pct: int) -> None:
+            nonlocal rip_started
             if pct <= 0:
                 return
-            job.set_progress(f"Ripping track {track}/{total}", percent=pct)
+            if rip_started is None:
+                rip_started = time.monotonic()
+            frac = ((track - 1) + pct / 100.0) / max(1, total)
+            overall = int(frac * 100)
+            eta = _eta(frac, 1.0, time.monotonic() - rip_started)
+            job.set_progress(f"Track {track}/{total} · {overall}%{eta}", percent=overall)
 
         ripped = rip_cd.rip(device, rip_dir,
                             log_fn=job.append_log,

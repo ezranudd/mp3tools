@@ -360,6 +360,13 @@
   .log { font-family:ui-monospace, monospace; font-size:12px; white-space:pre-wrap;
          background:var(--code-bg); border:1px solid var(--line); border-radius:6px;
          padding:10px; height:50vh; overflow:auto; }
+  .joblog { margin-top:4px; }
+  .joblog summary { cursor:pointer; color:var(--muted); font-size:12px; list-style:none;
+                    user-select:none; }
+  .joblog summary::-webkit-details-marker { display:none; }
+  .joblog summary::before { content:"\25b8  "; }
+  .joblog[open] summary::before { content:"\25be  "; }
+  .joblog .log { margin-top:6px; }
   .art { cursor:pointer; border:2px solid transparent; border-radius:6px; padding:4px;
          text-align:center; }
   .art:hover { border-color:var(--accent); }
