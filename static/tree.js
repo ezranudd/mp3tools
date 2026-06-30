@@ -14,17 +14,21 @@ let rootEl;           // the #view container (holds #browseSelect + #tree + #det
 let treeEl, indexEl, detailEl;
 let subscribed = false;
 let pendingReveal = null;   // { artist_path, album_path, track_path? } from search
-let browseMode = "artists"; // artists | genres — which index the left pane shows
+let browseMode = "artists"; // artists | genres | albums — which the left pane shows
 let browseLevel = "select"; // select | index | detail (mobile drill-down level)
-let genreAlbums = [];       // albums in the current genre grid
-let genreName = "";         // current genre being shown
-let genreSort = "az";       // az | date | rand
+// Shared album grid (used by both the Genres mode and the Albums mode).
+let gridAlbums = [];        // albums in the current grid
+let gridKind = "";          // "genre" | "albums" — what the grid is showing
+let gridName = "";          // the genre name when gridKind === "genre"
+let gridSort = "az";        // az | date | rand
+let gridEmptyMsg = "No albums.";
+let albumsDrilled = false;  // drilled into an artist from the Albums grid (Back → grid)
 
 // Ask Browse to jump to an album/track once it's (re)mounted.
 export function requestReveal(target) { pendingReveal = target; }
 
-// Mobile drill-down: Browse has three levels — select (choose Artists/Genres),
-// index (the chosen list), detail (album list / genre grid). On desktop the levels
+// Mobile drill-down: Browse has three levels — select (choose Artists/Genres/Albums),
+// index (the chosen list), detail (album list / grid). On desktop the levels
 // are visual no-ops (tabs + index + detail all show); the classes only drive the
 // mobile CSS and the floating back FAB (which lives outside #view, so it keys off
 // the body mirror). setLevel reflects the level as show-index / show-detail classes.
@@ -39,8 +43,16 @@ function setLevel(level) {
   }
 }
 function enterDetail() { setLevel("detail"); }
-// Back goes up exactly one level: detail → index → select.
-export function goBack() { setLevel(browseLevel === "detail" ? "index" : "select"); }
+// Back goes up exactly one level. Albums has no index list, so its grid sits at the
+// detail level: drilling into an artist from it returns to the grid, then to select.
+export function goBack() {
+  if (browseMode === "albums") {
+    if (albumsDrilled) { albumsDrilled = false; reshowGrid(); }
+    else setLevel("select");
+    return;
+  }
+  setLevel(browseLevel === "detail" ? "index" : "select");
+}
 const BACK_BAR = `<div class="backbar"><button class="btn" data-back>‹ Back</button></div>`;
 function wireBack() {
   const b = detailEl.querySelector("[data-back]");
@@ -52,11 +64,13 @@ export async function show(container) {
     <div id="browseSelect">
       <button class="bigchoice" data-mode="artists"><span class="bcicon">♪</span><span>Artists</span></button>
       <button class="bigchoice" data-mode="genres"><span class="bcicon">🎵</span><span>Genres</span></button>
+      <button class="bigchoice" data-mode="albums"><span class="bcicon">▦</span><span>Albums</span></button>
     </div>
     <nav id="tree">
       <div class="browsetabs">
         <button data-mode="artists">Artists</button>
         <button data-mode="genres">Genres</button>
+        <button data-mode="albums">Albums</button>
       </div>
       <div id="indexList"></div>
     </nav>
@@ -79,8 +93,9 @@ export async function show(container) {
     });
     subscribePlayer(updatePlayingHighlight);
   }
-  // Start at the select level (mobile shows the two options; desktop shows
-  // everything side by side), with the default mode's index pre-loaded.
+  // Start at the select level (mobile shows the mode options; desktop shows
+  // everything side by side), with the active mode pre-loaded. loadMode("albums")
+  // drills to its grid, so re-assert the select level afterward.
   setLevel("select");
   if (pendingReveal) {
     const target = pendingReveal;
@@ -90,20 +105,27 @@ export async function show(container) {
     applyReveal(target);
   } else {
     await loadMode(browseMode);
+    setLevel("select");
   }
 }
 
-// Switch the active index between Artists and Genres and reflect it on the tabs.
-// Pure load — does not change the drill-down level.
+// Load the active mode and reflect it on the tabs. Pure load — does not change the
+// drill-down level. Artists/Genres populate the left index list; Albums has no list
+// (the grid lives in the wide detail pane) so it renders the grid directly.
 function loadMode(mode) {
   browseMode = mode;
   if (rootEl) rootEl.querySelectorAll("[data-mode]").forEach(b =>
     b.classList.toggle("active", b.dataset.mode === mode));
-  return mode === "genres" ? loadGenres() : loadTree();
+  if (mode === "albums") { indexEl.innerHTML = ""; return showAlbums(); }
+  if (mode === "genres") return loadGenres();
+  return loadTree();
 }
 
-// User picked a mode (tab or landing button): load it and drill into the index.
+// User picked a mode (tab or landing button): load it and drill in one level. Albums
+// jumps straight to its grid (detail); Artists/Genres land on their index list.
 function setBrowseMode(mode) {
+  albumsDrilled = false;
+  if (mode === "albums") { setLevel("detail"); loadMode(mode); return; }
   detailEl.innerHTML = `<p class="muted">Select ${mode === "genres" ? "a genre" : "an artist"}.</p>`;
   setLevel("index");
   loadMode(mode);
@@ -145,6 +167,12 @@ function updatePlayingHighlight(path) {
 function rerender() {
   if (!treeEl || !treeEl.isConnected) return;
   const anchor = captureAnchor();
+  // Albums has no left index list and its grid is edit-agnostic; only re-render the
+  // artist page if we've drilled into one (preserving the grid's sort otherwise).
+  if (browseMode === "albums") {
+    if (CURRENT) selectArtist(CURRENT.path).then(() => restoreAnchor(anchor));
+    return;
+  }
   loadMode(browseMode).then(() => {
     if (CURRENT) selectArtist(CURRENT.path).then(() => restoreAnchor(anchor));
   });
@@ -301,25 +329,43 @@ async function refreshCurrent() {
   if (CURRENT) selectArtist(CURRENT.path);
 }
 
-// ── Genre grid (click an album's genre to see all same-genre albums) ──────────
+// ── Album grid (shared by Genres mode and Albums mode) ────────────────────────
+// A sortable cover grid in the detail pane. Clicking a card reveals that album's
+// artist page. Genres reach it by picking a genre; Albums shows every album at once.
 
+// Genre grid: click a genre (or an album's genre link) to see same-genre albums.
 async function showGenre(genre, headEl) {
-  CURRENT = null;     // a grid, not an artist — leave it alone on job/mode rerenders
   clearSel();
   if (headEl) headEl.classList.add("sel");
+  gridName = genre;
+  await showGrid("genre", `Genre · ${escapeHtml(genre)}`,
+    "/api/genre?name=" + encodeURIComponent(genre), "No albums in this genre.");
+}
+
+// Albums grid: every album in the library.
+async function showAlbums() {
+  clearSel();
+  await showGrid("albums", "All albums", "/api/albums", "No albums.");
+}
+
+// Fetch *url* → {albums} and render the sortable grid into #detail. *resetSort*
+// is false on re-renders (mode/job toggles) so the user's sort choice survives.
+async function showGrid(kind, heading, url, emptyMsg, resetSort = true) {
+  CURRENT = null;     // a grid, not an artist — leave it alone on job/mode rerenders
+  gridKind = kind;
+  gridEmptyMsg = emptyMsg;
+  if (resetSort) gridSort = "az";
   enterDetail();
-  genreName = genre;
-  genreSort = "az";
   detailEl.innerHTML = `<p class="muted">Loading…</p>`;
   let data;
-  try { data = await jget("/api/genre?name=" + encodeURIComponent(genre)); }
+  try { data = await jget(url); }
   catch (e) { toast(e.message, true); return; }
-  genreAlbums = data.albums || [];
+  gridAlbums = data.albums || [];
   detailEl.innerHTML = `
     ${BACK_BAR}
     <div class="artisthead genrehead">
-      <h2>Genre · ${escapeHtml(genre)}</h2>
-      <div class="sub">${genreAlbums.length} album${genreAlbums.length === 1 ? "" : "s"}</div>
+      <h2>${heading}</h2>
+      <div class="sub">${gridAlbums.length} album${gridAlbums.length === 1 ? "" : "s"}</div>
       <div class="sortbar">
         <span class="muted">Sort:</span>
         <button class="btn sortbtn" data-sort="az">A–Z</button>
@@ -327,18 +373,25 @@ async function showGenre(genre, headEl) {
         <button class="btn sortbtn" data-sort="rand">Random</button>
       </div>
     </div>
-    <div class="genregrid" id="genreGrid"></div>`;
+    <div class="genregrid" id="albumGrid"></div>`;
   wireBack();
   detailEl.querySelectorAll(".sortbtn").forEach(b =>
-    b.onclick = () => { genreSort = b.dataset.sort; renderGenreGrid(); });
-  renderGenreGrid();
+    b.onclick = () => { gridSort = b.dataset.sort; renderGrid(); });
+  renderGrid();
 }
 
-function sortedGenreAlbums() {
-  const list = genreAlbums.slice();
-  if (genreSort === "az") {
+// Re-show whichever grid is active (used by Back from a drilled-in artist page).
+function reshowGrid() {
+  if (gridKind === "albums") showGrid("albums", "All albums", "/api/albums", gridEmptyMsg, false);
+  else showGrid("genre", `Genre · ${escapeHtml(gridName)}`,
+    "/api/genre?name=" + encodeURIComponent(gridName), gridEmptyMsg, false);
+}
+
+function sortedGridAlbums() {
+  const list = gridAlbums.slice();
+  if (gridSort === "az") {
     list.sort((a, b) => (a.album || "").localeCompare(b.album || "", undefined, { sensitivity: "base" }));
-  } else if (genreSort === "date") {
+  } else if (gridSort === "date") {
     list.sort((a, b) => (a.year || "9999").localeCompare(b.year || "9999"));
   } else {
     for (let i = list.length - 1; i > 0; i--) {
@@ -349,16 +402,16 @@ function sortedGenreAlbums() {
   return list;
 }
 
-function renderGenreGrid() {
-  const grid = detailEl.querySelector("#genreGrid");
+function renderGrid() {
+  const grid = detailEl.querySelector("#albumGrid");
   if (!grid) return;
   detailEl.querySelectorAll(".sortbtn").forEach(b =>
-    b.classList.toggle("active", b.dataset.sort === genreSort));
-  if (!genreAlbums.length) {
-    grid.innerHTML = `<p class="muted">No albums in this genre.</p>`;
+    b.classList.toggle("active", b.dataset.sort === gridSort));
+  if (!gridAlbums.length) {
+    grid.innerHTML = `<p class="muted">${gridEmptyMsg}</p>`;
     return;
   }
-  grid.innerHTML = sortedGenreAlbums().map(a => {
+  grid.innerHTML = sortedGridAlbums().map(a => {
     const cover = "/api/cover?path=" + encodeURIComponent(a.album_path);
     return `<div class="gcard" data-album="${escapeAttr(a.album_path)}"
                  data-artist="${escapeAttr(a.artist_path)}" title="${escapeAttr((a.album || "") + " — " + (a.artist || ""))}">
@@ -367,11 +420,15 @@ function renderGenreGrid() {
       </div>`;
   }).join("");
   grid.querySelectorAll(".gcard").forEach(card =>
-    card.onclick = () => applyReveal({
-      artist_path: card.dataset.artist,
-      album_path: card.dataset.album,
-      track_path: null,
-    }));
+    card.onclick = () => {
+      // From the Albums grid, remember to return here on Back (vs the genre list).
+      if (gridKind === "albums") albumsDrilled = true;
+      applyReveal({
+        artist_path: card.dataset.artist,
+        album_path: card.dataset.album,
+        track_path: null,
+      });
+    });
 }
 
 // ── Album rendering (into an arbitrary container, bound to a state object) ─────

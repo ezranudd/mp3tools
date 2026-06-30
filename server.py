@@ -487,7 +487,8 @@ app = FastAPI(title="mp3tools web")
 # so new endpoints are private unless deliberately added. Static + "/" handle
 # the SPA; the SPA itself hides admin UI for guests (see /api/whoami).
 _GUEST_GET_PATHS = frozenset({
-    "/", "/api/tree", "/api/album", "/api/search", "/api/genre", "/api/genres",
+    "/", "/api/tree", "/api/album", "/api/albums", "/api/search",
+    "/api/genre", "/api/genres",
     "/api/track", "/api/cover", "/api/background", "/api/settings",
     "/api/whoami",
 })
@@ -706,6 +707,11 @@ def api_genre(name: str = Query("")) -> JSONResponse:
 @app.get("/api/genres")
 def api_genres() -> JSONResponse:
     return JSONResponse({"genres": browse.all_genres(ROOT)})
+
+
+@app.get("/api/albums")
+def api_albums() -> JSONResponse:
+    return JSONResponse({"albums": browse.all_albums(ROOT)})
 
 
 # ── Audio streaming ───────────────────────────────────────────────────────────

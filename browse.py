@@ -679,6 +679,18 @@ def search(root: Path, query: str, limit: int = 20) -> dict:
     return {"artists": artists, "albums": albums, "tracks": tracks}
 
 
+def _album_row(artist: "Node", album: "Node", tags: dict) -> dict:
+    """A grid row for the Browse UI: album/artist/year + the paths needed to
+    reveal it. *tags* are the first track's tags (how an album's metadata is
+    derived everywhere)."""
+    return {
+        "album": tags.get("album") or album.label,
+        "artist": tags.get("albumartist") or tags.get("artist") or artist.label,
+        "year": tags.get("year", ""),
+        "album_path": str(album.path), "artist_path": str(artist.path),
+    }
+
+
 def albums_by_genre(root: Path, genre: str) -> list[dict]:
     """All albums whose genre matches *genre* (case-insensitive, trimmed).
 
@@ -699,12 +711,20 @@ def albums_by_genre(root: Path, genre: str) -> list[dict]:
             tags = read_tags(album.children[0].path)
             if (tags.get("genre") or "").strip().lower() != want:
                 continue
-            out.append({
-                "album": tags.get("album") or album.label,
-                "artist": tags.get("albumartist") or tags.get("artist") or artist.label,
-                "year": tags.get("year", ""),
-                "album_path": str(album.path), "artist_path": str(artist.path),
-            })
+            out.append(_album_row(artist, album, tags))
+    out.sort(key=lambda a: a["album"].lower())
+    return out
+
+
+def all_albums(root: Path) -> list[dict]:
+    """Every album in the library, same row shape as albums_by_genre(), sorted
+    A-Z by album label. The Browse UI re-sorts client-side (A-Z / date / random)."""
+    out: list[dict] = []
+    for artist in build_tree(root):
+        for album in artist.children:
+            if not album.children:
+                continue
+            out.append(_album_row(artist, album, read_tags(album.children[0].path)))
     out.sort(key=lambda a: a["album"].lower())
     return out
 
