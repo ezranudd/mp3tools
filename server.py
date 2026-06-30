@@ -24,10 +24,13 @@ import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from fastapi.responses import (
+    FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+import album_stream
 import audit
 import browse
 import fetch_art
@@ -489,7 +492,8 @@ app = FastAPI(title="mp3tools web")
 _GUEST_GET_PATHS = frozenset({
     "/", "/api/tree", "/api/album", "/api/albums", "/api/search",
     "/api/genre", "/api/genres",
-    "/api/track", "/api/cover", "/api/background", "/api/settings",
+    "/api/track", "/api/album_stream", "/api/album_manifest",
+    "/api/cover", "/api/background", "/api/settings",
     "/api/whoami",
 })
 
@@ -724,6 +728,62 @@ def api_track(request: Request, path: str = Query(...), cid: str = Query(None)) 
     _touch_presence(request, cid, track_path=str(mp3))
     # FileResponse handles HTTP Range requests, so seeking/streaming work.
     return FileResponse(mp3, media_type="audio/mpeg")
+
+
+def _album_dir(path: str) -> Path:
+    album = _safe(path)
+    if not album.is_dir():
+        raise HTTPException(status_code=404, detail="album not found")
+    return album
+
+
+@app.get("/api/album_manifest")
+def api_album_manifest(path: str = Query(...)) -> JSONResponse:
+    """Per-track time offsets within the gapless stream — the client shim uses
+    these to fake per-track seek/next/prev/metadata over the single resource."""
+    return JSONResponse(album_stream.manifest(_album_dir(path)))
+
+
+@app.get("/api/album_stream")
+def api_album_stream(request: Request, path: str = Query(...),
+                     cid: str = Query(None)) -> StreamingResponse:
+    """The whole album as one continuous, gapless WAV (PCM) stream for the
+    mobile player's 'stream mode'. Range-seekable (PCM is constant-rate, so byte
+    ↔ time is linear); we serve ranges ourselves since StreamingResponse, unlike
+    FileResponse, doesn't."""
+    album = _album_dir(path)
+    lay = album_stream.layout(album)
+    total = lay["content_length"]
+    if total <= album_stream._WAV_HEADER_SIZE:
+        raise HTTPException(status_code=404, detail="album has no playable tracks")
+    _touch_presence(request, cid, track_path=str(album))
+
+    rng = request.headers.get("range")
+    start, end, status = 0, total - 1, 200
+    if rng and rng.startswith("bytes="):
+        lo, _, hi = rng[len("bytes="):].partition("-")
+        try:
+            start = int(lo) if lo else 0
+            end = int(hi) if hi else total - 1
+        except ValueError:
+            start, end = 0, total - 1
+        start = max(0, start)
+        end = min(end, total - 1)
+        if start > end:
+            raise HTTPException(status_code=416, detail="range not satisfiable")
+        status = 206
+
+    headers = {
+        "Accept-Ranges": "bytes",
+        "Content-Length": str(end - start + 1),
+        "Cache-Control": "no-store",
+    }
+    if status == 206:
+        headers["Content-Range"] = f"bytes {start}-{end}/{total}"
+    return StreamingResponse(
+        album_stream.iter_range(album, start, end),
+        status_code=status, media_type="audio/wav", headers=headers,
+    )
 
 
 # ── Admin: connected devices ──────────────────────────────────────────────────

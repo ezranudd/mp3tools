@@ -10,25 +10,39 @@
 //   • Mobile (IS_MOBILE) — a plain <audio> element. Web Audio on iOS is muted by the
 //     hardware silent switch and has no lock-screen controls; an <audio> element
 //     plays through the media channel, supports MediaSession, and streams via Range
-//     (no full in-memory decode). Gapless is sacrificed on phones (a small gap at
-//     track boundaries). The queue/transport/UI below is shared; only the sound
+//     (no full in-memory decode). Per-track mode reloads .src each track, so there
+//     is a small boundary gap. Stream mode (opt-in, mStreamOn) instead points the
+//     element at /api/album_stream — the whole album as one gapless WAV — and fakes
+//     per-track seek/next/prev/metadata over it via the manifest offsets, so there
+//     is no gap at all. The queue/transport/UI below is shared; only the sound
 //     backend differs, branched at startPlayback/toggle/seek/elapsed.
-import { toast, clientId } from "./util.js";
+import { toast, clientId, jget, getPref } from "./util.js";
 
 // Stream URL for a track, carrying our stable client id so the server's Devices
 // view can attribute "now playing" to this specific browser.
 function trackUrl(path) {
   return "/api/track?path=" + encodeURIComponent(path) + "&cid=" + encodeURIComponent(clientId());
 }
+// Whole-album gapless stream (one continuous WAV) for stream mode.
+function streamUrl(albumPath) {
+  return "/api/album_stream?path=" + encodeURIComponent(albumPath) + "&cid=" + encodeURIComponent(clientId());
+}
 
 // Phones/tablets: touch, no hover. These get the <audio> backend.
 const IS_MOBILE = window.matchMedia("(hover: none) and (pointer: coarse)").matches;
+// Per-device opt-in (Settings → Playback): on mobile, play whole albums as one
+// gapless stream instead of reloading per track. Read fresh at each playAlbum.
+const GAPLESS_PREF = "gapless_stream";
 let mAudio = null;             // HTMLAudioElement (mobile backend only)
 let mWantPos = 0;              // position (s) to restore to after a reload
 let mRetries = 0;              // reloads attempted for the current track
 let mWatchdog = 0;             // setInterval id watching for a stalled stream
 let mLastTime = 0;             // last observed currentTime, for stall detection
 const M_MAX_RETRIES = 3;
+// ── Stream-mode state (mobile, gapless single-stream) ──
+let mStreamOn = false;         // this queue is playing as one gapless album stream
+let mManifest = [];            // [{ start_sec, dur_sec, title, artist, ... }] per track
+let mStreamAlbum = null;       // album path the loaded stream/manifest is for
 
 let bar = null;
 let queue = [];          // [{ path, title, artist, track }]
@@ -123,6 +137,11 @@ function initElementBackend() {
   bar.appendChild(mAudio);
   mAudio.onended = () => {
     stopWatchdog();
+    // Stream mode: the element only ends at the end of the WHOLE album.
+    if (mStreamOn) {
+      playing = false; els.play.innerHTML = ICON.play; stopRaf(); updateMediaState();
+      return;
+    }
     if (index < queue.length - 1) startPlayback(index + 1, 0);
     else { playing = false; els.play.innerHTML = ICON.play; stopRaf(); updateMediaState(); }
   };
@@ -131,7 +150,10 @@ function initElementBackend() {
   // only surface an error once the retry budget is spent.
   mAudio.onerror = () => mRecover();
   mAudio.addEventListener("playing", () => { mLastTime = mAudio.currentTime; });
-  mAudio.addEventListener("timeupdate", () => { mLastTime = mAudio.currentTime; });
+  mAudio.addEventListener("timeupdate", () => {
+    mLastTime = mAudio.currentTime;
+    if (mStreamOn) mStreamSync();
+  });
 
   applyMediaHandlers();
 }
@@ -194,6 +216,15 @@ function mRecover() {
     return;
   }
   mRetries += 1;
+  // Stream mode: reopen the album stream on a fresh connection and restore the
+  // global position (the WAV is Range-seekable, so currentTime survives a reload).
+  if (mStreamOn) {
+    const pos = mAudio.currentTime || 0;
+    mAudio.src = streamUrl(currentAlbumPath) + "&_r=" + mRetries;
+    mStreamSeekTo(pos);
+    mAudio.play().catch(() => {});
+    return;
+  }
   mWantPos = mAudio.currentTime || mWantPos;
   mLoadSrc(mWantPos, mRetries);
 }
@@ -223,7 +254,8 @@ function mToggle() {
     els.play.innerHTML = ICON.play;
     stopRaf();
   } else if (mAudio.ended || !mAudio.src) {
-    startPlayback(index, 0);          // end-of-track → restart
+    // End → restart: the whole album in stream mode, else the current track.
+    startPlayback(mStreamOn && mAudio.ended ? 0 : index, 0);
   } else {
     mAudio.play().catch(() => {});
     playing = true;
@@ -259,6 +291,81 @@ function updateMediaState() {
   }
 }
 
+// ── Stream mode (mobile): one gapless album stream + per-track shim ────────────
+
+// Play the album as a single continuous stream, starting at track `i` + `offset`.
+// The .src/.play() happen synchronously so iOS treats this as the user gesture;
+// the manifest fetch + seek to track `i` follow asynchronously (a brief play of
+// track 0 first when i > 0, which is fine — usually i is 0).
+function mStreamStart(i, offset) {
+  index = i;
+  playing = true;
+  bar.classList.add("show");
+  els.play.innerHTML = ICON.pause;
+  mRetries = 0;
+  if (mStreamAlbum !== currentAlbumPath) {
+    mManifest = [];
+    mStreamAlbum = currentAlbumPath;
+    mAudio.src = streamUrl(currentAlbumPath);
+  }
+  reflectTrack();
+  const p = mAudio.play();
+  if (p) p.catch(err => {
+    if (err && err.name !== "AbortError") toast("Playback failed: " + (err.message || err), true);
+  });
+  startRaf();
+  startWatchdog();
+  ensureManifest().then(() => {
+    if (!mStreamOn) return;
+    const t = mManifest[i];
+    if (t) mStreamSeekTo(t.start_sec + (offset || 0));
+    reflectTrack();
+  });
+}
+
+async function ensureManifest() {
+  if (mManifest.length && mStreamAlbum === currentAlbumPath) return;
+  try {
+    const m = await jget("/api/album_manifest?path=" + encodeURIComponent(currentAlbumPath));
+    mManifest = m.tracks || [];
+    mStreamAlbum = currentAlbumPath;
+  } catch { mManifest = []; }
+}
+
+// Seek the single stream to an absolute second offset, waiting for metadata if
+// the element hasn't loaded enough to accept a currentTime yet.
+function mStreamSeekTo(sec) {
+  if (mAudio.readyState >= 1) { try { mAudio.currentTime = sec; } catch { /* ignore */ } }
+  else mAudio.addEventListener("loadedmetadata",
+    () => { try { mAudio.currentTime = sec; } catch { /* ignore */ } }, { once: true });
+}
+
+// Keep `index` in sync with the playhead as it crosses track boundaries (covers
+// both natural progression and seeks). Fired from the element's timeupdate.
+function mStreamSync() {
+  if (!mStreamOn || index < 0 || !mManifest.length) return;
+  const t = mAudio.currentTime;
+  let i = index;
+  while (i + 1 < mManifest.length && t >= mManifest[i + 1].start_sec) i++;
+  while (i > 0 && t < mManifest[i].start_sec) i--;
+  if (i !== index) { index = i; reflectTrack(); }
+}
+
+// Stream-mode transport (operate on offsets within the single stream).
+function mStreamNext() {
+  if (index < mManifest.length - 1) {
+    index += 1;
+    mStreamSeekTo(mManifest[index].start_sec);
+    reflectTrack();
+  }
+}
+function mStreamPrev() {
+  if (elapsed() > 3 || index <= 0) { seek(0); return; }
+  index -= 1;
+  mStreamSeekTo(mManifest[index].start_sec);
+  reflectTrack();
+}
+
 function ensureCtx() {
   if (ctx) return ctx;
   try {
@@ -279,6 +386,9 @@ export function playAlbum(tracks, startIndex = 0, albumPath = null) {
   }));
   currentAlbumPath = albumPath;
   if (!IS_MOBILE && !ensureCtx()) return;
+  // Stream mode needs a real album dir (the stream is per-album); fall back to the
+  // per-track backend for loose/search playback or when the pref is off.
+  mStreamOn = IS_MOBILE && !!albumPath && getPref(GAPLESS_PREF) === "1";
   startPlayback(startIndex, 0);
 }
 
@@ -441,7 +551,7 @@ function onSourceEnded(e) {
 
 async function startPlayback(i, offset) {
   if (i < 0 || i >= queue.length) return;
-  if (IS_MOBILE) { mStart(i, offset); return; }
+  if (IS_MOBILE) { mStreamOn ? mStreamStart(i, offset) : mStart(i, offset); return; }
   if (!ensureCtx()) return;
   gen += 1;
   const myGen = gen;
@@ -483,16 +593,27 @@ export function toggle() {
 }
 
 export function next() {
+  if (IS_MOBILE && mStreamOn) { mStreamNext(); return; }
   if (index < queue.length - 1) startPlayback(index + 1, 0);
 }
 
 export function prev() {
+  if (IS_MOBILE && mStreamOn) { mStreamPrev(); return; }
   if (elapsed() > 3 || index <= 0) seek(0);
   else startPlayback(index - 1, 0);
 }
 
 function seek(frac) {
   if (IS_MOBILE) {
+    // Stream mode: seek within the CURRENT track's window of the single stream.
+    if (mStreamOn) {
+      const t = mManifest[index];
+      if (t) {
+        mAudio.currentTime = t.start_sec + Math.max(0, Math.min(1, frac)) * t.dur_sec;
+        updateProgress();
+      }
+      return;
+    }
     if (mAudio && mAudio.duration) {
       mAudio.currentTime = Math.max(0, Math.min(1, frac)) * mAudio.duration;
       updateProgress();
@@ -517,12 +638,22 @@ function seek(frac) {
 
 // Trimmed duration (s) of the current track, from whichever backend is active.
 function curDuration() {
-  return IS_MOBILE ? (mAudio && mAudio.duration ? mAudio.duration : 0) : duration;
+  if (!IS_MOBILE) return duration;
+  if (mStreamOn) return mManifest[index] ? mManifest[index].dur_sec : 0;
+  return mAudio && mAudio.duration ? mAudio.duration : 0;
 }
 
 function elapsed() {
   if (index < 0) return 0;
-  if (IS_MOBILE) return mAudio ? (mAudio.currentTime || 0) : 0;
+  if (IS_MOBILE) {
+    if (!mAudio) return 0;
+    // Stream mode: position WITHIN the current track (playhead − track start).
+    if (mStreamOn) {
+      const t = mManifest[index];
+      return t ? Math.max(0, Math.min(t.dur_sec, mAudio.currentTime - t.start_sec)) : 0;
+    }
+    return mAudio.currentTime || 0;
+  }
   const e = playing ? startOffset + (ctx.currentTime - startCtxTime) : startOffset;
   return Math.max(0, Math.min(duration, e));
 }

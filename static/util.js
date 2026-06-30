@@ -80,6 +80,19 @@ export function clientId() {
   return id;
 }
 
+// Per-device preferences (this browser only; never sent to the server). For
+// playback choices that are a device experience, not a library-wide setting —
+// e.g. gapless album streaming, which trades seek snappiness for no track gaps.
+export function getPref(key, dflt = "") {
+  try {
+    const v = localStorage.getItem("mp3tools_pref_" + key);
+    return v === null ? dflt : v;
+  } catch { return dflt; }
+}
+export function setPref(key, value) {
+  try { localStorage.setItem("mp3tools_pref_" + key, value); } catch { /* ignore */ }
+}
+
 export function escapeHtml(s) {
   return String(s ?? "").replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
 }

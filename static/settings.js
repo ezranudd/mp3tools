@@ -1,5 +1,5 @@
 // Settings view: full editor for everything in settings.DEFAULTS.
-import { jget, jpost, toast, escapeHtml, escapeAttr, openModal, closeModal } from "./util.js";
+import { jget, jpost, toast, escapeHtml, escapeAttr, openModal, closeModal, getPref, setPref } from "./util.js";
 import { applyBackground, uploadBackground, clearBackground } from "./background.js";
 import { setEnabled as setAccentEnabled, setBaseColor as setAccentBase } from "./accent.js";
 
@@ -136,6 +136,15 @@ function render() {
                ${cfg.theme_accent_from_art ? "checked" : ""}></div>
     </div>
 
+    <div class="card"><h4>Playback (this device)</h4>
+      <div class="field"><label>Gapless album streaming (mobile)</label>
+        <input type="checkbox" class="toggle" id="gapless_stream"
+               ${getPref("gapless_stream") === "1" ? "checked" : ""}></div>
+      <p class="muted" style="margin:.25rem 0 0">On phones, play a whole album as one
+        continuous stream so tracks run together with no gap. Uses more data, and
+        seeking / track-skip is a little less snappy. Saved on this device only.</p>
+    </div>
+
     <div class="row" style="justify-content:flex-start">
       <button class="btn primary" id="saveBtn">Save</button>
       <button class="btn" id="reloadBtn">Reload</button>
@@ -149,6 +158,13 @@ function render() {
   // Live-preview the album-art accent toggle.
   container.querySelector("#accent_art").onchange =
     (e) => setAccentEnabled(e.target.checked);
+  // Per-device pref: persists immediately to localStorage (never sent to the
+  // server), so stop it bubbling to the page's dirty-tracking change listener.
+  const gapless = container.querySelector("#gapless_stream");
+  gapless.onchange = (e) => {
+    e.stopPropagation();
+    setPref("gapless_stream", gapless.checked ? "1" : "0");
+  };
 
   // Any control edit marks the screen dirty (background upload/clear re-render,
   // resetting this, since they persist server-side immediately).
