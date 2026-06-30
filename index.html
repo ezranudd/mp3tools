@@ -84,6 +84,9 @@
      The search toggle, back button and full-screen search overlay don't exist on
      the desktop layout (which has an inline header search + in-flow back bar). */
   .searchToggle { display:none; font-size:18px; }
+  /* Per-device playback prefs gear — mobile-only (the gapless option only applies
+     to the phone <audio> backend); hidden on desktop, shown in the mobile header. */
+  .prefsToggle { display:none; font-size:18px; }
   /* Bare, themed glyph button (no native white chrome) — used for the back control. */
   .fab { display:none; background:transparent; border:0; color:var(--fg);
          cursor:pointer; padding:0; font:inherit; line-height:1; }
@@ -408,10 +411,12 @@
        the search icon. pointer-events:none so it never blocks taps on them. */
     header h1 { position:absolute; left:50%; transform:translateX(-50%);
                 font-size:16px; pointer-events:none; }
-    /* Bare themed glyph (no .iconbtn box), pinned right, a touch larger. */
-    .searchToggle { display:inline-flex; align-items:center; justify-content:center;
-                    margin-left:auto; border:0; background:transparent; padding:0;
-                    font-size:22px; line-height:1; }
+    /* Bare themed glyphs (no .iconbtn box), pinned right, a touch larger. The
+       search toggle takes the auto margin so it (and the gear after it) sit right. */
+    .searchToggle, .prefsToggle { display:inline-flex; align-items:center;
+                    justify-content:center; border:0; background:transparent;
+                    padding:0; font-size:22px; line-height:1; }
+    .searchToggle { margin-left:auto; }
     .fab.backFab { font-size:25px; line-height:1; padding:2px 8px; }
     /* Back FAB shows once we've drilled past the landing screen (index or detail). */
     body.show-index .fab.backFab,
@@ -523,6 +528,7 @@
   <div class="jobIndicator" id="jobIndicator"></div>
   <div class="modeToggle" id="modeToggle"></div>
   <button class="iconbtn searchToggle" id="searchToggle" title="Search" aria-label="Search">⌕</button>
+  <button class="prefsToggle" id="prefsToggle" title="Playback settings" aria-label="Playback settings">⚙</button>
   <button class="iconbtn" id="themeToggle" title="Toggle light/dark"></button>
 </header>
 <!-- Mobile full-screen search overlay: app.js moves #search in here on phones so it

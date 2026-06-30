@@ -1,5 +1,5 @@
 // Entry point: top nav + view router.
-import { jget, jpost, toast, clientId, setAuthHandler, escapeAttr } from "./util.js";
+import { jget, jpost, toast, clientId, setAuthHandler, escapeAttr, openModal, getPref, setPref } from "./util.js";
 import { getMode, setMode, onModeChange } from "./mode.js";
 import { getTheme, toggleTheme, initSystemTheme } from "./theme.js";
 import { initBackground } from "./background.js";
@@ -286,6 +286,29 @@ function openSearch() {
 }
 function closeSearch() { document.body.classList.remove("search-open"); }
 
+// Per-device playback prefs (the gapless-streaming opt-in). Lives in a modal off
+// the mobile header gear rather than the Settings view, because Settings is
+// owner-only — but the people who need this toggle are mobile guests on the LAN.
+// The pref is read at playAlbum time, so a change applies to the next album.
+function openPlaybackPrefs() {
+  const on = getPref("gapless_stream") === "1";
+  openModal(
+    `<h3>Playback (this device)</h3>
+     <label class="field" style="display:flex;align-items:center;gap:10px;cursor:pointer">
+       <input type="checkbox" id="pp_gapless" ${on ? "checked" : ""}>
+       <span>Gapless album streaming</span>
+     </label>
+     <p class="muted">Play a whole album as one continuous stream so tracks run
+       together with no gap. Uses more data, and seeking / track-skip is a little
+       less snappy. Applies from the next album you play. Saved on this device only.</p>
+     <div class="row"><button class="btn primary" data-close>Done</button></div>`,
+    (box, close) => {
+      box.querySelector("#pp_gapless").onchange =
+        (e) => setPref("gapless_stream", e.target.checked ? "1" : "0");
+      box.querySelector("[data-close]").onclick = close;
+    });
+}
+
 function initMobileControls() {
   // Relocate the search box into the full-screen overlay on phones so it escapes
   // the header's backdrop-filter containing block (which otherwise traps the
@@ -302,6 +325,9 @@ function initMobileControls() {
 
   const close = document.getElementById("searchClose");
   if (close) close.onclick = closeSearch;
+
+  const prefs = document.getElementById("prefsToggle");
+  if (prefs) prefs.onclick = openPlaybackPrefs;
 
   const back = document.getElementById("backFab");
   if (back) back.onclick = goBack;
