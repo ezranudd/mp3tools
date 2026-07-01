@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>mp3tools</title>
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <meta name="theme-color" content="#7aa2f7">
@@ -256,6 +256,8 @@
   .cover.editcover:hover { border-color:var(--accent); }
   .albummeta h2 { margin:0 0 4px; font-size:18px; font-weight:600; }
   .albummeta .sub { color:var(--muted); min-height:20px; }
+  /* Track count + total duration, shown under the tracklist. */
+  .albumtotals { color:var(--muted); font-size:13px; margin:10px 2px 4px; }
   .genrelink { cursor:pointer; }
   .genrelink:hover { color:var(--accent); text-decoration:underline; }
   /* Genre grid (click a genre to browse same-genre albums) */
@@ -415,12 +417,17 @@
        search toggle takes the auto margin so it (and the gear after it) sit right. */
     .searchToggle, .prefsToggle { display:inline-flex; align-items:center;
                     justify-content:center; border:0; background:transparent;
-                    padding:0; font-size:22px; line-height:1; }
+                    padding:0; line-height:1; color:var(--fg); }
+    /* All three header glyphs are line-art SVGs so they share one size and baseline. */
+    .searchToggle svg, .prefsToggle svg, .fab.backFab svg { width:24px; height:24px;
+                    display:block; fill:currentColor; }
+    .fab.backFab svg { width:21px; height:21px; }   /* chevron reads heavier; trim slightly */
     .searchToggle { margin-left:auto; }
-    .fab.backFab { font-size:25px; line-height:1; padding:2px 8px; }
+    .fab.backFab { line-height:1; padding:0; }
     /* Back FAB shows once we've drilled past the landing screen (index or detail). */
     body.show-index .fab.backFab,
-    body.show-detail .fab.backFab { display:inline-flex; align-items:center; }
+    body.show-detail .fab.backFab { display:inline-flex; align-items:center;
+                                    justify-content:center; }
 
     /* Full-screen search overlay (app.js moves #search inside it). Large, centered,
        readable; only the small toggle icon shows when search is closed. */
@@ -456,11 +463,16 @@
        Show exactly one pane per level. The compact desktop tabs are hidden — the
        landing screen is the mode switch on mobile. */
     .browsetabs { display:none; }
-    #view.browse #browseSelect { display:flex; flex-direction:column; gap:14px;
-                                 padding:24px 16px; align-items:stretch; }
+    /* Square landing tiles, two per row in portrait. width:100% constrains the grid
+       to the viewport (it's a flex child of #view, which otherwise sizes to content
+       and lets the 1fr columns blow out, causing sideways scroll). */
+    #view.browse #browseSelect { display:grid; grid-template-columns:1fr 1fr; gap:14px;
+                                 width:100%; min-width:0; padding:24px 16px;
+                                 align-content:start; }
     #view.browse #tree, #view.browse #detail { display:none; }
-    .bigchoice { display:flex; flex-direction:column; align-items:center; gap:8px;
-                 padding:32px 16px; font-size:18px; font-weight:600; cursor:pointer;
+    .bigchoice { display:flex; flex-direction:column; align-items:center;
+                 justify-content:center; gap:8px; aspect-ratio:1; padding:16px;
+                 font-size:18px; font-weight:600; cursor:pointer;
                  background:var(--panel); border:1px solid var(--line); border-radius:10px;
                  color:inherit; }
     .bigchoice.active { border-color:var(--accent); }
@@ -486,7 +498,10 @@
 
     /* Player bar (mobile): row 1 = transport, title/artist (stacked), bitrate,
        album art pinned far right; row 2 = current time, seek, duration. */
-    .player { flex-wrap:wrap; gap:4px 8px; padding:6px 10px; }
+    .player { flex-wrap:wrap; gap:4px 8px;
+              padding:6px calc(10px + env(safe-area-inset-right))
+                      calc(6px + env(safe-area-inset-bottom))
+                      calc(10px + env(safe-area-inset-left)); }
     .player .pmeta { display:flex; flex-direction:column; justify-content:center;
                      min-width:0; flex:1 1 0; order:2; overflow:hidden; }   /* basis 0 + clip for marquee */
     .player .ptitle { min-width:0; max-width:none; }
@@ -513,12 +528,17 @@
     .player .pseek::-moz-range-thumb { width:13px; height:13px; border-radius:50%;
       background:var(--accent); border:0; }
   }
+  /* Landscape phones: vertical space is scarce, so put the three landing tiles in
+     a single row. */
+  @media (max-width: 760px) and (orientation: landscape) {
+    #view.browse #browseSelect { grid-template-columns:repeat(3, 1fr); }
+  }
 </style>
 </head>
 <body>
 <div id="bgLayer"><div id="bgImage"></div><div id="bgScrim"></div></div>
 <header>
-  <button class="fab backFab" id="backFab" title="Back to artists" aria-label="Back to artists">‹</button>
+  <button class="fab backFab" id="backFab" title="Back to artists" aria-label="Back to artists"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16.89 4.66 14.64 2.4l-9.6 9.6 9.6 9.6 2.25-2.26L9.56 12z"/></svg></button>
   <h1>mp3tools</h1>
   <span class="root" id="rootLabel"></span>
   <div class="search" id="search">
@@ -527,8 +547,8 @@
   </div>
   <div class="jobIndicator" id="jobIndicator"></div>
   <div class="modeToggle" id="modeToggle"></div>
-  <button class="iconbtn searchToggle" id="searchToggle" title="Search" aria-label="Search">⌕</button>
-  <button class="prefsToggle" id="prefsToggle" title="Playback settings" aria-label="Playback settings">⚙</button>
+  <button class="iconbtn searchToggle" id="searchToggle" title="Search" aria-label="Search"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 3.5a6.5 6.5 0 0 1 5.06 10.57l4.69 4.68-1.5 1.5-4.68-4.69A6.5 6.5 0 1 1 10 3.5zm0 2a4.5 4.5 0 1 0 0 9 4.5 4.5 0 0 0 0-9z"/></svg></button>
+  <button class="prefsToggle" id="prefsToggle" title="Playback settings" aria-label="Playback settings"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.488.488 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg></button>
   <button class="iconbtn" id="themeToggle" title="Toggle light/dark"></button>
 </header>
 <!-- Mobile full-screen search overlay: app.js moves #search in here on phones so it

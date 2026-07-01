@@ -64,7 +64,7 @@ export async function show(container) {
     <div id="browseSelect">
       <button class="bigchoice" data-mode="artists"><span class="bcicon">♪</span><span>Artists</span></button>
       <button class="bigchoice" data-mode="genres"><span class="bcicon">🎵</span><span>Genres</span></button>
-      <button class="bigchoice" data-mode="albums"><span class="bcicon">▦</span><span>Albums</span></button>
+      <button class="bigchoice" data-mode="albums"><span class="bcicon">💿</span><span>Albums</span></button>
     </div>
     <nav id="tree">
       <div class="browsetabs">
@@ -301,7 +301,7 @@ async function selectArtist(path, headEl) {
     ${editPausedNotice()}
     <div class="artisthead">
       <h2>${escapeHtml(artist.label)}</h2>
-      <div class="sub">${artist.children.length} album${artist.children.length === 1 ? "" : "s"}</div>
+      <div class="sub" id="artistSub">${artist.children.length} album${artist.children.length === 1 ? "" : "s"}</div>
     </div>
     <div id="artistAlbums"></div>`;
   wireBack();
@@ -310,6 +310,17 @@ async function selectArtist(path, headEl) {
 
   const states = await Promise.all(artist.children.map(a => fetchAlbumState(a.path)));
   if (!isCurrent("artist", path)) return;     // a newer selection won the race
+
+  // Now that track data is loaded, fold song count + total playtime into the header.
+  const albumCount = states.filter(Boolean).length;
+  const songCount = states.reduce((n, st) => n + (st ? st.tracks.length : 0), 0);
+  const totalSec = states.reduce((s, st) =>
+    s + (st ? st.tracks.reduce((a, t) => a + (Number(t.length_sec) || 0), 0) : 0), 0);
+  const subParts = [`${albumCount} album${albumCount === 1 ? "" : "s"}`,
+                    `${songCount} song${songCount === 1 ? "" : "s"}`];
+  if (totalSec > 0) subParts.push(fmtDurationLong(totalSec));
+  const subEl = detailEl.querySelector("#artistSub");
+  if (subEl) subEl.textContent = subParts.join(" · ");
   host.innerHTML = "";
   for (const st of states) {
     if (!st) continue;
@@ -471,12 +482,12 @@ function renderAlbumBrowseInto(container, st) {
     </tr>`).join("");
   container.innerHTML = albumHead(st, `
       <h2>${escapeHtml(album || "(untitled)")}</h2>
-      <div class="sub">${sub}</div>
-      <div class="sub">${metaLine}</div>`) + `
+      <div class="sub">${sub}</div>`) + `
     <table class="browsetable">
       <thead><tr><th>#</th><th>Title</th><th>Artist</th><th class="tdur">Time</th><th>Rate</th></tr></thead>
       <tbody>${rows}</tbody>
-    </table>`;
+    </table>
+    <div class="albumtotals">${metaLine}</div>`;
   container.querySelectorAll("tr.browserow").forEach((tr, i) =>
     tr.onclick = () => playAlbum(tracks, i, st.path));
   container.querySelectorAll(".genrelink").forEach(el =>
@@ -506,14 +517,14 @@ function renderAlbumEditInto(container, st) {
         <input class="hdr sub" data-op="album_year" value="${escapeAttr(year)}" placeholder="Year"> ·
         <input class="hdr sub" data-op="album_genre" value="${escapeAttr(genre)}" placeholder="Genre">
       </div>
-      <div class="sub">${metaLine}</div>
       <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn danger" data-act="del">Delete album</button>
       </div>`) + `
     <table>
       <thead><tr><th>#</th><th>Title</th><th>Artist</th><th class="tdur">Time</th><th>Rate</th></tr></thead>
       <tbody>${rows}</tbody>
-    </table>`;
+    </table>
+    <div class="albumtotals">${metaLine}</div>`;
 
   // Track tag inputs — auto-save on commit (frame-only write).
   container.querySelectorAll("input.tag").forEach(inp => {

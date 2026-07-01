@@ -124,6 +124,17 @@ export function initPlayer(revealFn = null) {
 
   els.seek.oninput = () => { if (curDuration()) seek(els.seek.value / 1000); };
 
+  // Re-measure the marquee when the viewport changes (notably iOS orientation
+  // change, which fires "resize"): the scroll distance depends on the bar width, so
+  // a stale --mq-shift from the previous orientation scrolls the wrong amount.
+  if (IS_MOBILE) {
+    let mqTimer = 0;
+    window.addEventListener("resize", () => {
+      clearTimeout(mqTimer);
+      mqTimer = setTimeout(() => { applyMarquee(els.title); applyMarquee(els.artist); }, 150);
+    });
+  }
+
   if (IS_MOBILE) initElementBackend();
 }
 
