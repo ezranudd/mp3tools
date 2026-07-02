@@ -227,6 +227,29 @@ def test_art_upload_empty_rejected(client):
     assert resp.status_code == 400
 
 
+def test_art_thumb_proxies_image(client, monkeypatch):
+    import fetch_art
+    monkeypatch.setattr(fetch_art, "fetch_artwork",
+                        lambda url: (b"\xff\xd8fakejpeg", "image/jpeg"))
+    resp = client.get("/api/art/thumb", params={"url": "https://example.com/a.jpg"})
+    assert resp.status_code == 200
+    assert resp.content == b"\xff\xd8fakejpeg"
+    assert resp.headers["content-type"] == "image/jpeg"
+
+
+def test_art_thumb_rejects_non_http(client):
+    resp = client.get("/api/art/thumb", params={"url": "file:///etc/passwd"})
+    assert resp.status_code == 400
+
+
+def test_art_apply_rejects_non_http(client):
+    tree = client.get("/api/tree").json()
+    album = tree["artists"][0]["children"][0]["path"]
+    resp = client.post("/api/art/apply",
+                       json={"path": album, "url": "file:///etc/passwd"})
+    assert resp.status_code == 400
+
+
 def test_settings_roundtrip(client):
     client.post("/api/settings", json={"cover_art": "both"})
     assert client.get("/api/settings").json()["cover_art"] == "both"

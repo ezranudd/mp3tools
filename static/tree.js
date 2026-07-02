@@ -705,7 +705,7 @@ async function findArt(st) {
     for (const r of results) {
       const card = document.createElement("div");
       card.className = "art";
-      card.innerHTML = `<img src="${escapeAttr(r.url)}" loading="lazy">
+      card.innerHTML = `<img src="/api/art/thumb?url=${encodeURIComponent(r.thumb || r.url)}" loading="lazy">
         <div class="cap">${escapeHtml(r.source_label || r.source || "")}${r.size ? " · " + escapeHtml(r.size) : ""} · ${r.score ?? ""}</div>`;
       card.onclick = () => applyArt(st, r.url, closeModal);
       body.appendChild(card);

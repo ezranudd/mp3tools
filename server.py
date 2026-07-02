@@ -1030,6 +1030,19 @@ def api_art_search(artist: str = Query(""), album: str = Query("")) -> JSONRespo
     return JSONResponse({"results": results})
 
 
+@app.get("/api/art/thumb")
+def api_art_thumb(url: str = Query(...)) -> Response:
+    """Proxy an artwork thumbnail so the CSP (img-src 'self') can display it."""
+    if not url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="bad url")
+    try:
+        data, mime = fetch_art.fetch_artwork(url)
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return Response(data, media_type=mime,
+                    headers={"Cache-Control": "private, max-age=3600"})
+
+
 class ArtApply(BaseModel):
     path: str          # album directory
     url: str           # full-size artwork url to download
@@ -1052,6 +1065,8 @@ def api_art_apply(body: ArtApply) -> JSONResponse:
     album_dir = _safe(body.path)
     if not album_dir.is_dir():
         raise HTTPException(status_code=404, detail="album not found")
+    if not body.url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="bad url")
     try:
         data, mime = fetch_art.fetch_artwork(body.url)
     except RuntimeError as e:

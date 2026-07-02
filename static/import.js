@@ -348,7 +348,7 @@ async function searchAlbumArt(album) {
     const results = (data.results || []).filter(x => x.url);
     const top = results[0];
     if (top && (top.score || 0) >= CONFIDENT_SCORE) {
-      album.art = { mode: "url", url: top.url, results, state: "done" };
+      album.art = { mode: "url", url: top.url, thumb: top.thumb || top.url, results, state: "done" };
     } else {
       album.art = { mode: "none", results, state: "done" };
     }
@@ -366,7 +366,7 @@ function paintCover(album) {
     el.innerHTML = `<span class="covertext">Searching…</span>`;
   } else if (a.mode === "url" && a.url) {
     el.className = "importcover";
-    el.innerHTML = `<img class="cover" src="${escapeAttr(a.url)}" alt="">`;
+    el.innerHTML = `<img class="cover" src="/api/art/thumb?url=${encodeURIComponent(a.thumb || a.url)}" alt="">`;
   } else if (a.mode === "local" && a.localUrl) {
     el.className = "importcover";
     el.innerHTML = `<img class="cover" src="${escapeAttr(a.localUrl)}" alt="">`;
@@ -390,7 +390,7 @@ async function openArtPicker(album) {
   }
   const results = album.art.results || [];
   const tiles = results.map((rr, i) => `
-    <div class="art" data-pick="${i}"><img src="${escapeAttr(rr.url)}" loading="lazy">
+    <div class="art" data-pick="${i}"><img src="/api/art/thumb?url=${encodeURIComponent(rr.thumb || rr.url)}" loading="lazy">
       <div class="cap">${escapeHtml(rr.source_label || rr.source || "")} · ${rr.score ?? ""}</div></div>`).join("");
   openModal(`
     <h3>Cover art — ${escapeHtml(albumTitleOf(album) || "album")}</h3>
@@ -408,7 +408,7 @@ async function openArtPicker(album) {
     (box) => {
       box.querySelectorAll("[data-pick]").forEach(t => t.onclick = () => {
         const rr = results[+t.dataset.pick];
-        album.art = { mode: "url", url: rr.url, results, state: "done" };
+        album.art = { mode: "url", url: rr.url, thumb: rr.thumb || rr.url, results, state: "done" };
         paintCover(album); closeModal();
       });
       const src = box.querySelector("[data-src]");

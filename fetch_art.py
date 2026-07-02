@@ -192,7 +192,7 @@ def _match_score(wanted_artist: str, wanted_album: str,
 
 def _result(source: str, artist: str, album: str, year: str,
             url: str, score: int, size: str = "",
-            detail_url: str = "") -> dict:
+            detail_url: str = "", thumb: str = "") -> dict:
     return {
         "source": source,
         "source_label": SOURCE_LABELS[source],
@@ -201,6 +201,7 @@ def _result(source: str, artist: str, album: str, year: str,
         "year": year,
         "size": size,
         "url": url,
+        "thumb": thumb or url,
         "score": score,
         "detail_url": detail_url,
     }
@@ -216,7 +217,10 @@ def search_itunes(artist: str, album: str, limit: int = 5) -> list[dict]:
     results = []
     for item in data.get("results", []):
         art_url = item.get("artworkUrl100", "")
+        thumb = ""
         if art_url:
+            thumb = re.sub(r"/\d+x\d+bb\.(jpg|jpeg|png)(?=\?|$)",
+                           "/600x600bb.\\1", art_url, count=1, flags=re.I)
             art_url, size = _full_size_artwork_url(art_url)
         else:
             size = ""
@@ -231,6 +235,7 @@ def search_itunes(artist: str, album: str, limit: int = 5) -> list[dict]:
             _match_score(artist, album, artist_name, album_name),
             size=size,
             detail_url=item.get("collectionViewUrl", ""),
+            thumb=thumb,
         ))
     return sorted(results, key=lambda r: r["score"], reverse=True)
 
@@ -276,11 +281,13 @@ def search_musicbrainz(artist: str, album: str, limit: int = 5) -> list[dict]:
             )
         except RuntimeError:
             continue
+        thumb = ""
         for image in art_data.get("images", []):
             if not image.get("front"):
                 continue
             thumbs = image.get("thumbnails", {})
             art_url = thumbs.get("1200") or thumbs.get("large") or image.get("image", "")
+            thumb = thumbs.get("500") or thumbs.get("large") or ""
             if thumbs.get("1200"):
                 size = "1200"
             elif thumbs.get("large"):
@@ -297,6 +304,7 @@ def search_musicbrainz(artist: str, album: str, limit: int = 5) -> list[dict]:
             score,
             size=size,
             detail_url=f"https://musicbrainz.org/release-group/{mbid}",
+            thumb=thumb,
         ))
     return sorted(results, key=lambda r: r["score"], reverse=True)
 
@@ -325,6 +333,7 @@ def search_theaudiodb(artist: str, album: str, api_key: str = "",
             art_url,
             _match_score(artist, album, artist_name, album_name),
             detail_url=f"https://www.theaudiodb.com/album/{item.get('idAlbum', '')}",
+            thumb=item.get("strAlbumThumb") or "",
         ))
     return sorted(results, key=lambda r: r["score"], reverse=True)
 
@@ -362,6 +371,7 @@ def search_discogs(artist: str, album: str, token: str = "",
             art_url,
             _match_score(artist, album, found_artist, album_name),
             detail_url=f"https://www.discogs.com{item.get('uri', '')}",
+            thumb=item.get("thumb") or "",
         ))
     return sorted(results, key=lambda r: r["score"], reverse=True)
 
