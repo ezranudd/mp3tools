@@ -54,14 +54,14 @@ export async function deleteAlbum(path, label, onDone) {
 // server result to onDone so the caller can tell "album now empty" from a plain delete.
 export async function deleteTrack(path, label, onDone) {
   const choice = await promptModal({
-    title: `Delete "${label}"? This permanently removes the song file.`,
+    title: `Delete "${label}"? This permanently removes the track file.`,
     kind: "choice",
     options: [{ key: "delete", label: "Delete" }, { key: "cancel", label: "Cancel" }],
   });
   if (choice !== "delete") return;
   try {
     const res = await jpost("/api/track/delete", { path });
-    if (res.ok && !res.error) toast("Song deleted.");
+    if (res.ok && !res.error) toast("Track deleted.");
     else toast(res.error || "Delete failed", true);
     if (onDone) onDone(res);
   } catch (e) { toast(e.message, true); }

@@ -180,7 +180,8 @@
   nav.sidebar button:hover { background:var(--bg); }
   nav.sidebar button.active { border-left-color:var(--accent); color:var(--accent);
                               font-weight:600; }
-  .navicon { flex:0 0 auto; width:1.4em; text-align:center; opacity:.75; }
+  .navicon { flex:0 0 auto; width:1.4em; display:flex; justify-content:center; opacity:.75; }
+  .navicon svg { width:16px; height:16px; fill:currentColor; }
   .navlabel { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   nav.sidebar button.active .navicon { opacity:1; }
   #view { flex:1; min-width:0; display:flex; }

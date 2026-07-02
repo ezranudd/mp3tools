@@ -112,7 +112,8 @@ export function mountJobPane(container, { kind = null, log = true, collapsible =
 function renderJobInto(container, job, showLog = true, collapsible = false) {
   const running = job.state === "running" || job.state === "waiting";
   const head = running ? jobLabel(job.kind) + "…"
-             : job.state === "error" ? "Error" : "Finished";
+             : job.state === "error" ? "Error"
+             : job.cancelled ? "Cancelled" : "Finished";
   const bar = !running ? ""
     : job.percent != null
       ? `<div class="jobbar det"><div style="width:${job.percent}%"></div></div>`
@@ -127,7 +128,7 @@ function renderJobInto(container, job, showLog = true, collapsible = false) {
     : showLog ? `<div class="log">${logHtml}</div>` : ``;
   container.innerHTML = `
     <div class="field" style="justify-content:space-between;margin:0 0 6px">
-      <strong class="${job.state === "error" ? "err" : running ? "warn" : "ok"}">${head}</strong>
+      <strong class="${job.state === "error" ? "err" : running || job.cancelled ? "warn" : "ok"}">${head}</strong>
       ${running ? `<button class="btn danger" data-cancel>Cancel</button>` : ``}
     </div>
     ${bar}

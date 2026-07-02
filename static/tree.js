@@ -322,7 +322,7 @@ async function selectArtist(path, headEl) {
   const totalSec = states.reduce((s, st) =>
     s + (st ? st.tracks.reduce((a, t) => a + (Number(t.length_sec) || 0), 0) : 0), 0);
   const subParts = [`${albumCount} album${albumCount === 1 ? "" : "s"}`,
-                    `${songCount} song${songCount === 1 ? "" : "s"}`];
+                    `${songCount} track${songCount === 1 ? "" : "s"}`];
   if (totalSec > 0) subParts.push(fmtDurationLong(totalSec));
   const subEl = detailEl.querySelector("#artistSub");
   if (subEl) subEl.textContent = subParts.join(" · ");
@@ -553,7 +553,7 @@ function renderAlbumEditInto(container, st) {
                  value="${escapeAttr(t.title || "")}" aria-label="Title"></td>
       <td><input class="tag" data-path="${escapeAttr(t.path)}" data-frame="TPE1"
                  value="${escapeAttr(t.artist || "")}" aria-label="Artist"></td>${trackTailCells(t)}
-      <td class="trackact"><button class="rowdel" title="Delete song" aria-label="Delete song"
+      <td class="trackact"><button class="rowdel" title="Delete track" aria-label="Delete track"
                  data-del="${escapeAttr(t.path)}">🗑</button></td>`);
 
   // Track tag inputs — auto-save on commit (frame-only write).
@@ -607,7 +607,7 @@ function renderAlbumEditInto(container, st) {
   // the folder, so reload the tree in that case; otherwise just refresh the album.
   container.querySelectorAll(".rowdel").forEach(btn => btn.onclick = () => {
     const tr = btn.closest("tr");
-    const title = (tr.querySelector('input[data-frame="TIT2"]').value.trim()) || "this song";
+    const title = (tr.querySelector('input[data-frame="TIT2"]').value.trim()) || "this track";
     edit.deleteTrack(btn.dataset.del, title,
       (res) => { if (res && res.album_deleted) afterAlbumDelete(); else refreshCurrent(); });
   });

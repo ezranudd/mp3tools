@@ -42,6 +42,12 @@ def _eta(done_bytes: int, total_bytes: int, elapsed: float) -> str:
     return " · ETA " + _fmt_duration(remaining)
 
 
+class _Cancelled(BaseException):
+    """Raised out of a job's progress callbacks to abort the runner after cancel().
+    BaseException, not Exception: the core modules wrap conversion work in broad
+    `except Exception` guards that must not swallow it."""
+
+
 @dataclass
 class _Prompt:
     """A pending request for user input (mirrors tui._UiRequest)."""
@@ -144,6 +150,8 @@ class Job:
     def import_progress(self, done: int, total: int, fraction: float) -> None:
         """Whole-import progress for the determinate bar + a header ETA.
         `fraction` (0-1) includes the in-flight track's conversion progress."""
+        if self.cancelled:
+            raise _Cancelled()
         now = time.monotonic()
         if self._import_started is None:
             self._import_started = now
@@ -153,20 +161,22 @@ class Job:
 
     # ── control / serialization ───────────────────────────────────────────────
     def respond(self, value) -> None:
+        # Check-and-set under the lock so a response and a cancel can't both
+        # claim the same prompt.
         with self._lock:
             p = self.prompt
-        if p is not None and not p.event.is_set():
-            p.response = value
-            p.event.set()
+            if p is not None and not p.event.is_set():
+                p.response = value
+                p.event.set()
 
     def cancel(self) -> None:
         self.cancelled = True
         self.cancel_event.set()                      # aborts an in-flight rip subprocess
         with self._lock:
             p = self.prompt
-        if p is not None and not p.event.is_set():
-            p.response = "" if p.kind != "preview" else {"proceed": False}
-            p.event.set()
+            if p is not None and not p.event.is_set():
+                p.response = "" if p.kind != "preview" else {"proceed": False}
+                p.event.set()
 
     def to_json(self) -> dict:
         with self._lock:
@@ -174,6 +184,7 @@ class Job:
                 "id": self.id,
                 "kind": self.kind,
                 "state": self.state,
+                "cancelled": self.cancelled,
                 "log": list(self.log),
                 "progress": self.progress,
                 "percent": self.percent,
@@ -508,6 +519,8 @@ def _run_sync(job: Job, params: dict) -> None:
     start = time.monotonic()
 
     def on_progress(action, name, df, tf, db, tb):
+        if job.cancelled:
+            raise _Cancelled()
         percent = int(db / tb * 100) if tb else (int(df / tf * 100) if tf else 0)
         eta = "" if dry_run else _eta(db, tb, time.monotonic() - start)
         job.set_progress(
@@ -549,6 +562,12 @@ class JobManager:
         with self._lock:
             if self._active() is not None:
                 raise RuntimeError("another operation is already running")
+            # Finished jobs (and their logs) otherwise accumulate for the life
+            # of the process — keep only the most recent few.
+            finished = [jid for jid, j in self.jobs.items()
+                        if j.state in ("done", "error")]
+            for jid in finished[:-5]:
+                del self.jobs[jid]
             job = Job(kind)
             self.jobs[job.id] = job
 
@@ -556,6 +575,8 @@ class JobManager:
             try:
                 with _Capture(job):
                     runner(job, params)
+            except _Cancelled:
+                job.append_log("\nCancelled.")
             except BaseException as exc:  # noqa: BLE001 — surface to client
                 job.error = str(exc)
                 job.append_log(f"ERROR: {exc}")

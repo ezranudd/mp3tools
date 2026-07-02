@@ -19,16 +19,30 @@ import * as settings from "./settings.js";
 import * as devices from "./devices.js";
 import * as access from "./access.js";
 
+// Nav icons: same 24×24 fill:currentColor style as the header/player SVGs.
+const navIcon = (d) => `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${d}"/></svg>`;
+const ICONS = {
+  browse: "M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z",
+  devices: "M4 6h18V4H4c-1.1 0-2 .9-2 2v11H0v3h14v-3H4V6zm19 2h-6c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h6c.55 0 1-.45 1-1V9c0-.55-.45-1-1-1zm-1 9h-4v-7h4v7z",
+  access: "M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z",
+  audit: "M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z",
+  standardize: "m19 9 1.25-2.75L23 5l-2.75-1.25L19 1l-1.25 2.75L15 5l2.75 1.25L19 9zm-7.5.5L9 4 6.5 9.5 1 12l5.5 2.5L9 20l2.5-5.5L17 12l-5.5-2.5zM19 15l-1.25 2.75L15 19l2.75 1.25L19 23l1.25-2.75L23 19l-2.75-1.25L19 15z",
+  import: "M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z",
+  rip: "M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 14.5c-2.49 0-4.5-2.01-4.5-4.5S9.51 7.5 12 7.5s4.5 2.01 4.5 4.5-2.01 4.5-4.5 4.5zm0-5.5c-.55 0-1 .45-1 1s.45 1 1 1 1-.45 1-1-.45-1-1-1z",
+  sync: "M6.99 11 3 15l3.99 4v-3H14v-2H6.99v-3zM21 9l-3.99-4v3H10v2h7.01v3L21 9z",
+  settings: "M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.488.488 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z",
+};
+
 const VIEWS = [
-  ["browse", "Browse", browse, "♪"],
-  ["devices", "Devices", devices, "📡"],
-  ["access", "Access", access, "🔐"],
-  ["audit", "Audit", audit, "✓"],
-  ["standardize", "Standardize", standardize, "✦"],
-  ["import", "Import", importView, "↧"],
-  ["rip", "Import CD", ripView, "💿"],
-  ["sync", "Sync", syncView, "⇄"],
-  ["settings", "Settings", settings, "⚙"],
+  ["browse", "Browse", browse, navIcon(ICONS.browse)],
+  ["devices", "Devices", devices, navIcon(ICONS.devices)],
+  ["access", "Access", access, navIcon(ICONS.access)],
+  ["audit", "Audit", audit, navIcon(ICONS.audit)],
+  ["standardize", "Standardize", standardize, navIcon(ICONS.standardize)],
+  ["import", "Import", importView, navIcon(ICONS.import)],
+  ["rip", "Import CD", ripView, navIcon(ICONS.rip)],
+  ["sync", "Sync", syncView, navIcon(ICONS.sync)],
+  ["settings", "Settings", settings, navIcon(ICONS.settings)],
 ];
 
 // cid lets the server's Devices view tell this browser apart from others.

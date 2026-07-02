@@ -1445,7 +1445,6 @@ def api_start_job(body: JobStart) -> JSONResponse:
             if not src.is_dir():
                 raise HTTPException(status_code=400, detail="source is not a directory")
             params["source"] = str(src)
-        _IMPORT_SOURCE = Path(params["source"])   # bounds /api/import/cover
     elif body.kind == "sync":
         params["device"] = str(_device(body.device))
         _validate_selection(body.selection)
@@ -1461,6 +1460,8 @@ def api_start_job(body: JobStart) -> JSONResponse:
         raise HTTPException(status_code=400, detail=str(e))
     except RuntimeError as e:
         raise HTTPException(status_code=409, detail=str(e))
+    # Bounds /api/import/cover; cleared so a later job can't serve stale files.
+    _IMPORT_SOURCE = Path(params["source"]) if body.kind == "import" else None
     return JSONResponse({"job_id": job.id})
 
 
