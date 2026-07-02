@@ -367,6 +367,9 @@ function paintCover(album) {
   } else if (a.mode === "url" && a.url) {
     el.className = "importcover";
     el.innerHTML = `<img class="cover" src="${escapeAttr(a.url)}" alt="">`;
+  } else if (a.mode === "local" && a.localUrl) {
+    el.className = "importcover";
+    el.innerHTML = `<img class="cover" src="${escapeAttr(a.localUrl)}" alt="">`;
   } else if (a.mode === "source") {
     el.className = "importcover";
     el.innerHTML = `<img class="cover" src="${escapeAttr(album.srcCoverUrl)}" alt="">`;
@@ -396,7 +399,12 @@ async function openArtPicker(album) {
       <div class="art" data-none><div class="coverph" style="aspect-ratio:1;display:flex;align-items:center;justify-content:center">No art</div><div class="cap">Placeholder</div></div>
       ${tiles || `<p class="muted">No online results.</p>`}
     </div>
-    <div class="row"><button class="btn" data-close>Close</button></div>`,
+    <div class="row">
+      <input type="file" accept="image/*" data-artfile hidden>
+      <button class="btn" data-local>Choose local file…</button>
+      <span class="muted" data-localstatus></span>
+      <button class="btn" data-close>Close</button>
+    </div>`,
     (box) => {
       box.querySelectorAll("[data-pick]").forEach(t => t.onclick = () => {
         const rr = results[+t.dataset.pick];
@@ -406,8 +414,35 @@ async function openArtPicker(album) {
       const src = box.querySelector("[data-src]");
       if (src) src.onclick = () => { album.art = { mode: "source", results, state: "found" }; paintCover(album); closeModal(); };
       box.querySelector("[data-none]").onclick = () => { album.art = { mode: "none", results, state: "done" }; paintCover(album); closeModal(); };
+      const fileInput = box.querySelector("[data-artfile]");
+      const status = box.querySelector("[data-localstatus]");
+      box.querySelector("[data-local]").onclick = () => fileInput.click();
+      fileInput.onchange = async () => {
+        const file = fileInput.files[0];
+        if (!file) return;
+        status.textContent = "Uploading…";
+        try {
+          const path = await uploadLocalArt(file);
+          album.art = { mode: "local", file: path, localUrl: URL.createObjectURL(file), results, state: "done" };
+          paintCover(album); closeModal();
+        } catch (e) {
+          status.textContent = "";
+          toast(e.message, true);
+        }
+      };
       box.querySelector("[data-close]").onclick = () => closeModal();
     });
+}
+
+// Upload a chosen local image to the server's import art stash; returns its path.
+async function uploadLocalArt(file) {
+  const r = await fetch("/api/import/art/upload", {
+    method: "POST",
+    headers: { "Content-Type": file.type || "image/jpeg" },
+    body: file,
+  });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+  return (await r.json()).path;
 }
 
 function albumValid(host, album) {
@@ -434,6 +469,7 @@ function collectEntries(host, albums) {
     const alb = {};
     sec.querySelectorAll(".albummeta input[data-a]").forEach(i => alb[i.dataset.a] = i.value);
     const art = album.art.mode === "url" ? { art_url: album.art.url }
+              : album.art.mode === "local" ? { art_file: album.art.file }
               : album.art.mode === "none" ? { art_none: true } : {};
     sec.querySelectorAll("tr[data-i]").forEach(tr => {
       const row = {

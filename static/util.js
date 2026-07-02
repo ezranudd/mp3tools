@@ -117,6 +117,12 @@ export function fmtDurationLong(sec) {
   return parts.join(" ");
 }
 
+// Fill a container with a single padded placeholder line (Loading / empty / error).
+// Keeps the Loading/empty/error markup identical across panes.
+export function setPlaceholder(el, msg, isErr = false) {
+  if (el) el.innerHTML = `<p class="${isErr ? "err" : "muted"} placeholder">${escapeHtml(msg)}</p>`;
+}
+
 let _toastTimer;
 export function toast(msg, isErr = false) {
   const t = document.getElementById("toast");

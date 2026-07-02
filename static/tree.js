@@ -1,7 +1,8 @@
 // Browse view: library tree (left) + detail (right).
 // Selecting an album shows that album; selecting an artist shows ALL its albums.
 // Read-only in Browse mode; inline auto-saving fields in Edit mode.
-import { jget, jpost, toast, escapeHtml, escapeAttr, enableRowDrag, fmtDurationLong } from "./util.js";
+import { jget, jpost, toast, escapeHtml, escapeAttr, enableRowDrag, fmtDurationLong,
+         setPlaceholder, openModal, closeModal } from "./util.js";
 import { isEdit, onModeChange } from "./mode.js";
 import { isBusy, subscribeJob } from "./jobs.js";
 import { playAlbum, subscribe as subscribePlayer, getCurrentPath } from "./player.js";
@@ -178,16 +179,18 @@ function rerender() {
   });
 }
 
-// Remember which album section sits at the top of #detail (and its sub-offset),
-// so a re-render that changes section heights (Browse↔Edit) can restore the view.
+// Remember which album section sits at the top of #detail (and its sub-offset), plus
+// the raw scrollTop as a fallback, so a re-render that changes section heights
+// (Browse↔Edit) or removes/renames the anchored album can still restore the view.
 function captureAnchor() {
   if (!detailEl) return null;
+  const scrollTop = detailEl.scrollTop;
   const cTop = detailEl.getBoundingClientRect().top;
   for (const sec of detailEl.querySelectorAll(".albumsection")) {
     const r = sec.getBoundingClientRect();
-    if (r.bottom > cTop + 1) return { path: sec.dataset.path, delta: r.top - cTop };
+    if (r.bottom > cTop + 1) return { path: sec.dataset.path, delta: r.top - cTop, scrollTop };
   }
-  return { scrollTop: detailEl.scrollTop };   // fallback: no album sections
+  return { scrollTop };   // no album sections in view
 }
 
 function restoreAnchor(a) {
@@ -204,28 +207,28 @@ function restoreAnchor(a) {
 }
 
 async function loadTree() {
-  indexEl.innerHTML = `<p class="muted" style="padding:10px">Loading…</p>`;
+  setPlaceholder(indexEl, "Loading…");
   try {
     const data = await jget("/api/tree");
     TREE = data.artists;
     indexEl.innerHTML = "";
     for (const artist of TREE) indexEl.appendChild(artistEl(artist));
-    if (!TREE.length) indexEl.innerHTML = `<p class="muted" style="padding:10px">Empty library.</p>`;
+    if (!TREE.length) setPlaceholder(indexEl, "Empty library.");
   } catch (e) {
-    indexEl.innerHTML = `<p class="err" style="padding:10px">${escapeHtml(e.message)}</p>`;
+    setPlaceholder(indexEl, e.message, true);
   }
 }
 
 async function loadGenres() {
-  indexEl.innerHTML = `<p class="muted" style="padding:10px">Loading…</p>`;
+  setPlaceholder(indexEl, "Loading…");
   try {
     const data = await jget("/api/genres");
     GENRES = data.genres || [];
     indexEl.innerHTML = "";
     for (const g of GENRES) indexEl.appendChild(genreNodeEl(g));
-    if (!GENRES.length) indexEl.innerHTML = `<p class="muted" style="padding:10px">No genres.</p>`;
+    if (!GENRES.length) setPlaceholder(indexEl, "No genres.");
   } catch (e) {
-    indexEl.innerHTML = `<p class="err" style="padding:10px">${escapeHtml(e.message)}</p>`;
+    setPlaceholder(indexEl, e.message, true);
   }
 }
 
@@ -285,7 +288,7 @@ async function fetchAlbumState(path) {
       year: first.year || "",
       genre: first.genre || "",
     };
-  } catch (e) { toast(e.message, true); return null; }
+  } catch (e) { return null; }   // caller shows one summary toast per selection
 }
 
 async function selectArtist(path, headEl) {
@@ -310,6 +313,8 @@ async function selectArtist(path, headEl) {
 
   const states = await Promise.all(artist.children.map(a => fetchAlbumState(a.path)));
   if (!isCurrent("artist", path)) return;     // a newer selection won the race
+  const failed = states.filter(st => !st).length;
+  if (failed) toast(`${failed} album${failed === 1 ? "" : "s"} failed to load.`, true);
 
   // Now that track data is loaded, fold song count + total playtime into the header.
   const albumCount = states.filter(Boolean).length;
@@ -336,8 +341,13 @@ function isCurrent(kind, path) {
   return CURRENT && CURRENT.kind === kind && CURRENT.path === path;
 }
 
+// Re-render the current artist page after an edit, preserving the scroll position
+// (so deleting a track / applying art / etc. doesn't jump back to the top).
 async function refreshCurrent() {
-  if (CURRENT) selectArtist(CURRENT.path);
+  if (!CURRENT) return;
+  const anchor = captureAnchor();
+  await selectArtist(CURRENT.path);
+  restoreAnchor(anchor);
 }
 
 // ── Album grid (shared by Genres mode and Albums mode) ────────────────────────
@@ -367,7 +377,7 @@ async function showGrid(kind, heading, url, emptyMsg, resetSort = true) {
   gridEmptyMsg = emptyMsg;
   if (resetSort) gridSort = "az";
   enterDetail();
-  detailEl.innerHTML = `<p class="muted">Loading…</p>`;
+  setPlaceholder(detailEl, "Loading…");
   let data;
   try { data = await jget(url); }
   catch (e) { toast(e.message, true); return; }
@@ -419,19 +429,22 @@ function renderGrid() {
   detailEl.querySelectorAll(".sortbtn").forEach(b =>
     b.classList.toggle("active", b.dataset.sort === gridSort));
   if (!gridAlbums.length) {
-    grid.innerHTML = `<p class="muted">${gridEmptyMsg}</p>`;
+    setPlaceholder(grid, gridEmptyMsg);
     return;
   }
   grid.innerHTML = sortedGridAlbums().map(a => {
-    const cover = "/api/cover?path=" + encodeURIComponent(a.album_path);
-    return `<div class="gcard" data-album="${escapeAttr(a.album_path)}"
+    // Cache-bust so a changed cover refreshes here too (matches the album head).
+    const cover = "/api/cover?path=" + encodeURIComponent(a.album_path) + "&t=" + Date.now();
+    const label = (a.album || "Untitled") + (a.artist ? " by " + a.artist : "");
+    return `<div class="gcard" role="button" tabindex="0" aria-label="${escapeAttr(label)}"
+                 data-album="${escapeAttr(a.album_path)}"
                  data-artist="${escapeAttr(a.artist_path)}" title="${escapeAttr((a.album || "") + " — " + (a.artist || ""))}">
-        <img src="${cover}" loading="lazy" onerror="this.style.visibility='hidden'">
+        <img src="${cover}" loading="lazy" alt="" onerror="this.style.visibility='hidden'">
         <div class="gcap"><b>${escapeHtml(a.album || "")}</b><span>${escapeHtml(a.artist || "")}</span></div>
       </div>`;
   }).join("");
-  grid.querySelectorAll(".gcard").forEach(card =>
-    card.onclick = () => {
+  grid.querySelectorAll(".gcard").forEach(card => {
+    const open = () => {
       // From the Albums grid, remember to return here on Back (vs the genre list).
       if (gridKind === "albums") albumsDrilled = true;
       applyReveal({
@@ -439,7 +452,10 @@ function renderGrid() {
         album_path: card.dataset.album,
         track_path: null,
       });
-    });
+    };
+    card.onclick = open;
+    card.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } };
+  });
 }
 
 // ── Album rendering (into an arbitrary container, bound to a state object) ─────
@@ -463,68 +479,82 @@ function albumHead(st, innerMeta) {
     </div>`;
 }
 
+// "12 tracks · 48 minutes" (or just the count when no durations are available). Shared
+// by the Browse and Edit renderers for the .albumtotals footer.
+function albumMetaLine(tracks) {
+  const totalSec = tracks.reduce((a, t) => a + (Number(t.length_sec) || 0), 0);
+  const countLabel = `${tracks.length} track${tracks.length === 1 ? "" : "s"}`;
+  return totalSec > 0 ? `${countLabel} · ${fmtDurationLong(totalSec)}` : countLabel;
+}
+
+// The album track table + totals footer. `cells(track)` renders each row's <td>s;
+// `tableClass`/`rowClass` differ between Browse (playable) and Edit (draggable inputs).
+// `extraHead` adds a trailing header cell (Edit uses it for the per-row delete column).
+function trackTable(tracks, { tableClass = "", rowClass = "", extraHead = "" }, cells) {
+  const rows = tracks.map(t => `
+    <tr class="${rowClass}" data-path="${escapeAttr(t.path)}">${cells(t)}</tr>`).join("");
+  return `
+    <table${tableClass ? ` class="${tableClass}"` : ""}>
+      <thead><tr><th>#</th><th>Title</th><th>Artist</th><th class="tdur">Time</th><th>Rate</th>${extraHead}</tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div class="albumtotals">${albumMetaLine(tracks)}</div>`;
+}
+
+// Shared trailing cells (Time + Rate) — identical in both modes.
+function trackTailCells(t) {
+  return `
+      <td class="tdur muted">${escapeHtml(t.length || "")}</td>
+      <td class="muted">${escapeHtml(t.bitrate ? t.bitrate + " kbps" : "")}</td>`;
+}
+
+function trackNum(t) {
+  return escapeHtml((t.track || "").split("/")[0]);
+}
+
 function renderAlbumBrowseInto(container, st) {
   const { tracks, artist, album, year, genre } = st;
   const subParts = [escapeHtml(artist || "(unknown artist)")];
   if (year) subParts.push(escapeHtml(year));
-  if (genre) subParts.push(`<span class="genrelink" data-genre="${escapeAttr(genre)}">${escapeHtml(genre)}</span>`);
+  if (genre) subParts.push(`<span class="genrelink" role="button" tabindex="0" data-genre="${escapeAttr(genre)}">${escapeHtml(genre)}</span>`);
   const sub = subParts.join(" · ");
-  const totalSec = tracks.reduce((a, t) => a + (Number(t.length_sec) || 0), 0);
-  const countLabel = `${tracks.length} track${tracks.length === 1 ? "" : "s"}`;
-  const metaLine = totalSec > 0 ? `${countLabel} · ${fmtDurationLong(totalSec)}` : countLabel;
-  const rows = tracks.map(t => `
-    <tr class="browserow" data-path="${escapeAttr(t.path)}">
-      <td><span class="rowplay">▶</span> <span class="num">${escapeHtml((t.track || "").split("/")[0])}</span></td>
-      <td>${escapeHtml(t.title || "")}</td>
-      <td>${escapeHtml(t.artist || "")}</td>
-      <td class="tdur muted">${escapeHtml(t.length || "")}</td>
-      <td class="muted">${escapeHtml(t.bitrate ? t.bitrate + " kbps" : "")}</td>
-    </tr>`).join("");
   container.innerHTML = albumHead(st, `
       <h2>${escapeHtml(album || "(untitled)")}</h2>
-      <div class="sub">${sub}</div>`) + `
-    <table class="browsetable">
-      <thead><tr><th>#</th><th>Title</th><th>Artist</th><th class="tdur">Time</th><th>Rate</th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table>
-    <div class="albumtotals">${metaLine}</div>`;
+      <div class="sub">${sub}</div>`) +
+    trackTable(tracks, { tableClass: "browsetable", rowClass: "browserow" }, t => `
+      <td><span class="rowplay">▶</span> <span class="num">${trackNum(t)}</span></td>
+      <td>${escapeHtml(t.title || "")}</td>
+      <td>${escapeHtml(t.artist || "")}</td>${trackTailCells(t)}`);
   container.querySelectorAll("tr.browserow").forEach((tr, i) =>
     tr.onclick = () => playAlbum(tracks, i, st.path));
-  container.querySelectorAll(".genrelink").forEach(el =>
-    el.onclick = (e) => { e.stopPropagation(); showGenre(el.dataset.genre); });
+  container.querySelectorAll(".genrelink").forEach(el => {
+    const open = (e) => { e.stopPropagation(); showGenre(el.dataset.genre); };
+    el.onclick = open;
+    el.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(e); } };
+  });
   updatePlayingHighlight(getCurrentPath());
 }
 
 function renderAlbumEditInto(container, st) {
   const { tracks, artist, album, year, genre } = st;
-  const totalSec = tracks.reduce((a, t) => a + (Number(t.length_sec) || 0), 0);
-  const countLabel = `${tracks.length} track${tracks.length === 1 ? "" : "s"}`;
-  const metaLine = totalSec > 0 ? `${countLabel} · ${fmtDurationLong(totalSec)}` : countLabel;
-  const rows = tracks.map(t => `
-    <tr data-path="${escapeAttr(t.path)}">
-      <td><span class="draghandle" title="Drag to reorder">⠿</span> <span class="num">${escapeHtml((t.track || "").split("/")[0])}</span></td>
-      <td><input class="tag" data-path="${escapeAttr(t.path)}" data-frame="TIT2"
-                 value="${escapeAttr(t.title || "")}"></td>
-      <td><input class="tag" data-path="${escapeAttr(t.path)}" data-frame="TPE1"
-                 value="${escapeAttr(t.artist || "")}"></td>
-      <td class="tdur muted">${escapeHtml(t.length || "")}</td>
-      <td class="muted">${escapeHtml(t.bitrate ? t.bitrate + " kbps" : "")}</td>
-    </tr>`).join("");
   container.innerHTML = albumHead(st, `
-      <input class="hdr title" data-op="album_title" value="${escapeAttr(album)}" placeholder="Album title">
+      <input class="hdr title" data-op="album_title" value="${escapeAttr(album)}" placeholder="Album title" aria-label="Album title">
       <div class="sub albumsub">
-        <input class="hdr sub" data-op="album_artist" value="${escapeAttr(artist)}" placeholder="Album artist"> ·
-        <input class="hdr sub" data-op="album_year" value="${escapeAttr(year)}" placeholder="Year"> ·
-        <input class="hdr sub" data-op="album_genre" value="${escapeAttr(genre)}" placeholder="Genre">
+        <input class="hdr sub" data-op="album_artist" value="${escapeAttr(artist)}" placeholder="Album artist" aria-label="Album artist"> ·
+        <input class="hdr sub" data-op="album_year" value="${escapeAttr(year)}" placeholder="Year" aria-label="Year"> ·
+        <input class="hdr sub" data-op="album_genre" value="${escapeAttr(genre)}" placeholder="Genre" aria-label="Genre">
       </div>
       <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn danger" data-act="del">Delete album</button>
-      </div>`) + `
-    <table>
-      <thead><tr><th>#</th><th>Title</th><th>Artist</th><th class="tdur">Time</th><th>Rate</th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table>
-    <div class="albumtotals">${metaLine}</div>`;
+      </div>`) +
+    trackTable(tracks, { rowClass: "editrow", extraHead: `<th class="trackact"></th>` }, t => `
+      <td><span class="draghandle" title="Drag to reorder">⠿</span> <span class="num">${trackNum(t)}</span></td>
+      <td><input class="tag" data-path="${escapeAttr(t.path)}" data-frame="TIT2"
+                 value="${escapeAttr(t.title || "")}" aria-label="Title"></td>
+      <td><input class="tag" data-path="${escapeAttr(t.path)}" data-frame="TPE1"
+                 value="${escapeAttr(t.artist || "")}" aria-label="Artist"></td>${trackTailCells(t)}
+      <td class="trackact"><button class="rowdel" title="Delete song" aria-label="Delete song"
+                 data-del="${escapeAttr(t.path)}">🗑</button></td>`);
 
   // Track tag inputs — auto-save on commit (frame-only write).
   container.querySelectorAll("input.tag").forEach(inp => {
@@ -556,7 +586,8 @@ function renderAlbumEditInto(container, st) {
     const order = [...tbody.querySelectorAll("tr[data-path]")].map(tr => tr.dataset.path);
     try {
       const res = await jpost("/api/album/reorder", { path: st.path, order });
-      if (!res.ok) toast(res.error || "Reorder failed", true);
+      if (res.ok && !res.error) toast("Saved.");
+      else toast(res.error || "Save failed", true);
     } catch (e) { toast(e.message, true); }
     refreshCurrent();
   });
@@ -571,15 +602,29 @@ function renderAlbumEditInto(container, st) {
 
   container.querySelector('[data-act="del"]').onclick = () =>
     edit.deleteAlbum(st.path, st.album || st.path.split("/").pop(), afterAlbumDelete);
+
+  // Per-song delete (each confirms first). Deleting the album's last track prunes
+  // the folder, so reload the tree in that case; otherwise just refresh the album.
+  container.querySelectorAll(".rowdel").forEach(btn => btn.onclick = () => {
+    const tr = btn.closest("tr");
+    const title = (tr.querySelector('input[data-frame="TIT2"]').value.trim()) || "this song";
+    edit.deleteTrack(btn.dataset.del, title,
+      (res) => { if (res && res.album_deleted) afterAlbumDelete(); else refreshCurrent(); });
+  });
 }
 
 // After deleting an album, reload the tree and re-select the artist — unless that
 // was its last album (the artist folder gets pruned, so fall back to the placeholder).
+// Preserve the scroll position (the deleted section is gone; the raw-scrollTop
+// fallback keeps the remaining albums roughly in place instead of jumping to top).
 async function afterAlbumDelete() {
   const artistPath = CURRENT && CURRENT.path;
+  const anchor = captureAnchor();
   await loadTree();
-  if (artistPath && TREE.find(a => a.path === artistPath)) selectArtist(artistPath);
-  else { CURRENT = null; detailEl.innerHTML = `<p class="muted">Select an artist or album.</p>`; }
+  if (artistPath && TREE.find(a => a.path === artistPath)) {
+    await selectArtist(artistPath);
+    restoreAnchor(anchor);
+  } else { CURRENT = null; detailEl.innerHTML = `<p class="muted">Select an artist or album.</p>`; }
 }
 
 // Commit on blur or Enter (Enter blurs to fire the change once).
@@ -623,10 +668,11 @@ async function commitAlbumField(st, op, value, current) {
   if (value === (current || "") || !value) return;
   try {
     const res = await jpost("/api/edit/apply", { path: st.path, op, value });
-    if (!res.ok || res.error) { toast(res.error || "Edit failed", true); return; }
+    if (!res.ok || res.error) { toast(res.error || "Save failed", true); return; }
     toast(res.desc || "Saved.");
+    const anchor = captureAnchor();
     await loadTree();
-    selectArtist(CURRENT.path);
+    if (CURRENT) { await selectArtist(CURRENT.path); restoreAnchor(anchor); }
   } catch (e) { toast(e.message, true); }
 }
 
@@ -634,7 +680,6 @@ async function commitAlbumField(st, op, value, current) {
 
 async function findArt(st) {
   const { artist, album } = st;
-  const { openModal, closeModal } = await import("./util.js");
   openModal(`<h3>Artwork — ${escapeHtml(artist)} / ${escapeHtml(album)}</h3>
     <div id="artBody" class="grid"><p class="muted">Searching…</p></div>
     <div class="row">

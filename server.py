@@ -80,6 +80,11 @@ _UPLOADS: dict[str, Path] = {}
 # lives outside ROOT). Set when an import job starts.
 _IMPORT_SOURCE: Path | None = None
 
+# Temp dir holding user-chosen local cover images for the import preview (import or
+# CD rip). Lazily created; stale files are pruned on each upload so it can't grow
+# unbounded. The saved path rides in the preview entry as art_file → import_tracks.
+_ART_UPLOAD_DIR: Path | None = None
+
 # ── Connected-device presence (passive) ───────────────────────────────────────
 # The owner's "Devices" view (TRUSTED-only /api/admin/clients) reads this. It is
 # populated as a *side effect* of requests clients already make — /api/track (the
@@ -1177,6 +1182,39 @@ def api_album_delete(body: AlbumDelete) -> JSONResponse:
     return JSONResponse({"ok": True, "deleted": str(album_dir)})
 
 
+class TrackDelete(BaseModel):
+    path: str          # track file
+
+
+@app.post("/api/track/delete")
+def api_track_delete(body: TrackDelete) -> JSONResponse:
+    """Permanently delete one track file, then renumber the album's survivors so
+    TRCK i/N and filenames stay sequential. If it was the album's last track, the
+    (now-empty) album folder is removed and the artist pruned if it too is empty."""
+    _require_idle()
+    track = _safe(body.path)                            # rejects paths outside ROOT
+    if not track.is_file() or track.suffix.lower() != ".mp3":
+        raise HTTPException(status_code=404, detail="track not found")
+    album_dir = track.parent
+    if album_dir == ROOT or album_dir.parent == ROOT:   # must sit inside an album folder
+        raise HTTPException(status_code=400, detail="not a track in an album")
+    track.unlink()
+    remaining = sorted(album_dir.glob("*.mp3"))
+    error = ""
+    if remaining:
+        _, error = browse.reorder_album(album_dir, remaining)
+    else:                                               # deleted the last track
+        shutil.rmtree(album_dir, ignore_errors=True)
+        artist_dir = album_dir.parent
+        try:
+            if artist_dir != ROOT and not any(artist_dir.iterdir()):
+                artist_dir.rmdir()
+        except OSError:
+            pass
+    return JSONResponse({"ok": not error, "deleted": str(track),
+                         "album_deleted": not remaining, "error": error})
+
+
 class AlbumReorder(BaseModel):
     path: str            # album directory
     order: list[str]     # track file paths in their new order
@@ -1327,6 +1365,30 @@ def api_import_upload_start() -> JSONResponse:
     token = uuid.uuid4().hex
     _UPLOADS[token] = d
     return JSONResponse({"token": token})
+
+
+@app.post("/api/import/art/upload")
+async def api_import_art_upload(request: Request) -> JSONResponse:
+    """Stash a user-chosen local cover image (raw body) for an in-progress import
+    preview, returning its server-side path. The preview sends that path back as the
+    album's art_file; import_tracks then uses it as the cover source (embed + folder),
+    just like a folder cover. Owner-only (POST — gated by _access_gate)."""
+    global _ART_UPLOAD_DIR
+    data = await request.body()
+    if not data:
+        raise HTTPException(status_code=400, detail="empty image")
+    mime = (request.headers.get("content-type") or "").split(";")[0].strip()
+    ext = {"image/png": ".png", "image/webp": ".webp", "image/gif": ".gif",
+           "image/bmp": ".bmp"}.get(mime, ".jpg")
+    if _ART_UPLOAD_DIR is None or not _ART_UPLOAD_DIR.is_dir():
+        _ART_UPLOAD_DIR = Path(tempfile.mkdtemp(prefix="mp3tools-artup-"))
+    cutoff = time.time() - 3600          # prune anything older than an hour
+    for f in _ART_UPLOAD_DIR.iterdir():
+        if f.is_file() and f.stat().st_mtime < cutoff:
+            f.unlink(missing_ok=True)
+    dest = _ART_UPLOAD_DIR / (uuid.uuid4().hex + ext)
+    dest.write_bytes(data)
+    return JSONResponse({"path": str(dest)})
 
 
 @app.post("/api/import/upload/file")

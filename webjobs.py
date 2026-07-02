@@ -274,7 +274,9 @@ def _apply_entry_edits(entries, edited) -> None:
                 td["_LOSSLESS_BITRATE"] = int(row["bitrate"])
             except (TypeError, ValueError):
                 pass
-        if row.get("art_none"):
+        if row.get("art_file"):
+            td["_ART_FILE"] = row["art_file"]
+        elif row.get("art_none"):
             td["_ART_NONE"] = True
         elif row.get("art_url"):
             td["_ART_URL"] = row["art_url"]

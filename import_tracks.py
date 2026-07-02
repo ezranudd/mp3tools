@@ -680,13 +680,19 @@ def import_tracks(source: Path, library: Path, dry_run: bool,
                     print(f"  ERROR updating existing TRCK ({ex.name}): {e}")
 
         # ── Resolve the album's cover (UI choice rides in the entry dict) ──────
-        # _ART_URL → use that online image; _ART_NONE → force a placeholder;
-        # otherwise fall back to a local source cover / the auto-fetch setting.
+        # _ART_FILE → use that chosen local image; _ART_URL → use that online image;
+        # _ART_NONE → force a placeholder; otherwise fall back to a local source
+        # cover in the source folder(s) / the auto-fetch setting.
+        art_file = next((td.get("_ART_FILE") for _, td in group if td.get("_ART_FILE")), None)
         art_url  = next((td.get("_ART_URL") for _, td in group if td.get("_ART_URL")), None)
         art_none = any(td.get("_ART_NONE") for _, td in group)
 
         cover_src = None
-        if not art_url and not art_none:
+        if art_file and Path(art_file).is_file():
+            # A user-picked local file behaves exactly like a folder cover: it gets
+            # embedded (embed/both) and copied to cover.<ext> (folder/both).
+            cover_src = Path(art_file)
+        elif not art_url and not art_none:
             for sf in sorted({src.parent for src, _ in group}):
                 if sf.is_dir():
                     c = _find_cover(sf)

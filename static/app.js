@@ -317,6 +317,25 @@ function initMobileControls() {
     const overlay = document.getElementById("searchOverlay");
     const search = document.getElementById("search");
     if (overlay && search) overlay.appendChild(search);
+
+    // iOS Safari caches resolved viewport-relative sizes across an orientation
+    // change: the browse-landing grid keeps its landscape width (overflowing
+    // sideways in portrait) and the body keeps its landscape 100dvh height (pushing
+    // the fixed bottom player below the fold). Pure-CSS clamps (max-width:100vw,
+    // height:100dvh) don't beat this — the values themselves are stale. Force a full
+    // relayout on rotation by toggling <body>'s display: removing it from layout
+    // invalidates the cache, and restoring it re-resolves both its own height and
+    // every descendant's width against the current viewport. The none→reflow→restore
+    // runs in one synchronous turn, so the hidden state is never painted (no flash).
+    window.addEventListener("orientationchange", () => {
+      setTimeout(() => {
+        const b = document.body;
+        const prev = b.style.display;
+        b.style.display = "none";
+        void b.offsetHeight;           // force reflow while detached from layout
+        b.style.display = prev;
+      }, 60);   // let the viewport dimensions settle first
+    });
   }
 
   const toggle = document.getElementById("searchToggle");
