@@ -62,11 +62,17 @@ mp3tools ~/Music                  # or: python server.py ~/Music
 
 The left nav switches between views:
 
-- **Browse** — artist/album tree; click an album to edit track titles/artists
-  inline (**Save tags**), rename the album, change year/genre, move it to a
-  different album artist, **Find artwork** (search online sources and apply a
-  cover), or **Remove art**. Edit an artist (rename / set genre) from the ✎ on
-  its row. Built-in gapless player.
+- **Browse** — the library by **Artists**, **Genres**, or **Albums**, with a
+  built-in gapless player (plus an opt-in gapless streaming mode for phones,
+  under the header gear). Flip the header toggle to **Edit** mode to change
+  anything in place: track titles/artists and album title/artist/year/genre
+  auto-save as you edit, drag tracks to reorder (files are renumbered on disk),
+  delete tracks or whole albums, and click the cover to search online sources,
+  upload an image, or remove the art.
+- **Devices** — owner-only: browsers currently connected to the server, what
+  each is playing, and a connection history.
+- **Access** — owner-only (remote mode): set the shared access password and
+  approve, rename, or block the devices that have logged in.
 - **Audit** — read-only compliance scan, grouped by album with category labels.
 - **Standardize** — runs the full pipeline using your saved Settings. Interactive
   steps (fill missing tags, confirm deletions, choose lossless bitrate) prompt
@@ -246,6 +252,7 @@ All files are required to comply with the rules in `standard.md`, which covers:
 | `server.py`          | FastAPI web server (`mp3tools` entry point)                  |
 | `webjobs.py`         | Background job runner (standardize / import / rip / sync)    |
 | `webauth.py`         | Remote-access auth: password, device whitelist, sessions     |
+| `album_stream.py`    | Gapless album streaming: whole-album WAV + per-track manifest|
 | `audit.py`           | Read-only compliance scanner                                 |
 | `standardize.py`     | 15-step library fixer                                        |
 | `browse.py`          | Library tree, tag I/O, and edit logic (web Browse core)      |
@@ -256,3 +263,12 @@ All files are required to comply with the rules in `standard.md`, which covers:
 | `convert_lossless.py`| FLAC/ALAC → gapless MP3 (ffmpeg decode → lame encode)        |
 | `settings.py`        | Per-library settings (JSON stored as `{root}/.mp3tools`)     |
 | `chars.py`           | Shared character-normalization table                         |
+
+## Tests
+
+```bash
+pytest test_server.py
+```
+
+Endpoint tests for the web server; they build a tiny real library in a temp
+directory, so `ffmpeg` must be installed (tests are skipped without it).

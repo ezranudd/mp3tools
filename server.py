@@ -3,7 +3,7 @@
 mp3tools web UI — a thin FastAPI shell over the existing library modules.
 
 No business logic lives here: every endpoint delegates to functions in
-``browse``, ``fetch_art`` and ``settings`` (see WEBUI_TASK.md for the seam).
+``browse``, ``fetch_art`` and ``settings``.
 The frontend is the build-step-free ``index.html`` served at ``/``.
 
     python server.py ~/Music        # then open http://127.0.0.1:8765
