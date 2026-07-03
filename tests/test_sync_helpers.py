@@ -5,10 +5,67 @@ Device detection itself (detect_devices) reads /proc/mounts and /sys/block, so
 it is never called here — device_rows is exercised with detect_devices
 monkeypatched out.
 """
+import os
 from pathlib import Path
 
+import pytest
+
 import sync_library
-from sync_library import _is_syncable_mount, _partition_base, classify_device
+from sync_library import (
+    _is_syncable_mount,
+    _partition_base,
+    classify_device,
+    file_matches,
+    format_size,
+)
+
+
+@pytest.mark.parametrize("size,expected", [
+    (0, "0 B"),
+    (1, "1 B"),
+    (1023, "1023 B"),
+    (1024, "1.0 KB"),
+    (1536, "1.5 KB"),
+    (1024 ** 2, "1.0 MB"),
+    (1024 ** 3, "1.0 GB"),
+    (1024 ** 4, "1.0 TB"),
+    (1024 ** 5, "1024.0 TB"),   # TB is the last unit — value keeps growing
+])
+def test_format_size(size, expected):
+    assert format_size(size) == expected
+
+
+def test_file_matches_size_and_mtime(tmp_path):
+    src = tmp_path / "src.mp3"
+    dst = tmp_path / "dst.mp3"
+    src.write_bytes(b"x" * 100)
+    dst.write_bytes(b"y" * 100)          # content is NOT compared — size+mtime only
+    mtime = src.stat().st_mtime
+
+    os.utime(dst, (mtime, mtime))
+    assert file_matches(src, dst)
+
+    os.utime(dst, (mtime + 2, mtime + 2))    # within the 2s FAT-timestamp slack
+    assert file_matches(src, dst)
+
+    os.utime(dst, (mtime + 3, mtime + 3))    # beyond the slack
+    assert not file_matches(src, dst)
+
+
+def test_file_matches_size_differs(tmp_path):
+    src = tmp_path / "src.mp3"
+    dst = tmp_path / "dst.mp3"
+    src.write_bytes(b"x" * 100)
+    dst.write_bytes(b"x" * 101)
+    mtime = src.stat().st_mtime
+    os.utime(dst, (mtime, mtime))
+    assert not file_matches(src, dst)
+
+
+def test_file_matches_missing_file(tmp_path):
+    src = tmp_path / "src.mp3"
+    src.write_bytes(b"x")
+    assert not file_matches(src, tmp_path / "absent.mp3")
 
 
 def test_device_rows_excludes_library(tmp_path, monkeypatch):

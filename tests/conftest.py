@@ -217,6 +217,64 @@ def library_factory(tmp_path):
     return build
 
 
+# ── Shared parametrize tables for the near-duplicate per-module helpers ──────
+# audit.py, standardize.py, import_tracks.py, and browse.py each carry a copy
+# of these helpers; running every copy against the same table makes any drift
+# between them fail loudly. Genuine, verified divergences are asserted
+# per-module in the test files instead of here.
+
+NORMALIZE_CASES = [
+    ("plain ASCII", "plain ASCII"),
+    ("", ""),
+    ("don’t", "don't"),
+    ("‘single‛ ‚low’", "'single' 'low'"),
+    ("“double” „low‟", '"double" "low"'),
+    ("café Zürich", "café Zürich"),        # accents pass through
+    ("em—dash – en", "em—dash – en"),      # dashes are NOT in the table
+]
+
+# Substitution-only cases (ASCII input) — valid for all four sanitize copies,
+# including audit.sanitize which skips the CHAR_REPLACEMENTS pass.
+SANITIZE_CASES = [
+    ("AC/DC", "AC-DC"),
+    ("back\\slash", "back-slash"),
+    ("Album: Live", "Album - Live"),
+    ("what?*<>", "what"),
+    ('say "hi"', "say 'hi'"),
+    ("pipe|pipe", "pipe-pipe"),
+    ("end. ", "end"),
+    ("end . .", "end"),
+    ("  leading kept", "  leading kept"),  # only trailing ". " stripped
+    ("", ""),
+]
+
+YEAR_CASES = [
+    ("2024", "2024"),
+    ("2024-05-01", "2024"),
+    ("05/2024", "2024"),
+    ("released 1999!", "1999"),
+    ("1994-1996", "1994"),                 # first match wins
+    ("2099", "2099"),
+    ("1899", None),                        # only 19xx/20xx
+    ("12024", None),                       # word boundary required
+    ("garbage", None),
+    ("", None),
+]
+
+TRACK_CASES = [
+    ("5", (5, None)),
+    ("05/12", (5, 12)),
+    (" 5/12 ", (5, 12)),
+    ("05/", (5, None)),
+    ("/12", (None, 12)),
+    ("", (None, None)),
+    (" ", (None, None)),
+    ("abc", (None, None)),
+    ("5/x", (None, None)),
+    ("5.5", (None, None)),
+]
+
+
 # ── Job polling (web tests) ───────────────────────────────────────────────────
 
 def poll(client, jid, answer=None, max_iter=400):
