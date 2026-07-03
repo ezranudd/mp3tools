@@ -6,7 +6,7 @@ import pytest
 
 from convert_lossless import _cue_to_secs, find_cue, find_lossless, parse_cue
 
-from conftest import make_m4a
+from conftest import make_flac, make_m4a
 
 
 # ── _cue_to_secs (pure) ───────────────────────────────────────────────────────
@@ -75,6 +75,41 @@ def test_is_alac(tmp_path):
     make_m4a(tmp_path / "no.m4a", codec="aac")
     assert is_alac(tmp_path / "yes.m4a") is True
     assert is_alac(tmp_path / "no.m4a") is False
+
+
+# ── has_lame_header (gapless-critical) ────────────────────────────────────────
+
+@pytest.mark.ffmpeg
+def test_has_lame_header_false_for_ffmpeg_encode(tmp_path):
+    # ffmpeg's own libmp3lame muxer writes dummy encoder delay/padding
+    # (0xAAA/0x555) — exactly what has_lame_header must reject.
+    import subprocess
+    from convert_lossless import has_lame_header
+    src = tmp_path / "a.flac"
+    make_flac(src)
+    dst = tmp_path / "a.mp3"
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-i",
+                    str(src), "-c:a", "libmp3lame", "-b:a", "192k", str(dst)],
+                   check=True)
+    assert has_lame_header(dst) is False
+
+
+@pytest.mark.ffmpeg
+@pytest.mark.lame
+def test_has_lame_header_true_for_lame_encode(tmp_path):
+    from convert_lossless import _lame_pipe_convert, has_lame_header
+    src = tmp_path / "a.flac"
+    make_flac(src)
+    dst = tmp_path / "a.mp3"
+    assert _lame_pipe_convert(src, dst, 192) is True
+    assert has_lame_header(dst) is True
+
+
+def test_has_lame_header_garbage_file(tmp_path):
+    from convert_lossless import has_lame_header
+    p = tmp_path / "junk.mp3"
+    p.write_bytes(b"\x00" * 256)
+    assert has_lame_header(p) is False
 
 
 # ── parse_cue (pure) ──────────────────────────────────────────────────────────
