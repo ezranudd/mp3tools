@@ -5,11 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "mp3tools"
 version = "1.0.0"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 dependencies = ["mutagen", "fastapi", "uvicorn"]
 
 [project.optional-dependencies]
 desktop = ["pywebview"]
+dev = ["pytest", "httpx"]
 
 [project.scripts]
 mp3tools = "server:main"
@@ -17,3 +18,10 @@ mp3tools-web = "server:main"
 
 [tool.setuptools]
 py-modules = ["audit", "album_stream", "browse", "import_tracks", "standardize", "convert_lossless", "sync_library", "settings", "fetch_art", "rip_cd", "chars", "server", "webjobs", "webauth"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "ffmpeg: test needs the ffmpeg binary (auto-skipped when absent)",
+    "lame: test needs the lame binary (auto-skipped when absent)",
+]

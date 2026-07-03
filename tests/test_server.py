@@ -8,7 +8,6 @@ which would silently pass a broken read.
 """
 import re
 import shutil
-import subprocess
 import time
 from pathlib import Path
 
@@ -16,47 +15,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 import server
-from mutagen.id3 import ID3, TIT2, TPE1, TPE2, TALB, TYER, TRCK, TPOS, TCON
+from mutagen.id3 import ID3
 
-_FRAMES = {"TIT2": TIT2, "TPE1": TPE1, "TPE2": TPE2,
-           "TALB": TALB, "TYER": TYER, "TRCK": TRCK, "TPOS": TPOS, "TCON": TCON}
+from conftest import make_flac as _make_flac, make_mp3 as _make_mp3, poll as _poll
 
-
-def _make_mp3(path, **frames):
-    """Create a real (ffmpeg) MP3 at *path* tagged with *frames* (defaults given)."""
-    if not frames:
-        frames = {"TIT2": "Silent Night", "TPE1": "Test Artist", "TPE2": "Test Artist",
-                  "TALB": "Test Album", "TYER": "2024", "TRCK": "01/1"}
-    path.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-         "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
-         "-t", "1", "-q:a", "9", str(path)],
-        check=True,
-    )
-    tags = ID3()
-    for fid, val in frames.items():
-        tags.add(_FRAMES[fid](encoding=3, text=val))
-    tags.save(path, v2_version=3, v1=0)
-
-
-def _poll(client, jid, answer=None, max_iter=400):
-    """Drive a job to a terminal state, answering prompts via answer(prompt)->value."""
-    for _ in range(max_iter):
-        j = client.get(f"/api/jobs/{jid}").json()
-        if j["state"] == "waiting":
-            val = answer(j["prompt"]) if answer else ""
-            client.post(f"/api/jobs/{jid}/respond", json={"value": val})
-        elif j["state"] in ("done", "error"):
-            return j
-        time.sleep(0.03)
-    return client.get(f"/api/jobs/{jid}").json()
+pytestmark = pytest.mark.ffmpeg
 
 
 @pytest.fixture()
 def client(tmp_path):
-    if shutil.which("ffmpeg") is None:
-        pytest.skip("ffmpeg not available")
     album = tmp_path / "Test Artist" / "2024 - Test Album"
     album.mkdir(parents=True)
     _make_mp3(album / "01. Test Artist - Silent Night.mp3")
@@ -266,26 +233,6 @@ def test_theme_accent_setting(client):
     assert client.get("/api/settings").json()["theme_accent_from_art"] is False
 
 
-def test_settings_migration(tmp_path):
-    import json
-    import settings as settings_mod
-
-    # Old layout: a .mp3tools JSON file + a sibling background image file.
-    (tmp_path / ".mp3tools").write_text(json.dumps({"cover_art": "both"}), encoding="utf-8")
-    (tmp_path / ".mp3tools-background").write_bytes(b"oldbg")
-
-    cfg = settings_mod.load(tmp_path)
-
-    # Value preserved through the move.
-    assert cfg["cover_art"] == "both"
-    # .mp3tools is now a folder holding mp3tools.conf + background.
-    assert (tmp_path / ".mp3tools").is_dir()
-    assert (tmp_path / ".mp3tools" / "mp3tools.conf").is_file()
-    assert (tmp_path / ".mp3tools" / "background").read_bytes() == b"oldbg"
-    # Legacy files are gone.
-    assert not (tmp_path / ".mp3tools-background").exists()
-
-
 # ── Background image ──────────────────────────────────────────────────────────
 
 def test_background_upload_serve_clear(client, tmp_path):
@@ -413,8 +360,6 @@ def test_album_reorder_rejects_outside_album(client, tmp_path):
 
 
 def test_import_merges_discs_in_order(tmp_path, tmp_path_factory):
-    if shutil.which("ffmpeg") is None:
-        pytest.skip("ffmpeg not available")
     src = tmp_path_factory.mktemp("multidisc")
     common = dict(TPE1="Band", TPE2="Band", TALB="Live", TYER="2003", TCON="Rock")
     _make_mp3(src / "CD2" / "a.mp3", TIT2="D2T1", TPOS="2/2", TRCK="1", **common)
@@ -444,8 +389,6 @@ def test_import_merges_discs_in_order(tmp_path, tmp_path_factory):
 
 
 def test_import_order_honored(tmp_path, tmp_path_factory):
-    if shutil.which("ffmpeg") is None:
-        pytest.skip("ffmpeg not available")
     src = tmp_path_factory.mktemp("ordersrc")
     _make_mp3(src / "a.mp3", TIT2="Aaa", TPE1="Ord", TPE2="Ord", TALB="OrdAlbum",
               TYER="2020", TRCK="1")
@@ -525,8 +468,6 @@ def test_standardize_dry_run_job(client):
 
 
 def test_standardize_prompt_roundtrip(tmp_path):
-    if shutil.which("ffmpeg") is None:
-        pytest.skip("ffmpeg not available")
     # A file missing TIT2 forces step 2 (fix missing tags) to prompt.
     album = tmp_path / "Artist" / "2024 - Album"
     _make_mp3(album / "01. Artist - Track.mp3",
@@ -556,8 +497,6 @@ def test_standardize_prompt_roundtrip(tmp_path):
 
 
 def test_import_job_copies_file(tmp_path, tmp_path_factory):
-    if shutil.which("ffmpeg") is None:
-        pytest.skip("ffmpeg not available")
     src = tmp_path_factory.mktemp("source")
     _make_mp3(src / "song.mp3", TIT2="Imported", TPE1="Imp", TPE2="Imp",
               TALB="ImpAlbum", TYER="2020", TRCK="1")
@@ -580,8 +519,6 @@ def test_import_job_copies_file(tmp_path, tmp_path_factory):
 
 
 def test_import_via_upload(tmp_path, tmp_path_factory):
-    if shutil.which("ffmpeg") is None:
-        pytest.skip("ffmpeg not available")
     # Build a real MP3 on disk, then upload its bytes through the drag-drop endpoints.
     staging = tmp_path_factory.mktemp("staging")
     _make_mp3(staging / "song.mp3", TIT2="Dropped", TPE1="Dee", TPE2="Dee",
@@ -614,8 +551,6 @@ def test_import_via_upload(tmp_path, tmp_path_factory):
 
 
 def test_import_preview_edits_genre(tmp_path, tmp_path_factory):
-    if shutil.which("ffmpeg") is None:
-        pytest.skip("ffmpeg not available")
     src = tmp_path_factory.mktemp("source")
     _make_mp3(src / "song.mp3", TIT2="Tune", TPE1="Band", TPE2="Band",
               TALB="Rec", TYER="2022", TRCK="1")
@@ -642,24 +577,7 @@ def test_import_preview_edits_genre(tmp_path, tmp_path_factory):
     assert str(ID3(imported[0], translate=False).get("TCON")) == "Jazz"
 
 
-def _make_flac(path, **frames):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-         "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo", "-t", "1", str(path)],
-        check=True,
-    )
-    if frames:
-        from mutagen.flac import FLAC
-        f = FLAC(path)
-        for k, v in frames.items():
-            f[k] = v
-        f.save()
-
-
 def test_import_preview_serializes_new_fields(tmp_path, tmp_path_factory):
-    if shutil.which("ffmpeg") is None:
-        pytest.skip("ffmpeg not available")
     src = tmp_path_factory.mktemp("source")
     _make_mp3(src / "song.mp3", TIT2="T", TPE1="A", TPE2="A", TALB="Al", TYER="2020", TRCK="1")
     server.set_root(tmp_path)
@@ -684,8 +602,6 @@ def test_import_preview_serializes_new_fields(tmp_path, tmp_path_factory):
 
 
 def test_import_conflict_skip_and_add(tmp_path, tmp_path_factory):
-    if shutil.which("ffmpeg") is None:
-        pytest.skip("ffmpeg not available")
     # Pre-existing album in the library (dest derived from tags: Imp / 2020 - ImpAlbum).
     dest = tmp_path / "Imp" / "2020 - ImpAlbum"
     _make_mp3(dest / "01. Imp - Old.mp3", TIT2="Old", TPE1="Imp", TPE2="Imp",
@@ -719,8 +635,6 @@ def test_import_conflict_skip_and_add(tmp_path, tmp_path_factory):
 
 
 def test_import_lossless_bitrate_not_dropped(tmp_path, tmp_path_factory):
-    if shutil.which("ffmpeg") is None:
-        pytest.skip("ffmpeg not available")
     src = tmp_path_factory.mktemp("flacsrc")
     _make_flac(src / "track.flac", title="Song", artist="Band",
                albumartist="Band", album="FlacAlbum", date="2019", tracknumber="1")
@@ -745,8 +659,6 @@ def test_import_lossless_bitrate_not_dropped(tmp_path, tmp_path_factory):
 
 
 def test_import_art_none_writes_placeholder(tmp_path, tmp_path_factory):
-    if shutil.which("ffmpeg") is None:
-        pytest.skip("ffmpeg not available")
     pytest.importorskip("PIL")
     src = tmp_path_factory.mktemp("noart")
     _make_mp3(src / "song.mp3", TIT2="T", TPE1="Solo", TPE2="Solo",
@@ -821,8 +733,6 @@ def test_second_job_conflict(client):
 # ── Sync ──────────────────────────────────────────────────────────────────────
 
 def _sync_client(tmp_path):
-    if shutil.which("ffmpeg") is None:
-        pytest.skip("ffmpeg not available")
     _make_mp3(tmp_path / "Artist One" / "2019 - First" / "01. A - S.mp3")
     _make_mp3(tmp_path / "Artist One" / "2021 - Second" / "01. A - S.mp3")
     _make_mp3(tmp_path / "Artist Two" / "2020 - Solo" / "01. A - S.mp3")
@@ -872,84 +782,9 @@ def test_sync_device_inside_library_rejected(tmp_path):
     assert resp.status_code == 400
 
 
-def test_sync_eta_helper():
-    from webjobs import _eta, _fmt_duration
-    assert _fmt_duration(95) == "1:35"
-    assert _fmt_duration(3725) == "1:02:05"
-    assert _eta(0, 100, 10) == ""          # nothing copied yet
-    assert _eta(100, 100, 10) == ""        # finished
-    assert _eta(50, 100, 0.2) == ""        # too early to estimate
-    assert _eta(50, 100, 1.0) == " · ETA 0:01"   # half done in 1s → ~1s left
-
-
 def test_sync_devices_endpoint(client):
     data = client.get("/api/sync/devices").json()
     assert "devices" in data and isinstance(data["devices"], list)
-
-
-def test_device_rows_excludes_library(tmp_path, monkeypatch):
-    import sync_library
-    inside = tmp_path / "Artist"
-    inside.mkdir()
-    fake = [
-        {"path": tmp_path, "free": 1, "total": 2},                 # the library itself
-        {"path": inside, "free": 1, "total": 2},                   # inside the library
-        {"path": Path("/run/media/x/USB"), "free": 100, "total": 200},
-    ]
-    monkeypatch.setattr(sync_library, "detect_devices", lambda: fake)
-    rows = sync_library.device_rows(exclude=tmp_path)
-    paths = [r["path"] for r in rows]
-    assert str(tmp_path) not in paths
-    assert str(inside) not in paths
-    assert "/run/media/x/USB" in paths
-    assert rows[0]["name"] == "USB" and rows[0]["free_h"]
-    assert rows[0]["type"] == "generic"   # no "type" in the fake → defaulted
-
-
-def test_device_rows_passes_type(tmp_path, monkeypatch):
-    import sync_library
-    monkeypatch.setattr(sync_library, "detect_devices",
-                        lambda: [{"path": Path("/run/media/x/SD"), "free": 1,
-                                  "total": 2, "type": "sd"}])
-    rows = sync_library.device_rows()
-    assert rows[0]["type"] == "sd"
-
-
-def test_partition_base():
-    from sync_library import _partition_base
-    assert _partition_base("/dev/sdb1") == "sdb"
-    assert _partition_base("/dev/mmcblk0p1") == "mmcblk0"
-    assert _partition_base("/dev/nvme0n1p1") == "nvme0n1"
-
-
-def test_classify_device(tmp_path):
-    from sync_library import classify_device
-    sysblock = tmp_path / "block"
-    for name, removable in (("sdb", "1"), ("sda", "0")):
-        (sysblock / name).mkdir(parents=True)
-        (sysblock / name / "removable").write_text(removable + "\n")
-    assert classify_device("/dev/mmcblk0p1", sysblock) == "sd"
-    assert classify_device("/dev/sdb1", sysblock) == "usb"      # removable
-    assert classify_device("/dev/sda1", sysblock) == "drive"    # fixed
-    assert classify_device("/dev/nvme0n1p1", sysblock) == "drive"
-    assert classify_device("/dev/mapper/luks-abc", sysblock) == "drive"   # LUKS/LVM
-    assert classify_device(None, sysblock) == "generic"
-    assert classify_device("//phone:mtp", sysblock) == "generic"
-
-
-def test_is_syncable_mount():
-    from sync_library import _is_syncable_mount
-    assert _is_syncable_mount("/media/u/CARD", "vfat")
-    assert _is_syncable_mount("/mnt/usb", "ext4")
-    assert not _is_syncable_mount("/", "ext4")
-    assert not _is_syncable_mount("/boot/efi", "vfat")
-    assert not _is_syncable_mount("/boot", "ext4")
-    assert not _is_syncable_mount("/mnt/dvd", "iso9660")
-    assert not _is_syncable_mount("/tmp", "tmpfs")
-    assert not _is_syncable_mount("/sys/fs/cgroup", "cgroup2")
-    # /run/media devices are excluded from the /proc/mounts loop (the /run prefix)
-    # and instead enumerated via the _DEVICE_BASES scan.
-    assert not _is_syncable_mount("/run/media/u/USB", "ext4")
 
 
 def test_edits_blocked_while_job_active(client, tmp_path):
@@ -978,31 +813,6 @@ def test_edits_blocked_while_job_active(client, tmp_path):
 
     client.post(f"/api/jobs/{jid}/cancel")
     shutil.rmtree(src, ignore_errors=True)
-
-
-# ── Album-art matching (edition-tolerant + fuzzy) ─────────────────────────────
-
-def test_strip_edition():
-    from fetch_art import _strip_edition
-    assert _strip_edition("Album (Deluxe Edition)") == "Album"
-    assert _strip_edition("Album [Remastered]") == "Album"
-    assert _strip_edition("Album - Remastered 2011") == "Album"
-    assert _strip_edition("Album (Disc 2)") == "Album"
-    assert _strip_edition("Album") == "Album"                 # unchanged
-    assert _strip_edition("(Deluxe Edition)") == "(Deluxe Edition)"  # don't empty it
-
-
-def test_match_score_edition_tolerant():
-    from fetch_art import _match_score, CONFIDENT_MATCH_SCORE
-    # Deluxe-vs-plain (artist exact) still clears the confident bar.
-    assert _match_score("Artist", "Album", "Artist", "Album (Deluxe Edition)") \
-        >= CONFIDENT_MATCH_SCORE
-    assert _match_score("Artist", "Album (Deluxe Edition)", "Artist", "Album") \
-        >= CONFIDENT_MATCH_SCORE
-    # A small typo still scores via the fuzzy fallback, above a clearly different album.
-    typo = _match_score("Artist", "Album", "Artist", "Albbum")
-    other = _match_score("Artist", "Album", "Artist", "Completely Different")
-    assert typo > other
 
 
 # ── LAN guest gating (loopback = owner, other IPs = read-only) ────────────────
