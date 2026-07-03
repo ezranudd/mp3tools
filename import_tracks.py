@@ -25,7 +25,12 @@ from convert_lossless import (
     LOSSLESS_EXTENSIONS, find_lossless, read_lossless_tags,
     read_cue_tracks, has_lame_header, _has_lame_binary, _lame_pipe_convert,
 )
-from chars import CHAR_REPLACEMENTS
+from chars import (
+    extract_year,
+    normalize as normalize_string,
+    parse_track,
+    sanitize as sanitize_name,
+)
 from standardize import _is_gapless_key
 from mutagen.mp3 import MP3 as _MP3Info
 from mutagen.id3 import (
@@ -59,35 +64,6 @@ TRACK_TAGS = ("TIT2",)   # TRCK is computed, not prompted
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-
-def normalize_string(s: str) -> str:
-    for old, new in CHAR_REPLACEMENTS.items():
-        s = s.replace(old, new)
-    return s
-
-
-def sanitize_name(name: str) -> str:
-    name = normalize_string(name)
-    for old, new in {"/": "-", "\\": "-", ":": " -", "*": "",
-                     "?": "", '"': "'", "<": "", ">": "", "|": "-"}.items():
-        name = name.replace(old, new)
-    return name.rstrip(". ")
-
-
-def extract_year(value: str) -> str | None:
-    m = re.search(r"\b(19\d{2}|20\d{2})\b", str(value))
-    return m.group(1) if m else None
-
-
-def parse_track(s: str) -> tuple[int | None, int | None]:
-    parts = s.split("/")
-    try:
-        n = int(parts[0].strip()) if parts[0].strip() else None
-        t = int(parts[1].strip()) if len(parts) > 1 and parts[1].strip() else None
-        return n, t
-    except ValueError:
-        return None, None
-
 
 def _natural_key(s: str) -> tuple:
     """Split a string into digit/non-digit chunks so that '2' sorts before

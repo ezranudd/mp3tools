@@ -1,6 +1,6 @@
 """
-chars.py table plus cross-module drift checks for the normalize/sanitize
-copies in audit.py, standardize.py, import_tracks.py, and browse.py.
+chars.py shared helpers, plus guards that audit.py, standardize.py,
+import_tracks.py, and browse.py all alias the same implementations.
 """
 import unicodedata
 
@@ -8,6 +8,7 @@ import pytest
 
 import audit
 import browse
+import chars
 import import_tracks
 import standardize
 from chars import CHAR_REPLACEMENTS
@@ -57,19 +58,34 @@ def test_has_special_chars_copies_agree():
         assert not fn("")
 
 
-def test_audit_sanitize_skips_normalization():
-    # Verified drift: audit.sanitize is substitution-only — its callers apply
-    # sanitize(normalize(...)) — while the other three normalize internally.
-    assert audit.sanitize("don’t") == "don’t"
-    for fn in (standardize.sanitize_name, import_tracks.sanitize_name, browse._sanitize):
-        assert fn("don’t") == "don't"
+def test_all_modules_share_the_chars_helpers():
+    # The per-module names are aliases of the single chars.py implementation —
+    # drift is impossible by construction.
+    assert (standardize.normalize_string is import_tracks.normalize_string
+            is audit.normalize is browse._normalize is chars.normalize)
+    assert (standardize.sanitize_name is import_tracks.sanitize_name
+            is audit.sanitize is browse._sanitize is chars.sanitize)
+    assert (standardize.extract_year is import_tracks.extract_year
+            is audit.extract_year is browse._extract_year is chars.extract_year)
+    assert (standardize.parse_track is import_tracks.parse_track
+            is audit.parse_track is chars.parse_track)
+    assert (standardize.has_special_chars is audit.has_nonstandard_chars
+            is chars.needs_normalization)
 
 
-def test_browse_normalize_applies_nfc_others_dont():
+def test_normalize_applies_nfc_everywhere():
     decomposed = "Cafe" + "́"                       # e + combining acute
     composed = unicodedata.normalize("NFC", decomposed)  # é as one code point
-    assert browse._normalize(decomposed) == composed
-    # Verified drift: the other copies leave the decomposed form untouched.
-    assert standardize.normalize_string(decomposed) == decomposed
-    assert audit.normalize(decomposed) == decomposed
-    assert import_tracks.normalize_string(decomposed) == decomposed
+    assert composed != decomposed
+    for fn in (standardize.normalize_string, import_tracks.normalize_string,
+               audit.normalize, browse._normalize):
+        assert fn(decomposed) == composed
+    assert chars.sanitize(decomposed) == composed
+
+
+def test_needs_normalization():
+    assert chars.needs_normalization("don’t") is True     # table char
+    assert chars.needs_normalization("Cafe" + "́") is True  # non-NFC form
+    assert chars.needs_normalization("don't") is False
+    assert chars.needs_normalization("café") is False      # already NFC
+    assert chars.needs_normalization("") is False

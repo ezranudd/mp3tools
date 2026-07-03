@@ -141,6 +141,29 @@ def test_junk_extra_file(tmp_path):
     assert scan_cats(tmp_path) == {"NON_MP3"}
 
 
+def test_legacy_txxx_albumartist_flagged(tmp_path):
+    from mutagen.id3 import TXXX
+    folder = clean_album(tmp_path)
+    tags = ID3(folder / f"01. {ARTIST} - Song 1.mp3", translate=False)
+    tags.add(TXXX(encoding=3, desc="ALBUM ARTIST", text=ARTIST))
+    tags.save(v2_version=3, v1=0)
+    # TPE2 is intact, but the leftover legacy frame is a relic standardize
+    # step 4 removes — audit must surface it.
+    assert scan_cats(tmp_path) == {"ALBUM_ARTIST"}
+
+
+def test_decomposed_unicode_title_flagged(tmp_path):
+    folder = clean_album(tmp_path)
+    src = folder / f"01. {ARTIST} - Song 1.mp3"
+    dst = folder / f"01. {ARTIST} - Café.mp3"     # filename already NFC
+    src.rename(dst)
+    tags = ID3(dst, translate=False)
+    from mutagen.id3 import TIT2
+    tags["TIT2"] = TIT2(encoding=3, text="Café")  # decomposed é in the tag
+    tags.save(v2_version=3, v1=0)
+    assert scan_cats(tmp_path) == {"CHAR_NORM"}
+
+
 def test_album_artist_varies_within_album(tmp_path):
     folder = clean_album(tmp_path)
     tags = ID3(folder / f"02. {ARTIST} - Song 2.mp3", translate=False)

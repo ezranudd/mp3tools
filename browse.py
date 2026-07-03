@@ -16,7 +16,6 @@ All edits are built as pure PendingEdit objects and committed via apply_edits().
 
 import re
 import shutil
-import unicodedata
 from pathlib import Path
 
 import settings as settings_mod
@@ -26,7 +25,11 @@ from fetch_art import (
     resize_artwork,
     search_art_sources,
 )
-from chars import CHAR_REPLACEMENTS as _CHAR_MAP
+from chars import (
+    extract_year as _extract_year,
+    normalize as _normalize,
+    sanitize as _sanitize,
+)
 
 from mutagen.mp3 import MP3
 from mutagen.id3 import (
@@ -39,7 +42,6 @@ from mutagen.id3 import (
 
 # ── Character normalization ───────────────────────────────────────────────────
 
-_YEAR_RE       = re.compile(r"\b(19\d{2}|20\d{2})\b")
 _ALBUM_YEAR_RE = re.compile(r"^\d{4}\s*-\s*(.+)$")
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
 # TPE2 is the canonical album artist frame. The TXXX variants are legacy —
@@ -52,26 +54,6 @@ _ALBUM_ARTIST_KEYS = (
     "TXXX:AlbumArtist",
     "TXXX:Album Artist",
 )
-
-
-def _normalize(s: str) -> str:
-    s = unicodedata.normalize("NFC", s)
-    for old, new in _CHAR_MAP.items():
-        s = s.replace(old, new)
-    return s
-
-
-def _sanitize(s: str) -> str:
-    s = _normalize(s)
-    for old, new in {"/": "-", "\\": "-", ":": " -", "*": "",
-                     "?": "", '"': "'", "<": "", ">": "", "|": "-"}.items():
-        s = s.replace(old, new)
-    return s.rstrip(". ")
-
-
-def _extract_year(s: str) -> str | None:
-    m = _YEAR_RE.search(s)
-    return m.group(1) if m else None
 
 
 def _load_id3(path: Path) -> ID3:

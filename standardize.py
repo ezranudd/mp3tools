@@ -38,7 +38,13 @@ from pathlib import Path
 
 import settings as settings_mod
 from convert_lossless import step_convert_lossless
-from chars import CHAR_REPLACEMENTS
+from chars import (
+    extract_year,
+    needs_normalization as has_special_chars,
+    normalize as normalize_string,
+    parse_track,
+    sanitize as sanitize_name,
+)
 
 from mutagen.id3 import (
     ID3, ID3NoHeaderError,
@@ -88,40 +94,6 @@ def get_input(prompt: str) -> str:
     except (EOFError, KeyboardInterrupt):
         print()
         sys.exit(0)
-
-
-def normalize_string(s: str) -> str:
-    for old, new in CHAR_REPLACEMENTS.items():
-        s = s.replace(old, new)
-    return s
-
-
-def has_special_chars(s: str) -> bool:
-    return any(c in s for c in CHAR_REPLACEMENTS)
-
-
-def sanitize_name(name: str) -> str:
-    """Filesystem-safe name (used for both files and folders)."""
-    name = normalize_string(name)
-    for old, new in {"/": "-", "\\": "-", ":": " -", "*": "",
-                     "?": "", '"': "'", "<": "", ">": "", "|": "-"}.items():
-        name = name.replace(old, new)
-    return name.rstrip(". ")
-
-
-def extract_year(value: str) -> str | None:
-    m = re.search(r'\b(19\d{2}|20\d{2})\b', str(value))
-    return m.group(1) if m else None
-
-
-def parse_track(s: str) -> tuple[int | None, int | None]:
-    parts = s.split("/")
-    try:
-        n = int(parts[0]) if parts[0] else None
-        t = int(parts[1]) if len(parts) > 1 and parts[1] else None
-        return n, t
-    except ValueError:
-        return None, None
 
 
 def album_folders(root: Path) -> list[Path]:

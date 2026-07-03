@@ -27,7 +27,7 @@ def test_parse_track(raw, expected):
 
 
 def test_parse_track_blank_num_with_total():
-    # Same behavior as audit's copy; standardize's returns (None, None) here.
+    # The total survives a whitespace-only track number.
     assert parse_track("  /12") == (None, 12)
 
 

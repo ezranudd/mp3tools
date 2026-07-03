@@ -31,13 +31,18 @@ from pathlib import Path
 
 from mutagen.id3 import ID3, ID3NoHeaderError
 import settings as settings_mod
-from chars import CHAR_REPLACEMENTS
+from chars import (
+    extract_year,
+    needs_normalization as has_nonstandard_chars,
+    normalize,
+    parse_track,
+    sanitize,
+)
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
 CD_PATTERN = re.compile(r"^CD(\d+)$")
-YEAR_RE = re.compile(r"\b(19\d{2}|20\d{2})\b")
 ALBUM_ARTIST_KEYS = (
     "TPE2",
     "TXXX:album artist",
@@ -67,41 +72,6 @@ CATEGORY_LABELS: dict[str, str] = {
 }
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
-
-def normalize(s: str) -> str:
-    for old, new in CHAR_REPLACEMENTS.items():
-        s = s.replace(old, new)
-    return s
-
-
-def has_nonstandard_chars(s: str) -> bool:
-    return any(ch in s for ch in CHAR_REPLACEMENTS)
-
-
-def extract_year(s: str) -> str | None:
-    m = YEAR_RE.search(str(s))
-    return m.group(1) if m else None
-
-
-def parse_track(s: str) -> tuple[int | None, int | None]:
-    parts = s.split("/")
-    try:
-        num = int(parts[0]) if parts[0].strip() else None
-        total = int(parts[1]) if len(parts) > 1 and parts[1].strip() else None
-        return num, total
-    except (ValueError, IndexError):
-        return None, None
-
-
-def sanitize(name: str) -> str:
-    """Replace filesystem-unsafe characters, matching rename_files.py behavior."""
-    for old, new in {
-        "/": "-", "\\": "-", ":": " -", "*": "",
-        "?": "", '"': "'", "<": "", ">": "", "|": "-",
-    }.items():
-        name = name.replace(old, new)
-    return name.rstrip(". ")
-
 
 def _has_id3v1(path: Path) -> bool:
     """Return True if the file has an ID3v1 tag (last 128 bytes start with b'TAG')."""
@@ -150,11 +120,15 @@ def read_tags(path: Path) -> dict | None:
         }
         result["ALBUMARTIST"] = album_artist_value(tags)
         result["_version"] = tags.version
+        result["_legacy_albumartist"] = any(
+            k in tags for k in ALBUM_ARTIST_KEYS if k != "TPE2"
+        )
         return result
     except ID3NoHeaderError:
         result = {k: None for k in keys}
         result["ALBUMARTIST"] = None
         result["_version"] = None
+        result["_legacy_albumartist"] = False
         return result
     except Exception:
         return None
@@ -173,8 +147,8 @@ def build_expected_filename(tags: dict, width: int) -> str | None:
     num, _ = parse_track(trck)
     if num is None:
         return None
-    artist_s = sanitize(normalize(artist))
-    title_s = sanitize(normalize(title))
+    artist_s = sanitize(artist)
+    title_s = sanitize(title)
     return f"{str(num).zfill(width)}. {artist_s} - {title_s}.mp3"
 
 
@@ -192,7 +166,7 @@ def build_expected_folder(tags_list: list[dict]) -> str | None:
     album = Counter(albums).most_common(1)[0][0] if albums else None
     if not year or not album:
         return None
-    return sanitize(normalize(f"{year} - {album}"))
+    return sanitize(f"{year} - {album}")
 
 
 # ─── Issue ────────────────────────────────────────────────────────────────────
@@ -245,9 +219,9 @@ def audit_file(path: Path, width: int) -> tuple[dict | None, list[Issue]]:
     if missing:
         issues.append(Issue("MISSING_TAG", "Missing: " + ", ".join(missing)))
 
-    if tags.get("ALBUMARTIST") and tags.get("TPE2") and tags["TPE2"] != tags["ALBUMARTIST"]:
+    if tags.get("_legacy_albumartist"):
         issues.append(Issue("ALBUM_ARTIST",
-            f"TPE2 mirror mismatch: {tags['TPE2']!r} → {tags['ALBUMARTIST']!r}"))
+            "Legacy TXXX album-artist frame present — run standardize to remove"))
 
     # 2. Non-standard characters in tag values
     for label, key in [
@@ -461,7 +435,7 @@ def scan(root: Path) -> list[tuple[Path, list[Issue], list[tuple]]]:
 
         # ── Album artist consistency check ────────────────────────────────────
         album_artist_values = [
-            sanitize(normalize(t["ALBUMARTIST"]))
+            sanitize(t["ALBUMARTIST"])
             for t in all_tags
             if t.get("ALBUMARTIST")
         ]
@@ -476,7 +450,7 @@ def scan(root: Path) -> list[tuple[Path, list[Issue], list[tuple]]]:
             album_artists = [t["ALBUMARTIST"] for t in all_tags if t.get("ALBUMARTIST")]
             if album_artists:
                 dominant = Counter(album_artists).most_common(1)[0][0]
-                expected_album_artist = sanitize(normalize(dominant))
+                expected_album_artist = sanitize(dominant)
                 if artist_folder.name != expected_album_artist:
                     album_issues.append(Issue("ARTIST_FOLDER",
                         f"Parent folder {artist_folder.name!r} ≠ Album Artist tag {expected_album_artist!r}"))

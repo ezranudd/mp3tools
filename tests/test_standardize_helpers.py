@@ -26,10 +26,9 @@ def test_parse_track(raw, expected):
 
 
 def test_parse_track_blank_num_with_total():
-    # Verified drift: standardize does int(parts[0]) without .strip(), so a
-    # whitespace-only track number raises and drops the total too; the audit
-    # and import_tracks copies return (None, 12) here.
-    assert parse_track("  /12") == (None, None)
+    # Shared implementation strips before the emptiness check, so the total
+    # survives a whitespace-only track number.
+    assert parse_track("  /12") == (None, 12)
 
 
 def test_is_disc_folder():

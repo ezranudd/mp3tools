@@ -341,6 +341,21 @@ def test_normalize_chars_fix(tmp_path):
     assert str(tags_of(fixed)["TIT2"]) == "Don't Stop"
 
 
+def test_normalize_chars_composes_nfc(tmp_path):
+    album = tmp_path / "Artist" / "2020 - Album"
+    f = album / ("01. Artist - Café.mp3")        # decomposed filename
+    mk(f, TIT2="Café", TRCK="01/1")              # decomposed tag
+
+    stats = st.step_normalize_chars(tmp_path, False)
+
+    assert stats["tags"] == 1 and stats["files"] == 1
+    fixed = album / "01. Artist - Café.mp3"
+    assert fixed.is_file()
+    assert str(tags_of(fixed)["TIT2"]) == "Café"
+    stats = second_run_stable(st.step_normalize_chars, tmp_path)
+    assert stats["tags"] == 0 and stats["files"] == 0
+
+
 def test_normalize_chars_dry_run(tmp_path):
     mk(tmp_path / "A" / "2020 - X" / "01. A - Don’t.mp3", TIT2="Don’t", TRCK="01/1")
     stats = dry_run_untouched(st.step_normalize_chars, tmp_path)

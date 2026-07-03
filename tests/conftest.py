@@ -217,11 +217,10 @@ def library_factory(tmp_path):
     return build
 
 
-# ── Shared parametrize tables for the near-duplicate per-module helpers ──────
-# audit.py, standardize.py, import_tracks.py, and browse.py each carry a copy
-# of these helpers; running every copy against the same table makes any drift
-# between them fail loudly. Genuine, verified divergences are asserted
-# per-module in the test files instead of here.
+# ── Shared parametrize tables for the char/parse helpers ─────────────────────
+# audit.py, standardize.py, import_tracks.py, and browse.py all alias the
+# single chars.py implementation; the tables run against every module's name
+# so an alias quietly turning back into a local copy fails loudly.
 
 NORMALIZE_CASES = [
     ("plain ASCII", "plain ASCII"),
@@ -231,6 +230,7 @@ NORMALIZE_CASES = [
     ("“double” „low‟", '"double" "low"'),
     ("café Zürich", "café Zürich"),        # accents pass through
     ("em—dash – en", "em—dash – en"),      # dashes are NOT in the table
+    ("Cafe\u0301", "Caf\u00e9"),   # decomposed input composes to NFC
 ]
 
 # Substitution-only cases (ASCII input) — valid for all four sanitize copies,
