@@ -1,0 +1,42 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  full:
+    name: full suite (ffmpeg + lame, py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install ffmpeg and lame
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg lame
+      - name: Install package with dev extras
+        run: pip install -e ".[dev]"
+      - name: Run full test suite
+        run: pytest -v
+
+  fast:
+    # No ffmpeg installed on purpose: proves the marker-based skips keep the
+    # pure-function suite self-contained.
+    name: pure functions (no ffmpeg)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install package with dev extras
+        run: pip install -e ".[dev]"
+      - name: Run non-ffmpeg tests
+        run: pytest -v -m "not ffmpeg"
