@@ -34,7 +34,6 @@ from mutagen.id3 import (
     APIC as _APIC,
     TPE1 as _TPE1, TPE2 as _TPE2, TIT2 as _TIT2, TALB as _TALB,
     TYER as _TYER, TDRC as _TDRC, TCON as _TCON, TRCK as _TRCK,
-    TXXX as _TXXX,
 )
 
 
@@ -43,14 +42,15 @@ from mutagen.id3 import (
 _YEAR_RE       = re.compile(r"\b(19\d{2}|20\d{2})\b")
 _ALBUM_YEAR_RE = re.compile(r"^\d{4}\s*-\s*(.+)$")
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
-_ALBUM_ARTIST_DESC = "album artist"
+# TPE2 is the canonical album artist frame. The TXXX variants are legacy —
+# read them for migration but never write them (see standardize.ALBUM_ARTIST_KEYS).
 _ALBUM_ARTIST_KEYS = (
+    "TPE2",
     "TXXX:album artist",
     "TXXX:ALBUMARTIST",
     "TXXX:ALBUM ARTIST",
     "TXXX:AlbumArtist",
     "TXXX:Album Artist",
-    "TPE2",
 )
 
 
@@ -88,16 +88,10 @@ def _album_artist_value(tags: ID3) -> str:
 
 
 def _set_album_artist(tags: ID3, value: str) -> None:
-    canonical_key = f"TXXX:{_ALBUM_ARTIST_DESC}"
     for key in _ALBUM_ARTIST_KEYS:
-        if key not in (canonical_key, "TPE2") and key in tags:
+        if key != "TPE2" and key in tags:
             del tags[key]
     tags["TPE2"] = _TPE2(encoding=3, text=value)
-    tags[canonical_key] = _TXXX(
-        encoding=3,
-        desc=_ALBUM_ARTIST_DESC,
-        text=value,
-    )
 
 
 # ── Node model ────────────────────────────────────────────────────────────────

@@ -178,22 +178,26 @@ def test_standardize_album_artist_prefers_tpe2(mp3):
     assert standardize.album_artist_value(tags) == "Test Artist"
 
 
-def test_browse_album_artist_prefers_legacy_txxx(mp3):
-    # NOTE: possible bug — browse._ALBUM_ARTIST_KEYS lists the TXXX variants
-    # BEFORE TPE2 (the other modules list TPE2 first), so a stale legacy frame
-    # shadows the canonical TPE2 value in the Browse view.
+def test_browse_album_artist_prefers_tpe2(mp3):
+    # TPE2 is first in browse._ALBUM_ARTIST_KEYS, same as the other modules —
+    # a stale legacy frame must not shadow the canonical value.
     tags = ID3(mp3, translate=False)
     tags.add(TXXX(encoding=3, desc="ALBUM ARTIST", text="Legacy"))
-    assert browse._album_artist_value(tags) == "Legacy"
+    assert browse._album_artist_value(tags) == "Test Artist"
 
 
-def test_browse_set_album_artist_writes_txxx_too(mp3):
-    # NOTE: possible bug — browse._set_album_artist writes BOTH TPE2 and a
-    # TXXX:album artist frame, contradicting the project rule that TXXX
-    # variants are read-only legacy and only TPE2 is ever written
-    # (standardize/import_tracks delete all TXXX variants). Encoding current
-    # behavior; standardize step 4 (strip_tags) later removes the TXXX.
+def test_browse_album_artist_legacy_fallback(mp3):
+    # With TPE2 absent, the legacy TXXX variants are still read (migration).
+    _plant_legacy_albumartist(mp3, "ALBUM ARTIST", "Legacy Artist")
+    tags = ID3(mp3, translate=False)
+    assert browse._album_artist_value(tags) == "Legacy Artist"
+
+
+def test_browse_set_album_artist_writes_tpe2_only(mp3):
+    # Starting from a legacy-tagged file, an album-artist edit through browse
+    # migrates to TPE2 and deletes every TXXX variant — never writes one back.
+    _plant_legacy_albumartist(mp3, "ALBUM ARTIST", "Legacy Artist")
     browse.write_tags(mp3, {"ALBUMARTIST": "New AA"})
     tags = ID3(mp3, translate=False)
     assert str(tags["TPE2"]) == "New AA"
-    assert str(tags["TXXX:album artist"]) == "New AA"
+    assert not [k for k in tags if k.startswith("TXXX")]
