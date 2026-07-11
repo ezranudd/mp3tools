@@ -497,6 +497,7 @@ app = FastAPI(title="mp3tools web")
 _GUEST_GET_PATHS = frozenset({
     "/", "/api/tree", "/api/album", "/api/albums", "/api/search",
     "/api/genre", "/api/genres",
+    "/api/collections", "/api/collection",
     "/api/track", "/api/album_stream", "/api/album_manifest",
     "/api/cover", "/api/background", "/api/settings",
     "/api/whoami",
@@ -721,6 +722,73 @@ def api_genres() -> JSONResponse:
 @app.get("/api/albums")
 def api_albums() -> JSONResponse:
     return JSONResponse({"albums": browse.all_albums(ROOT)})
+
+
+# ── Collections (owner-curated album groups) ──────────────────────────────────
+# Browsing (the two GETs below) is guest-readable — they're in _GUEST_GET_PATHS.
+# Every mutation is a POST guarded by _require_owner, so it stays owner-only and
+# is unreachable from the LAN/internet by construction.
+
+@app.get("/api/collections")
+def api_collections() -> JSONResponse:
+    return JSONResponse({"collections": browse.all_collections(ROOT, settings_mod.load(ROOT))})
+
+
+@app.get("/api/collection")
+def api_collection(name: str = Query("")) -> JSONResponse:
+    cfg = settings_mod.load(ROOT)
+    albums, changed = browse.collection_albums(ROOT, cfg, name)
+    if changed:                                  # a renamed album was self-healed
+        settings_mod.save(ROOT, cfg)
+    return JSONResponse({"collection": name, "albums": albums})
+
+
+def _collection_mutation(request: Request, fn) -> JSONResponse:
+    """Owner-only load→mutate→save. *fn* takes the cfg and may raise ValueError
+    (→ 400). Returns the refreshed collection list."""
+    _require_owner(request)
+    cfg = settings_mod.load(ROOT)
+    try:
+        fn(cfg)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    settings_mod.save(ROOT, cfg)
+    return JSONResponse({"collections": browse.all_collections(ROOT, cfg)})
+
+
+@app.post("/api/collection/create")
+def api_collection_create(request: Request, body: dict) -> JSONResponse:
+    name = str((body or {}).get("name", ""))
+    return _collection_mutation(request, lambda cfg: browse.create_collection(cfg, name))
+
+
+@app.post("/api/collection/rename")
+def api_collection_rename(request: Request, body: dict) -> JSONResponse:
+    name = str((body or {}).get("name", ""))
+    new_name = str((body or {}).get("new_name", ""))
+    return _collection_mutation(request, lambda cfg: browse.rename_collection(cfg, name, new_name))
+
+
+@app.post("/api/collection/delete")
+def api_collection_delete(request: Request, body: dict) -> JSONResponse:
+    name = str((body or {}).get("name", ""))
+    return _collection_mutation(request, lambda cfg: browse.delete_collection(cfg, name))
+
+
+@app.post("/api/collection/add")
+def api_collection_add(request: Request, body: dict) -> JSONResponse:
+    _require_owner(request)
+    name = str((body or {}).get("name", ""))
+    album = _safe(str((body or {}).get("album_path", "")))
+    return _collection_mutation(request, lambda cfg: browse.add_to_collection(ROOT, cfg, name, album))
+
+
+@app.post("/api/collection/remove")
+def api_collection_remove(request: Request, body: dict) -> JSONResponse:
+    _require_owner(request)
+    name = str((body or {}).get("name", ""))
+    album = _safe(str((body or {}).get("album_path", "")))
+    return _collection_mutation(request, lambda cfg: browse.remove_from_collection(ROOT, cfg, name, album))
 
 
 # ── Audio streaming ───────────────────────────────────────────────────────────

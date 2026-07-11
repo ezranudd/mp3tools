@@ -862,3 +862,73 @@ def test_guest_settings_sanitized(client, guest):
     assert "art_sources" not in body
     assert "art_source_order" not in body
     assert not any(s in k.lower() for k in body for s in ("token", "key", "secret"))
+
+
+# ── Collections ───────────────────────────────────────────────────────────────
+
+def _album_path(client):
+    return client.get("/api/tree").json()["artists"][0]["children"][0]["path"]
+
+
+def test_collections_owner_crud(client):
+    assert client.get("/api/collections").json()["collections"] == []
+
+    r = client.post("/api/collection/create", json={"name": "Faves"})
+    assert r.status_code == 200
+    assert [c["name"] for c in r.json()["collections"]] == ["Faves"]
+
+    album = _album_path(client)
+    r = client.post("/api/collection/add", json={"name": "Faves", "album_path": album})
+    assert r.status_code == 200
+    assert r.json()["collections"][0]["count"] == 1
+
+    data = client.get("/api/collection", params={"name": "Faves"}).json()
+    assert data["collection"] == "Faves"
+    assert len(data["albums"]) == 1
+    assert data["albums"][0]["album_path"] == album
+
+    r = client.post("/api/collection/remove", json={"name": "Faves", "album_path": album})
+    assert r.json()["collections"][0]["count"] == 0
+
+    client.post("/api/collection/rename", json={"name": "Faves", "new_name": "Best"})
+    assert [c["name"] for c in client.get("/api/collections").json()["collections"]] == ["Best"]
+
+    client.post("/api/collection/delete", json={"name": "Best"})
+    assert client.get("/api/collections").json()["collections"] == []
+
+
+def test_collection_create_duplicate_400(client):
+    client.post("/api/collection/create", json={"name": "Faves"})
+    r = client.post("/api/collection/create", json={"name": "faves"})
+    assert r.status_code == 400
+
+
+def test_collection_add_outside_library_403(client):
+    client.post("/api/collection/create", json={"name": "Faves"})
+    r = client.post("/api/collection/add", json={"name": "Faves", "album_path": "/etc"})
+    assert r.status_code == 403         # _safe rejects paths outside the library root
+
+
+def test_collection_persists_to_settings(client, tmp_path):
+    import settings as settings_mod
+    client.post("/api/collection/create", json={"name": "Faves"})
+    assert [c["name"] for c in settings_mod.load(tmp_path)["collections"]] == ["Faves"]
+
+
+def test_guest_can_browse_collections(client, guest):
+    client.post("/api/collection/create", json={"name": "Faves"})
+    client.post("/api/collection/add", json={"name": "Faves", "album_path": _album_path(client)})
+    assert guest.get("/api/collections").status_code == 200
+    data = guest.get("/api/collection", params={"name": "Faves"}).json()
+    assert len(data["albums"]) == 1
+
+
+@pytest.mark.parametrize("path,body", [
+    ("/api/collection/create", {"name": "X"}),
+    ("/api/collection/rename", {"name": "Faves", "new_name": "Y"}),
+    ("/api/collection/delete", {"name": "Faves"}),
+    ("/api/collection/add", {"name": "Faves", "album_path": "x"}),
+    ("/api/collection/remove", {"name": "Faves", "album_path": "x"}),
+])
+def test_guest_blocked_from_collection_mutations(guest, path, body):
+    assert guest.post(path, json=body).status_code in (401, 403)

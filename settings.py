@@ -90,6 +90,7 @@ DEFAULTS: dict = {
     "theme_accent_from_art": False,   # web UI: tint theme to the playing album's art
     "theme_accent_color":   "",       # web UI: chosen accent hex (#rgb/#rrggbb), "" = theme default
     "import_bitrate":       320,      # web UI: default lossless→MP3 bitrate for import
+    "collections":          [],       # web UI: owner-curated album groups (see _clean_collections)
 }
 
 _HEX_RE = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
@@ -99,6 +100,47 @@ _VALID_BITRATES = frozenset((128, 160, 192, 256, 320))
 _VALID_COVER_ART = frozenset(("folder", "embed", "both"))
 _VALID_ART_SOURCES = frozenset(ART_SOURCE_ORDER)
 _VALID_BACKGROUND_FIT = frozenset(("cover", "contain", "tile"))
+
+
+def _clean_collections(data) -> list:
+    """Coerce persisted collections into the canonical shape, dropping anything
+    malformed. A collection is {"name": str, "albums": [ref, ...]} and a ref is
+    {"path": relpath, "artist": str, "album": str, "year": str} — path is the
+    album folder relative to the library root; the metadata backs self-heal when
+    a folder is renamed. Names are unique (case-insensitive; first one wins)."""
+    if not isinstance(data, list):
+        return []
+    out: list[dict] = []
+    seen: set[str] = set()
+    for coll in data:
+        if not isinstance(coll, dict):
+            continue
+        name = coll.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        key = name.strip().lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        albums: list[dict] = []
+        album_keys: set[str] = set()
+        for ref in coll.get("albums", []) if isinstance(coll.get("albums"), list) else []:
+            if not isinstance(ref, dict):
+                continue
+            path = ref.get("path")
+            if not isinstance(path, str) or not path:
+                continue
+            if path in album_keys:
+                continue
+            album_keys.add(path)
+            albums.append({
+                "path":   path,
+                "artist": str(ref.get("artist", "")),
+                "album":  str(ref.get("album", "")),
+                "year":   str(ref.get("year", "")),
+            })
+        out.append({"name": name.strip(), "albums": albums})
+    return out
 
 
 def load(library_root: Path) -> dict:
@@ -159,6 +201,8 @@ def load(library_root: Path) -> dict:
                     settings["theme_accent_color"] = val
             if data.get("import_bitrate") in _VALID_BITRATES:
                 settings["import_bitrate"] = data["import_bitrate"]
+            if "collections" in data:
+                settings["collections"] = _clean_collections(data["collections"])
         except Exception:
             pass
     return settings

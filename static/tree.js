@@ -11,11 +11,12 @@ import * as edit from "./edit.js";
 let CURRENT = null;   // selected artist: { kind: "artist", path }
 let TREE = [];        // artist nodes from /api/tree
 let GENRES = [];      // [{genre, count}] from /api/genres
+let COLLECTIONS = []; // [{name, count}] from /api/collections
 let rootEl;           // the #view container (holds #browseSelect + #tree + #detail)
 let treeEl, indexEl, detailEl;
 let subscribed = false;
 let pendingReveal = null;   // { artist_path, album_path, track_path? } from search
-let browseMode = "artists"; // artists | genres | albums — which the left pane shows
+let browseMode = "artists"; // artists | genres | albums | collections — which the left pane shows
 let browseLevel = "select"; // select | index | detail (mobile drill-down level)
 // Shared album grid (used by both the Genres mode and the Albums mode).
 let gridAlbums = [];        // albums in the current grid
@@ -66,12 +67,14 @@ export async function show(container) {
       <button class="bigchoice" data-mode="artists"><span class="bcicon">♪</span><span>Artists</span></button>
       <button class="bigchoice" data-mode="genres"><span class="bcicon">🎵</span><span>Genres</span></button>
       <button class="bigchoice" data-mode="albums"><span class="bcicon">💿</span><span>Albums</span></button>
+      <button class="bigchoice" data-mode="collections"><span class="bcicon">★</span><span>Collections</span></button>
     </div>
     <nav id="tree">
       <div class="browsetabs">
         <button data-mode="artists">Artists</button>
         <button data-mode="genres">Genres</button>
         <button data-mode="albums">Albums</button>
+        <button data-mode="collections">Collections</button>
       </div>
       <div id="indexList"></div>
     </nav>
@@ -119,6 +122,7 @@ function loadMode(mode) {
     b.classList.toggle("active", b.dataset.mode === mode));
   if (mode === "albums") { indexEl.innerHTML = ""; return showAlbums(); }
   if (mode === "genres") return loadGenres();
+  if (mode === "collections") return loadCollections();
   return loadTree();
 }
 
@@ -127,7 +131,8 @@ function loadMode(mode) {
 function setBrowseMode(mode) {
   albumsDrilled = false;
   if (mode === "albums") { setLevel("detail"); loadMode(mode); return; }
-  detailEl.innerHTML = `<p class="muted">Select ${mode === "genres" ? "a genre" : "an artist"}.</p>`;
+  const noun = mode === "genres" ? "a genre" : mode === "collections" ? "a collection" : "an artist";
+  detailEl.innerHTML = `<p class="muted">Select ${noun}.</p>`;
   setLevel("index");
   loadMode(mode);
 }
@@ -251,6 +256,51 @@ function genreNodeEl(g) {
   return head;
 }
 
+// ── Collections (owner-curated album groups; browse like Genres) ──────────────
+
+async function loadCollections() {
+  setPlaceholder(indexEl, "Loading…");
+  try {
+    const data = await jget("/api/collections");
+    COLLECTIONS = data.collections || [];
+    indexEl.innerHTML = "";
+    const editable = isEdit() && !isBusy();
+    if (editable) indexEl.appendChild(newCollectionButton());
+    for (const c of COLLECTIONS) indexEl.appendChild(collectionNodeEl(c));
+    if (!COLLECTIONS.length && !editable) setPlaceholder(indexEl, "No collections.");
+  } catch (e) {
+    setPlaceholder(indexEl, e.message, true);
+  }
+}
+
+// Owner-only "create a collection" affordance at the top of the index (Edit mode).
+function newCollectionButton() {
+  const b = document.createElement("div");
+  b.className = "node newcollection";
+  b.innerHTML = `<span class="gname">＋ New collection</span>`;
+  b.onclick = () => edit.createCollection(loadCollections);
+  return b;
+}
+
+// A collection row: name + album-count badge. In Edit mode (owner) rename/delete glyphs.
+function collectionNodeEl(c) {
+  const head = document.createElement("div");
+  head.className = "node genre collection";
+  head.dataset.name = c.name;
+  head.innerHTML =
+    (isEdit() && !isBusy()
+      ? `<span class="nodeact" data-act="rename" title="Rename collection">✎</span>` +
+        `<span class="nodeact" data-act="del" title="Delete collection">🗑</span>` : "") +
+    `<span class="gname">${escapeHtml(c.name)}</span><span class="gcount">${c.count}</span>`;
+  head.onclick = (e) => {
+    const act = e.target.dataset && e.target.dataset.act;
+    if (act === "rename") { edit.renameCollection(c.name, loadCollections); return; }
+    if (act === "del") { edit.deleteCollection(c.name, loadCollections); return; }
+    showCollection(c.name, head);
+  };
+  return head;
+}
+
 // ── Tree nodes (flat artist list — click an artist to see all its albums) ─────
 
 function clearSel() {
@@ -369,6 +419,17 @@ async function showAlbums() {
   await showGrid("albums", "All albums", "/api/albums", "No albums.");
 }
 
+// Collection grid: the albums curated into *name* (browsed like a genre). In Edit
+// mode the grid gains an "Add albums" button and a per-card remove action.
+async function showCollection(name, headEl, resetSort = true) {
+  clearSel();
+  if (headEl) headEl.classList.add("sel");
+  gridName = name;
+  await showGrid("collection", `Collection · ${escapeHtml(name)}`,
+    "/api/collection?name=" + encodeURIComponent(name),
+    "No albums in this collection yet.", resetSort);
+}
+
 // Fetch *url* → {albums} and render the sortable grid into #detail. *resetSort*
 // is false on re-renders (mode/job toggles) so the user's sort choice survives.
 async function showGrid(kind, heading, url, emptyMsg, resetSort = true) {
@@ -398,12 +459,23 @@ async function showGrid(kind, heading, url, emptyMsg, resetSort = true) {
   wireBack();
   detailEl.querySelectorAll(".sortbtn").forEach(b =>
     b.onclick = () => { gridSort = b.dataset.sort; renderGrid(); });
+  // Owner add-albums control lives next to the sort bar for collections.
+  if (kind === "collection" && isEdit() && !isBusy()) {
+    const head = detailEl.querySelector(".genrehead");
+    const btn = document.createElement("button");
+    btn.className = "btn addalbums";
+    btn.textContent = "＋ Add albums";
+    btn.onclick = () => edit.addAlbumsToCollection(
+      gridName, gridAlbums.map(a => a.album_path), () => showCollection(gridName, null, false));
+    head.appendChild(btn);
+  }
   renderGrid();
 }
 
 // Re-show whichever grid is active (used by Back from a drilled-in artist page).
 function reshowGrid() {
   if (gridKind === "albums") showGrid("albums", "All albums", "/api/albums", gridEmptyMsg, false);
+  else if (gridKind === "collection") showCollection(gridName, null, false);
   else showGrid("genre", `Genre · ${escapeHtml(gridName)}`,
     "/api/genre?name=" + encodeURIComponent(gridName), gridEmptyMsg, false);
 }
@@ -432,14 +504,17 @@ function renderGrid() {
     setPlaceholder(grid, gridEmptyMsg);
     return;
   }
+  const canRemove = gridKind === "collection" && isEdit() && !isBusy();
   grid.innerHTML = sortedGridAlbums().map(a => {
     // Cache-bust so a changed cover refreshes here too (matches the album head).
     const cover = "/api/cover?path=" + encodeURIComponent(a.album_path) + "&t=" + Date.now();
     const label = (a.album || "Untitled") + (a.artist ? " by " + a.artist : "");
+    const rm = canRemove
+      ? `<button class="gcardrm" title="Remove from collection" data-rm="${escapeAttr(a.album_path)}">✕</button>` : "";
     return `<div class="gcard" role="button" tabindex="0" aria-label="${escapeAttr(label)}"
                  data-album="${escapeAttr(a.album_path)}"
                  data-artist="${escapeAttr(a.artist_path)}" title="${escapeAttr((a.album || "") + " — " + (a.artist || ""))}">
-        <img src="${cover}" loading="lazy" alt="" onerror="this.style.visibility='hidden'">
+        ${rm}<img src="${cover}" loading="lazy" alt="" onerror="this.style.visibility='hidden'">
         <div class="gcap"><b>${escapeHtml(a.album || "")}</b><span>${escapeHtml(a.artist || "")}</span></div>
       </div>`;
   }).join("");
@@ -455,6 +530,10 @@ function renderGrid() {
     };
     card.onclick = open;
     card.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } };
+  });
+  grid.querySelectorAll(".gcardrm").forEach(btn => btn.onclick = (e) => {
+    e.stopPropagation();
+    edit.removeAlbumFromCollection(gridName, btn.dataset.rm, () => showCollection(gridName, null, false));
   });
 }
 
@@ -545,6 +624,7 @@ function renderAlbumEditInto(container, st) {
         <input class="hdr sub" data-op="album_genre" value="${escapeAttr(genre)}" placeholder="Genre" aria-label="Genre">
       </div>
       <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn" data-act="addcoll">Add to collection</button>
         <button class="btn danger" data-act="del">Delete album</button>
       </div>`) +
     trackTable(tracks, { rowClass: "editrow", extraHead: `<th class="trackact"></th>` }, t => `
@@ -599,6 +679,9 @@ function renderAlbumEditInto(container, st) {
     coverImg.title = "Click to change cover art";
     coverImg.onclick = () => findArt(st);
   }
+
+  container.querySelector('[data-act="addcoll"]').onclick = () =>
+    edit.addAlbumToCollection(st.path);
 
   container.querySelector('[data-act="del"]').onclick = () =>
     edit.deleteAlbum(st.path, st.album || st.path.split("/").pop(), afterAlbumDelete);

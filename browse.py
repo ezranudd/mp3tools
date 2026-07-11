@@ -725,6 +725,180 @@ def all_genres(root: Path) -> list[dict]:
             for g, n in sorted(counts.items(), key=lambda kv: kv[0].lower())]
 
 
+# ── Collections (owner-curated album groups) ──────────────────────────────────
+# Collections live in settings ({root}/.mp3tools/mp3tools.conf) as a list of
+# {"name", "albums": [ref, ...]}; each ref is {"path", "artist", "album", "year"}
+# with *path* relative to the library root. Browsing resolves refs to live album
+# nodes — self-healing a renamed folder via the stored metadata — and returns the
+# same row shape as albums_by_genre() so the Browse grid is reused verbatim.
+
+def _rel_album_path(root: Path, album_path) -> str:
+    """An album folder path relative to *root*, as a POSIX string (portable so a
+    collection survives the library being moved). Falls back to the raw path if
+    it can't be made relative."""
+    p, r = Path(album_path), Path(root)
+    try:
+        return p.relative_to(r).as_posix()
+    except ValueError:
+        try:
+            return p.resolve().relative_to(r.resolve()).as_posix()
+        except ValueError:
+            return p.as_posix()
+
+
+def _album_ref(root: Path, artist: "Node", album: "Node", tags: dict) -> dict:
+    """The stored form of an album reference: its relative path plus the metadata
+    that backs self-heal. Metadata mirrors _album_row() so a healed match agrees
+    with what the grid shows."""
+    return {
+        "path":   _rel_album_path(root, album.path),
+        "artist": tags.get("albumartist") or tags.get("artist") or artist.label,
+        "album":  tags.get("album") or album.label,
+        "year":   tags.get("year", ""),
+    }
+
+
+def _ck(s: str | None) -> str:
+    return (s or "").strip().lower()
+
+
+def _album_entries(root: Path):
+    """One build_tree() pass → (entries, by_path). *entries* is a list of
+    (artist, album, tags) for every non-empty album (tags from the first track,
+    as everywhere); *by_path* indexes them by relative album path."""
+    entries: list[tuple] = []
+    by_path: dict[str, tuple] = {}
+    for artist in build_tree(root):
+        for album in artist.children:
+            if not album.children:
+                continue
+            tags = read_tags(album.children[0].path)
+            entry = (artist, album, tags)
+            entries.append(entry)
+            by_path[_rel_album_path(root, album.path)] = entry
+    return entries, by_path
+
+
+def _match_ref(entries: list, ref: dict):
+    """Find the album entry matching a ref's stored artist/album/year (the
+    self-heal fallback when its path no longer resolves)."""
+    want = (_ck(ref.get("artist")), _ck(ref.get("album")), _ck(ref.get("year")))
+    for artist, album, tags in entries:
+        got = (_ck(tags.get("albumartist") or tags.get("artist") or artist.label),
+               _ck(tags.get("album") or album.label),
+               _ck(tags.get("year")))
+        if got == want:
+            return (artist, album, tags)
+    return None
+
+
+def _find_collection(cfg: dict, name: str) -> dict | None:
+    key = _ck(name)
+    for coll in cfg.get("collections", []):
+        if _ck(coll.get("name")) == key:
+            return coll
+    return None
+
+
+def all_collections(root: Path, cfg: dict) -> list[dict]:
+    """Every collection with its resolvable-album count, sorted A-Z by name. The
+    count reflects only albums that currently resolve (by path or metadata), so a
+    stale reference doesn't inflate it."""
+    entries, by_path = _album_entries(root)
+    out: list[dict] = []
+    for coll in cfg.get("collections", []):
+        count = sum(1 for ref in coll.get("albums", [])
+                    if ref["path"] in by_path or _match_ref(entries, ref) is not None)
+        out.append({"name": coll["name"], "count": count})
+    out.sort(key=lambda c: c["name"].lower())
+    return out
+
+
+def collection_albums(root: Path, cfg: dict, name: str) -> tuple[list[dict], bool]:
+    """Album rows for a collection in stored order, plus a *changed* flag. Refs
+    whose folder was renamed are self-healed (matched by metadata, their stored
+    path rewritten in *cfg* so the caller can persist); refs that resolve to
+    nothing are skipped. Rows share the albums_by_genre() shape."""
+    coll = _find_collection(cfg, name)
+    if coll is None:
+        return [], False
+    entries, by_path = _album_entries(root)
+    rows: list[dict] = []
+    changed = False
+    for ref in coll["albums"]:
+        entry = by_path.get(ref["path"])
+        if entry is None:
+            entry = _match_ref(entries, ref)
+            if entry is not None:
+                ref["path"] = _rel_album_path(root, entry[1].path)
+                changed = True
+        if entry is None:
+            continue
+        artist, album, tags = entry
+        rows.append(_album_row(artist, album, tags))
+    return rows, changed
+
+
+def create_collection(cfg: dict, name: str) -> dict:
+    name = name.strip()
+    if not name:
+        raise ValueError("collection name required")
+    cfg.setdefault("collections", [])
+    if _find_collection(cfg, name) is not None:
+        raise ValueError(f"a collection named {name!r} already exists")
+    cfg["collections"].append({"name": name, "albums": []})
+    return cfg
+
+
+def rename_collection(cfg: dict, old: str, new: str) -> dict:
+    new = new.strip()
+    if not new:
+        raise ValueError("collection name required")
+    coll = _find_collection(cfg, old)
+    if coll is None:
+        raise ValueError(f"no collection named {old!r}")
+    clash = _find_collection(cfg, new)
+    if clash is not None and clash is not coll:
+        raise ValueError(f"a collection named {new!r} already exists")
+    coll["name"] = new
+    return cfg
+
+
+def delete_collection(cfg: dict, name: str) -> dict:
+    coll = _find_collection(cfg, name)
+    if coll is None:
+        raise ValueError(f"no collection named {name!r}")
+    cfg["collections"].remove(coll)
+    return cfg
+
+
+def add_to_collection(root: Path, cfg: dict, name: str, album_path) -> dict:
+    """Add the album at *album_path* (absolute) to a collection. Idempotent —
+    re-adding the same album is a no-op."""
+    coll = _find_collection(cfg, name)
+    if coll is None:
+        raise ValueError(f"no collection named {name!r}")
+    node = find_node(root, Path(album_path))
+    if node is None or node.kind != ALBUM or not node.children:
+        raise ValueError("album not found")
+    rel = _rel_album_path(root, node.path)
+    if any(ref["path"] == rel for ref in coll["albums"]):
+        return cfg
+    tags = read_tags(node.children[0].path)
+    coll["albums"].append(_album_ref(root, node.parent, node, tags))
+    return cfg
+
+
+def remove_from_collection(root: Path, cfg: dict, name: str, album_path) -> dict:
+    """Remove the album at *album_path* from a collection (no-op if absent)."""
+    coll = _find_collection(cfg, name)
+    if coll is None:
+        raise ValueError(f"no collection named {name!r}")
+    rel = _rel_album_path(root, album_path)
+    coll["albums"] = [ref for ref in coll["albums"] if ref["path"] != rel]
+    return cfg
+
+
 def merge_genres(root: Path, src: str, dst: str) -> tuple[bool, str, int]:
     """Re-tag every album whose genre is *src* to *dst* (case-insensitive match).
 
