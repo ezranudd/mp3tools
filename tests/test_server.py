@@ -932,3 +932,22 @@ def test_guest_can_browse_collections(client, guest):
 ])
 def test_guest_blocked_from_collection_mutations(guest, path, body):
     assert guest.post(path, json=body).status_code in (401, 403)
+
+
+def test_collection_add_many_accumulates(tmp_path):
+    # The in-collection picker fires one /add per selected album; every one must
+    # land (guards the contract the picker depends on).
+    for i in range(5):
+        album = tmp_path / f"Artist {i}" / f"200{i} - Album {i}"
+        album.mkdir(parents=True)
+        _make_mp3(album / "01. a - b.mp3")
+    server.set_root(tmp_path)
+    c = TestClient(server.app, client=("127.0.0.1", 12345))
+    c.post("/api/collection/create", json={"name": "Mix"})
+
+    paths = [a["album_path"] for a in c.get("/api/albums").json()["albums"]]
+    assert len(paths) == 5
+    for p in paths:
+        assert c.post("/api/collection/add",
+                      json={"name": "Mix", "album_path": p}).status_code == 200
+    assert len(c.get("/api/collection", params={"name": "Mix"}).json()["albums"]) == 5

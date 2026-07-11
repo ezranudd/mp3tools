@@ -180,9 +180,9 @@ export async function removeAlbumFromCollection(name, albumPath, onDone) {
   } catch (e) { toast(e.message, true); }
 }
 
-// From within a collection: a filterable checkbox picker over every library album
-// not already in it. Checking albums and confirming adds each. *existingPaths* are
-// the album paths already in the collection (excluded from the list).
+// From within a collection: a filterable picker over every library album not
+// already in it. Click rows to select (highlighted), then confirm to add each.
+// *existingPaths* are the album paths already in the collection (excluded).
 export async function addAlbumsToCollection(name, existingPaths, onDone) {
   let albums;
   try { albums = (await jget("/api/albums")).albums || []; }
@@ -191,31 +191,49 @@ export async function addAlbumsToCollection(name, existingPaths, onDone) {
   const candidates = albums.filter(a => !have.has(a.album_path));
   if (!candidates.length) { toast("Every album is already in this collection."); return; }
 
-  const rows = candidates.map((a, i) => `
-    <label class="collpickrow" data-label="${escapeAttr(((a.album || "") + " " + (a.artist || "")).toLowerCase())}">
-      <input type="checkbox" data-i="${i}">
+  const selected = new Set();   // album_paths chosen, independent of DOM/filter state
+  const rows = candidates.map(a => `
+    <div class="collpickrow" role="button" tabindex="0"
+         data-path="${escapeAttr(a.album_path)}"
+         data-label="${escapeAttr(((a.album || "") + " " + (a.artist || "")).toLowerCase())}">
+      <span class="cpcheck" aria-hidden="true">✓</span>
       <span class="cpalbum">${escapeHtml(a.album || "Untitled")}</span>
       <span class="cpartist muted">${escapeHtml(a.artist || "")}</span>
-    </label>`).join("");
+    </div>`).join("");
   openModal(
     `<h3>Add albums to "${escapeHtml(name)}"</h3>
      <input id="collFilter" placeholder="Filter…" style="width:100%;margin-bottom:8px">
      <div id="collPickList" class="collpicklist">${rows}</div>
-     <div class="row"><button class="btn" data-cancel>Cancel</button>
+     <div class="row"><span class="muted" id="collPickCount" style="margin-right:auto"></span>
+       <button class="btn" data-cancel>Cancel</button>
        <button class="btn primary" data-ok>Add selected</button></div>`,
     (box) => {
       const filter = box.querySelector("#collFilter");
       const list = box.querySelector("#collPickList");
+      const count = box.querySelector("#collPickCount");
+      const refresh = () => { count.textContent = selected.size
+        ? `${selected.size} selected` : ""; };
+      const toggle = (row) => {
+        const p = row.dataset.path;
+        if (selected.has(p)) selected.delete(p); else selected.add(p);
+        row.classList.toggle("sel", selected.has(p));
+        refresh();
+      };
       filter.focus();
       filter.oninput = () => {
         const q = filter.value.trim().toLowerCase();
         list.querySelectorAll(".collpickrow").forEach(r =>
           r.style.display = (!q || r.dataset.label.includes(q)) ? "" : "none");
       };
+      list.querySelectorAll(".collpickrow").forEach(row => {
+        row.onclick = () => toggle(row);
+        row.onkeydown = (e) => {
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(row); }
+        };
+      });
       box.querySelector("[data-cancel]").onclick = () => closeModal();
       box.querySelector("[data-ok]").onclick = async () => {
-        const chosen = [...list.querySelectorAll("input[type=checkbox]:checked")]
-          .map(cb => candidates[Number(cb.dataset.i)].album_path);
+        const chosen = [...selected];
         closeModal();
         if (!chosen.length) return;
         let added = 0;

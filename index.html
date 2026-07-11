@@ -306,9 +306,16 @@
   .collpicklist { max-height:50vh; overflow:auto; margin-bottom:12px;
                   border:1px solid var(--line); border-radius:6px; }
   .collpickrow { display:flex; align-items:center; gap:8px; padding:6px 10px;
-                 border-bottom:1px solid var(--line); cursor:pointer; }
+                 border-bottom:1px solid var(--line); cursor:pointer;
+                 user-select:none; }
   .collpickrow:last-child { border-bottom:0; }
   .collpickrow:hover { background:var(--panel); }
+  .collpickrow:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+  /* Selection: a tick that only shows on chosen rows, plus an accent wash. */
+  .collpickrow .cpcheck { flex:0 0 16px; text-align:center; color:var(--accent);
+                          opacity:0; font-weight:700; }
+  .collpickrow.sel { background:color-mix(in srgb, var(--accent) 18%, transparent); }
+  .collpickrow.sel .cpcheck { opacity:1; }
   .collpickrow .cpalbum { flex:0 1 auto; overflow:hidden; text-overflow:ellipsis;
                           white-space:nowrap; }
   .collpickrow .cpartist { flex:1 1 auto; overflow:hidden; text-overflow:ellipsis;
