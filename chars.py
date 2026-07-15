@@ -11,6 +11,11 @@ modules import them under their historical local names.
 import re
 import unicodedata
 
+# Audio file extensions the library tools recognize. One shared home so a new
+# backend (see tagio.py) is added by extending this set, not by hunting down
+# scattered glob("*.mp3") calls. Order-independent; discovery globs each.
+AUDIO_EXTENSIONS: frozenset[str] = frozenset({".mp3", ".opus"})
+
 # Typographic apostrophes → ASCII '  and curly quotes → ASCII "  (U+2018–U+201F).
 CHAR_REPLACEMENTS: dict[str, str] = {
     "‘": "'", "’": "'", "‚": "'", "‛": "'",

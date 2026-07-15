@@ -17,7 +17,7 @@ mp3tools = "server:main"
 mp3tools-web = "server:main"
 
 [tool.setuptools]
-py-modules = ["audit", "album_stream", "browse", "import_tracks", "standardize", "convert_lossless", "sync_library", "settings", "fetch_art", "rip_cd", "chars", "server", "webjobs", "webauth"]
+py-modules = ["audit", "album_stream", "browse", "import_tracks", "standardize", "convert_lossless", "sync_library", "settings", "fetch_art", "rip_cd", "chars", "mp3header", "tagio", "server", "webjobs", "webauth"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
