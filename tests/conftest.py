@@ -112,6 +112,36 @@ def make_opus(path, duration=1.0, **fields):
         f.save()
 
 
+def make_audio(fmt, path, *, title=None, artist=None, album_artist=None,
+               album=None, date=None, genre=None, track=None, duration=1.0):
+    """Format-agnostic factory taking canonical fields; dispatches to make_mp3
+    (ID3 frames) or make_opus (Vorbis comments). Used by the parametrized
+    both-format audit/standardize tests."""
+    if fmt == "mp3":
+        frames = {}
+        for canon, frame in (("TIT2", title), ("TPE1", artist), ("TPE2", album_artist),
+                             ("TALB", album), ("TYER", date), ("TCON", genre),
+                             ("TRCK", track)):
+            if frame is not None:
+                frames[canon] = frame
+        make_mp3(path, duration=duration, **frames)
+    elif fmt == "opus":
+        fields = {}
+        for key, val in (("title", title), ("artist", artist),
+                         ("albumartist", album_artist), ("album", album),
+                         ("date", date), ("genre", genre)):
+            if val is not None:
+                fields[key] = val
+        if track is not None:
+            num, _, total = str(track).partition("/")
+            fields["tracknumber"] = num
+            if total:
+                fields["tracktotal"] = total
+        make_opus(path, duration=duration, **fields)
+    else:
+        raise ValueError(fmt)
+
+
 def make_m4a(path, duration=1.0, codec="alac", **tags_):
     """Create an M4A at *path* (codec "alac" = lossless, "aac" = lossy).
 

@@ -292,7 +292,10 @@ def audit_cover_and_extras(
                 f"Multiple cover images: {', '.join(f.name for f in sorted(covers))}"))
 
     if need_embed and mp3s:
-        missing = [p for p in mp3s if not has_embedded_art(p)]
+        def _has_art(p: Path) -> bool:
+            a = tagio.open_audio(p)          # format-agnostic embedded-art check
+            return bool(a and a.has_cover())
+        missing = [p for p in mp3s if not _has_art(p)]
         if missing:
             if len(missing) == len(mp3s):
                 issues.append(Issue("COVER", "No embedded art in any track"))
