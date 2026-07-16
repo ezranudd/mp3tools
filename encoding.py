@@ -28,6 +28,8 @@ class EncodeProfile:
 # Insertion order is the UI order (Opus tiers first, then MP3 fallbacks).
 PROFILES: dict[str, EncodeProfile] = {
     p.id: p for p in (
+        EncodeProfile("opus-192", "opus", ".opus",
+                      "Opus 192 — archival", opus_bitrate=192),
         EncodeProfile("opus-160", "opus", ".opus",
                       "Opus 160 — paranoid transparent", opus_bitrate=160),
         EncodeProfile("opus-128", "opus", ".opus",

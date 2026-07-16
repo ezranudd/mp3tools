@@ -17,9 +17,9 @@ from conftest import make_flac
 
 # ── Registry (pure) ───────────────────────────────────────────────────────────
 
-def test_registry_has_the_six_profiles_in_order():
-    assert list(PROFILES) == ["opus-160", "opus-128", "opus-96", "opus-64",
-                              "mp3-v0", "mp3-320"]
+def test_registry_profiles_in_order():
+    assert list(PROFILES) == ["opus-192", "opus-160", "opus-128", "opus-96",
+                              "opus-64", "mp3-v0", "mp3-320"]
 
 
 def test_default_is_opus_128():
@@ -111,7 +111,7 @@ def test_mp3_320_byte_identical_to_legacy_path(tmp_path):
 # ── Opus profiles ─────────────────────────────────────────────────────────────
 
 @pytest.mark.opus
-@pytest.mark.parametrize("pid", ["opus-160", "opus-128", "opus-96", "opus-64"])
+@pytest.mark.parametrize("pid", ["opus-192", "opus-160", "opus-128", "opus-96", "opus-64"])
 def test_opus_profiles_encode_valid(tmp_path, pid):
     from convert_lossless import _valid_opus, convert_audio
     src = tmp_path / "a.flac"
