@@ -122,6 +122,35 @@ def test_opus_profiles_encode_valid(tmp_path, pid):
     assert _valid_opus(dst) is True
 
 
+def test_opus_command_pins_quality_knobs(monkeypatch):
+    """The opus encode always pins max complexity + unconstrained VBR, and uses
+    the soxr resampler when (and only when) the ffmpeg build has libsoxr."""
+    import convert_lossless as cl
+
+    captured = {}
+
+    class _R:
+        returncode = 0
+    def _fake_run(cmd, *a, **k):
+        captured["cmd"] = cmd
+        return _R()
+    monkeypatch.setattr(cl.subprocess, "run", _fake_run)
+    cl._has_soxr.cache_clear()
+
+    monkeypatch.setattr(cl, "_has_soxr", lambda: True)
+    cl._opus_convert(cl.Path("in.flac"), cl.Path("out.opus"), 128)
+    cmd = captured["cmd"]
+    assert "-compression_level" in cmd and cmd[cmd.index("-compression_level") + 1] == "10"
+    assert cmd[cmd.index("-vbr") + 1] == "on"
+    assert "-af" in cmd and "resampler=soxr" in cmd[cmd.index("-af") + 1]
+
+    monkeypatch.setattr(cl, "_has_soxr", lambda: False)
+    cl._opus_convert(cl.Path("in.flac"), cl.Path("out.opus"), 128)
+    cmd = captured["cmd"]
+    assert "-compression_level" in cmd            # complexity still pinned
+    assert "-af" not in cmd                        # no soxr → default resampler
+
+
 @pytest.mark.opus
 def test_opus_64_preserves_mono(tmp_path):
     from convert_lossless import convert_audio

@@ -217,6 +217,12 @@ well as CBR). Encode sources are always lossless (FLAC/ALAC/WAV); there is no
 lossy→lossy path. Because new imports default to Opus, libraries become mixed
 `.mp3`/`.opus` over time — audit and standardize treat both as first-class.
 
+Opus encodes at maximum encoder complexity (`compression_level 10`, pinned) in
+unconstrained VBR. Opus always operates at 48 kHz internally, so non-48k sources
+(most music is 44.1 kHz) are resampled during encoding; this uses the
+high-quality SoX resampler (`soxr`, 28-bit precision) when the ffmpeg build has
+libsoxr, otherwise ffmpeg's default resampler.
+
 ### CD Ripping (`rip_cd.py`)
 
 Rips a CD to FLAC using cdparanoia, then looks up metadata in order:

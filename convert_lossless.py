@@ -4,6 +4,7 @@ Utilities for detecting and converting lossless audio (FLAC/ALAC) to MP3.
 Used by both standardize.py (in-place conversion) and import_tracks.py (convert-on-copy).
 """
 
+import functools
 import re
 import shutil
 import subprocess
@@ -338,6 +339,22 @@ def _ffmpeg_convert(src: Path, dst: Path, bitrate: int,
     return _ffmpeg_mp3(src, dst, ("--cbr", "-b", str(bitrate)), start_time, end_time)
 
 
+@functools.lru_cache(maxsize=1)
+def _has_soxr() -> bool:
+    """True if this ffmpeg build can actually resample with SoX (libsoxr). The
+    aresample filter always *lists* soxr as an option, so we probe it for real:
+    a tiny resample that only succeeds when libsoxr is compiled in."""
+    try:
+        r = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error",
+             "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono", "-t", "0.1",
+             "-af", "aresample=48000:resampler=soxr", "-f", "null", "-"],
+            capture_output=True, text=True)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
 def _valid_opus(dst: Path) -> bool:
     """True if *dst* probes as a valid Opus stream with a nonzero duration."""
     try:
@@ -368,16 +385,25 @@ def _opus_convert(src: Path, dst: Path, bitrate: int,
     ffmpeg's Ogg Opus muxing is gapless-correct (pre-skip/end-trim are mandatory
     parts of the format), so no encoder pipe is needed. -map 0:a drops any
     embedded cover-art video stream; libopus preserves the source channel count
-    (mono stays mono, stereo stays stereo — never upmixed or auto-downmixed) and
-    ffmpeg auto-resamples unsupported source rates to an Opus-legal 48 kHz."""
+    (mono stays mono, stereo stays stereo — never upmixed or auto-downmixed).
+
+    Quality knobs: unconstrained VBR at the target bitrate; encoder complexity
+    pinned to 10 (the max, and the current default — pinned so a future ffmpeg
+    default can't silently lower it). Opus operates internally at 48 kHz, so
+    every non-48k source (most music is 44.1k) is resampled during encode; we do
+    that with the high-quality SoX resampler when the ffmpeg build has libsoxr,
+    otherwise ffmpeg's default swresample."""
     try:
         cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", str(src)]
         if start_time is not None:
             cmd += ["-ss", f"{start_time:.6f}"]
         if end_time is not None:
             cmd += ["-to", f"{end_time:.6f}"]
-        cmd += ["-map", "0:a", "-c:a", "libopus",
-                "-b:a", f"{bitrate}k", "-vbr", "on",
+        cmd += ["-map", "0:a"]
+        if _has_soxr():
+            cmd += ["-af", "aresample=48000:resampler=soxr:precision=28"]
+        cmd += ["-c:a", "libopus", "-b:a", f"{bitrate}k", "-vbr", "on",
+                "-compression_level", "10",
                 "-f", "opus", "-y", str(dst)]  # force the muxer: dst may be *.part
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
