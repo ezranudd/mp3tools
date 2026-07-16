@@ -43,7 +43,7 @@ python import_tracks.py ~/Downloads/NewAlbum ~/Music
 | `musicbrainzngs`        | MusicBrainz metadata lookup for CD ripping         | `pip install musicbrainzngs`                         |
 | `discid` + `libdiscid0` | MusicBrainz disc ID from CD (preferred)            | `pip install discid` + `sudo apt install libdiscid0` |
 | `cdparanoia`            | CD audio extraction                                | `sudo apt install cdparanoia`                        |
-| `ffmpeg`                | WAV→FLAC and lossless decode for MP3 conversion    | `sudo apt install ffmpeg`                            |
+| `ffmpeg` (with `libopus`) | WAV→FLAC, lossless decode, and Opus encoding      | `sudo apt install ffmpeg`                            |
 | `lame`                  | Gapless MP3 encoding (correct encoder delay/padding) | `sudo apt install lame`                            |
 | `cd-discid`             | CDDB disc ID fallback (when discid unavailable)    | `sudo apt install cd-discid`                         |
 | `cd-info`               | CD-Text reading                                    | `sudo apt install libcdio-utils`                     |
