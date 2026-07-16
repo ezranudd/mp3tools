@@ -13,6 +13,8 @@ import copy
 import re
 from pathlib import Path
 
+import encoding
+
 SETTINGS_DIRNAME = ".mp3tools"
 CONF_FILENAME = "mp3tools.conf"
 BACKGROUND_FILENAME = "background"
@@ -90,7 +92,8 @@ DEFAULTS: dict = {
     "background_readable": True,      # web UI: boost text contrast over the bg image
     "theme_accent_from_art": False,   # web UI: tint theme to the playing album's art
     "theme_accent_color":   "",       # web UI: chosen accent hex (#rgb/#rrggbb), "" = theme default
-    "import_bitrate":       320,      # web UI: default lossless→MP3 bitrate for import
+    "import_profile":       encoding.DEFAULT_PROFILE,  # web UI: default encode profile
+    #                                    for lossless import (see encoding.PROFILES)
     "collections":          [],       # web UI: owner-curated album groups (see _clean_collections)
 }
 
@@ -202,8 +205,17 @@ def load(library_root: Path) -> dict:
                 val = data["theme_accent_color"].strip()
                 if val == "" or _HEX_RE.match(val):
                     settings["theme_accent_color"] = val
-            if data.get("import_bitrate") in _VALID_BITRATES:
-                settings["import_bitrate"] = data["import_bitrate"]
+            # Encode profile: prefer a valid import_profile; else migrate the
+            # legacy raw-int import_bitrate (kept for one release cycle). The
+            # migrated key is persisted on the next save() (import_bitrate is not
+            # in DEFAULTS, so it is dropped then).
+            if encoding.is_valid(data.get("import_profile")):
+                settings["import_profile"] = data["import_profile"]
+            elif data.get("import_bitrate") in encoding.LEGACY_BITRATE_TO_PROFILE:
+                migrated = encoding.LEGACY_BITRATE_TO_PROFILE[data["import_bitrate"]]
+                settings["import_profile"] = migrated
+                print(f"settings: migrated legacy import_bitrate "
+                      f"{data['import_bitrate']} → import_profile {migrated}")
             if "collections" in data:
                 settings["collections"] = _clean_collections(data["collections"])
         except Exception:
