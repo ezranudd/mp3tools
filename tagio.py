@@ -245,14 +245,136 @@ class Mp3Tags(AudioTags):
             "legacy_albumartist": any(k in self._tags for k in ALBUM_ARTIST_KEYS
                                       if k != "TPE2"),
             "has_id3v1":          has_id3v1(self.path),
+            "tpe2":               self._g("TPE2"),   # raw canonical album-artist frame
             "tyer":               self._g("TYER"),
             "tdrc":               self._g("TDRC"),
         }
 
 
+# ── Opus / Vorbis backend ─────────────────────────────────────────────────────
+
+# Canonical scalar fields ↔ Vorbis comment keys (case-insensitive on disk).
+_VORBIS_KEY = {
+    "title": "TITLE", "artist": "ARTIST", "album_artist": "ALBUMARTIST",
+    "album": "ALBUM", "date": "DATE", "genre": "GENRE",
+}
+
+
+class OpusTags(AudioTags):
+    """Opus/Vorbis-comment backend. Album artist is plain ALBUMARTIST (no legacy
+    concept). track/disc are composed from the split Vorbis convention
+    (TRACKNUMBER + TRACKTOTAL/TOTALTRACKS) into the canonical "n/total" form and
+    split back on write. Cover art is a base64 METADATA_BLOCK_PICTURE (a FLAC
+    Picture block) — the cross-player standard for Ogg."""
+
+    format = "opus"
+
+    def __init__(self, path: Path):
+        from mutagen.oggopus import OggOpus
+        self.path = Path(path)
+        self._audio = OggOpus(str(self.path))   # raises → open_audio() → None
+
+    def _first(self, key: str) -> str | None:
+        v = self._audio.get(key)
+        return str(v[0]) if v else None
+
+    def _compose(self, num_key: str, *total_keys: str) -> str | None:
+        num = self._first(num_key)
+        if not num:
+            return None
+        total = next((t for t in (self._first(k) for k in total_keys) if t), None)
+        return f"{num}/{total}" if total else num
+
+    def read(self) -> dict:
+        return {
+            "title":        self._first("TITLE"),
+            "artist":       self._first("ARTIST"),
+            "album_artist": self._first("ALBUMARTIST"),
+            "album":        self._first("ALBUM"),
+            "date":         self._first("DATE"),
+            "genre":        self._first("GENRE"),
+            "track":        self._compose("TRACKNUMBER", "TRACKTOTAL", "TOTALTRACKS"),
+            "disc":         self._compose("DISCNUMBER", "DISCTOTAL", "TOTALDISCS"),
+        }
+
+    def _set(self, key: str, value: str | None) -> None:
+        if key in self._audio:
+            del self._audio[key]
+        if value is not None and str(value) != "":
+            self._audio[key] = [str(value)]
+
+    def _write_split(self, value, num_key: str, total_key: str, *drop_keys: str) -> None:
+        """Split a canonical 'n/total' into number + total keys, dropping the
+        alternate total spellings so no duplicate survives."""
+        num, _, total = str(value).partition("/")
+        self._set(num_key, num.strip() or None)
+        for k in (total_key, *drop_keys):
+            if k in self._audio:
+                del self._audio[k]
+        if total.strip():
+            self._audio[total_key] = [total.strip()]
+
+    def write(self, updates: dict) -> None:
+        for key, val in updates.items():
+            if val is None:
+                continue
+            if key == "track":
+                self._write_split(val, "TRACKNUMBER", "TRACKTOTAL", "TOTALTRACKS")
+            elif key == "disc":
+                self._write_split(val, "DISCNUMBER", "DISCTOTAL", "TOTALDISCS")
+            elif key in _VORBIS_KEY:
+                self._set(_VORBIS_KEY[key], str(val))
+        self._audio.save()
+
+    # ── Cover art (METADATA_BLOCK_PICTURE, front cover) ──
+    def _picture(self):
+        vals = self._audio.get("METADATA_BLOCK_PICTURE")
+        if not vals:
+            return None
+        try:
+            from mutagen.flac import Picture
+            return Picture(base64.b64decode(vals[0]))
+        except Exception:
+            return None
+
+    def get_cover(self) -> tuple[bytes, str] | None:
+        pic = self._picture()
+        if pic is not None and pic.data:
+            return pic.data, (pic.mime or "image/jpeg")
+        return None
+
+    def set_cover(self, data: bytes, mime: str) -> None:
+        from mutagen.flac import Picture
+        pic = Picture()
+        pic.type = 3            # front cover
+        pic.mime = mime
+        pic.desc = ""
+        pic.data = data
+        self._audio["METADATA_BLOCK_PICTURE"] = [
+            base64.b64encode(pic.write()).decode("ascii")]
+        self._audio.save()
+
+    def remove_cover(self) -> None:
+        if "METADATA_BLOCK_PICTURE" in self._audio:
+            del self._audio["METADATA_BLOCK_PICTURE"]
+            self._audio.save()
+
+    def has_cover(self) -> bool:
+        return bool(self._audio.get("METADATA_BLOCK_PICTURE"))
+
+    def info(self) -> dict:
+        i = self._audio.info
+        br = getattr(i, "bitrate", None)
+        return {"bitrate_kbps": int(br / 1000) if br else None,
+                "length_sec": float(i.length) if i.length else None}
+
+    def diagnostics(self) -> dict:
+        return {}
+
+
 # ── Dispatch registry ─────────────────────────────────────────────────────────
 
-_REGISTRY: dict[str, type[AudioTags]] = {".mp3": Mp3Tags}
+_REGISTRY: dict[str, type[AudioTags]] = {".mp3": Mp3Tags, ".opus": OpusTags}
 
 
 def register(ext: str, backend: type[AudioTags]) -> None:

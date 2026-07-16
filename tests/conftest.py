@@ -34,14 +34,31 @@ HAVE_FFMPEG = shutil.which("ffmpeg") is not None
 HAVE_LAME = shutil.which("lame") is not None
 
 
+def _ffmpeg_has_libopus() -> bool:
+    if not HAVE_FFMPEG:
+        return False
+    try:
+        out = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"],
+                             capture_output=True, text=True, timeout=10)
+        return " libopus " in out.stdout
+    except Exception:
+        return False
+
+
+HAVE_LIBOPUS = _ffmpeg_has_libopus()
+
+
 def pytest_collection_modifyitems(config, items):
     skip_ffmpeg = pytest.mark.skip(reason="ffmpeg not available")
     skip_lame = pytest.mark.skip(reason="lame not available")
+    skip_opus = pytest.mark.skip(reason="ffmpeg libopus not available")
     for item in items:
         if not HAVE_FFMPEG and "ffmpeg" in item.keywords:
             item.add_marker(skip_ffmpeg)
         if not HAVE_LAME and "lame" in item.keywords:
             item.add_marker(skip_lame)
+        if not HAVE_LIBOPUS and "opus" in item.keywords:
+            item.add_marker(skip_opus)
 
 
 # ── Audio factories ───────────────────────────────────────────────────────────
@@ -77,6 +94,21 @@ def make_flac(path, duration=1.0, **frames):
         f = FLAC(path)
         for k, v in frames.items():
             f[k] = v
+        f.save()
+
+
+def make_opus(path, duration=1.0, **fields):
+    """Create a real (ffmpeg libopus) .opus file with Vorbis-comment *fields*.
+
+    Field keys are Vorbis names (title, artist, albumartist, album, date, genre,
+    tracknumber, tracktotal, discnumber, ...). Needs @pytest.mark.opus so it
+    auto-skips when ffmpeg lacks libopus."""
+    _ffmpeg_silence(path, duration, ["-c:a", "libopus"])
+    if fields:
+        from mutagen.oggopus import OggOpus
+        f = OggOpus(str(path))
+        for k, v in fields.items():
+            f[k] = [str(v)]
         f.save()
 
 

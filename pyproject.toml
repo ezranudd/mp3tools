@@ -24,4 +24,5 @@ testpaths = ["tests"]
 markers = [
     "ffmpeg: test needs the ffmpeg binary (auto-skipped when absent)",
     "lame: test needs the lame binary (auto-skipped when absent)",
+    "opus: test needs ffmpeg with libopus (auto-skipped when absent)",
 ]

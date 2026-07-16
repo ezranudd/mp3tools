@@ -146,3 +146,108 @@ def test_open_audio_dispatch(mp3, tmp_path):
     # file with no ID3 header opens as headerless (all-None read), matching
     # mp3_read_framekey. Assert both stay consistent.
     assert (tagio.open_audio(bad) is None) == (tagio.mp3_read_framekey(bad) is None)
+
+
+# ── Opus / Vorbis backend (phase 3) ──────────────────────────────────────────
+
+opusmark = pytest.mark.opus
+
+
+@pytest.fixture()
+def opus(tmp_path):
+    from conftest import make_opus
+    p = tmp_path / "03. Band - Song.opus"
+    make_opus(p, title="Song", artist="Band", albumartist="The Band",
+              album="Record", date="2019", genre="Rock",
+              tracknumber="3", tracktotal="12", discnumber="1", disctotal="2")
+    return p
+
+
+@opusmark
+def test_opus_dispatch_and_format(opus):
+    a = tagio.open_audio(opus)
+    assert isinstance(a, tagio.OpusTags)
+    assert a.format == "opus"
+    assert a.diagnostics() == {}          # no ID3 keys → MP3-only checks vanish
+
+
+@opusmark
+def test_opus_read_composes_track_disc(opus):
+    c = tagio.open_audio(opus).read()
+    assert c["title"] == "Song"
+    assert c["artist"] == "Band"
+    assert c["album_artist"] == "The Band"
+    assert c["album"] == "Record"
+    assert c["date"] == "2019"
+    assert c["genre"] == "Rock"
+    assert c["track"] == "3/12"           # composed from TRACKNUMBER + TRACKTOTAL
+    assert c["disc"] == "1/2"
+
+
+@opusmark
+def test_opus_read_totaltracks_fallback(tmp_path):
+    from conftest import make_opus
+    p = tmp_path / "x.opus"
+    make_opus(p, tracknumber="5", totaltracks="9")   # alternate total spelling
+    assert tagio.open_audio(p).read()["track"] == "5/9"
+
+
+@opusmark
+def test_opus_read_number_only(tmp_path):
+    from conftest import make_opus
+    p = tmp_path / "x.opus"
+    make_opus(p, tracknumber="7")
+    assert tagio.open_audio(p).read()["track"] == "7"
+
+
+@opusmark
+def test_opus_write_roundtrip_and_split(opus):
+    from mutagen.oggopus import OggOpus
+    a = tagio.open_audio(opus)
+    a.write({"title": "New", "album_artist": "New AA", "date": "2001",
+             "track": "4/20", "disc": "2/2", "genre": "Jazz"})
+    c = tagio.open_audio(opus).read()
+    assert c["title"] == "New" and c["album_artist"] == "New AA"
+    assert c["date"] == "2001" and c["track"] == "4/20" and c["disc"] == "2/2"
+    # Track split into the Vorbis convention; no duplicate total spelling.
+    raw = OggOpus(str(opus))
+    assert raw["TRACKNUMBER"] == ["4"] and raw["TRACKTOTAL"] == ["20"]
+    assert "TOTALTRACKS" not in raw
+    # Partial write leaves other fields intact.
+    tagio.open_audio(opus).write({"genre": "Funk"})
+    assert tagio.open_audio(opus).read()["title"] == "New"
+
+
+@opusmark
+def test_opus_write_track_number_only_clears_total(opus):
+    a = tagio.open_audio(opus)
+    a.write({"track": "6"})               # was 3/12 → now just 6
+    assert tagio.open_audio(opus).read()["track"] == "6"
+
+
+@opusmark
+def test_opus_cover_roundtrip(opus):
+    a = tagio.open_audio(opus)
+    assert a.has_cover() is False and a.get_cover() is None
+    a.set_cover(TINY_PNG, "image/png")
+    a = tagio.open_audio(opus)
+    assert a.has_cover() is True
+    data, mime = a.get_cover()
+    assert data == TINY_PNG and mime == "image/png"
+    a.remove_cover()
+    assert tagio.open_audio(opus).has_cover() is False
+
+
+@opusmark
+def test_opus_info(opus):
+    i = tagio.open_audio(opus).info()
+    assert i["length_sec"] and i["length_sec"] > 0
+
+
+@opusmark
+def test_opus_tagless_reads_all_none(tmp_path):
+    from conftest import make_opus
+    p = tmp_path / "bare.opus"
+    make_opus(p)
+    c = tagio.open_audio(p).read()
+    assert all(v is None for v in c.values())
