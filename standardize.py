@@ -39,6 +39,8 @@ from pathlib import Path
 import settings as settings_mod
 from convert_lossless import step_convert_lossless
 from chars import (
+    AUDIO_EXTENSIONS,
+    audio_files,
     extract_year,
     needs_normalization as has_special_chars,
     normalize as normalize_string,
@@ -102,7 +104,7 @@ def album_folders(root: Path) -> list[Path]:
     """All folders that directly contain at least one MP3."""
     seen = set()
     result = []
-    for mp3 in sorted(root.rglob("*.mp3")):
+    for mp3 in sorted(audio_files(root, recursive=True)):
         p = mp3.parent
         if p not in seen:
             seen.add(p)
@@ -138,7 +140,7 @@ def _music_subfolders(parent: Path) -> list[Path]:
          if d.is_dir()
          and not d.name.startswith(".")
          and not _ALBUM_NAME_RE.match(d.name)
-         and any(d.glob("*.mp3"))],
+         and any(audio_files(d))],
         key=_subfolder_sort_key,
     )
 
@@ -147,7 +149,7 @@ def _collect_tracks(folder: Path) -> list[tuple[Path, int]]:
     """(mp3, track-number) for every mp3 directly in *folder*, ordered by track
     number (from TRCK, else a leading filename number, else last) then name."""
     files: list[tuple[Path, int]] = []
-    for mp3 in folder.glob("*.mp3"):
+    for mp3 in audio_files(folder):
         sort_key = 9999
         try:
             trck = tagio.open_audio(mp3).read()["track"]
@@ -388,7 +390,7 @@ def step_fix_missing_tags(root: Path, dry_run: bool, *, ask_text=None) -> dict:
 
     # Group files by album folder
     by_folder: dict[Path, list[tuple[Path, dict, list[str]]]] = defaultdict(list)
-    for mp3 in sorted(root.rglob("*.mp3")):
+    for mp3 in sorted(audio_files(root, recursive=True)):
         tag_dict = _read_required_tags(mp3)
         if tag_dict is None:
             continue
@@ -510,7 +512,9 @@ def step_enforce_id3v23(root: Path, dry_run: bool) -> dict:
     _header(3, "Enforce ID3v2.3 (strip ID3v1, downgrade ID3v2.4, convert TDRC→TYER)")
     stats = {"fixed": 0}
 
-    for mp3 in sorted(root.rglob("*.mp3")):
+    for mp3 in sorted(audio_files(root, recursive=True)):
+        if mp3.suffix.lower() != ".mp3":
+            continue                 # ID3 version/v1/TDRC are MP3-only concepts
         # Check for ID3v1 (last 128 bytes start with b'TAG')
         try:
             with open(mp3, "rb") as f:
@@ -611,7 +615,9 @@ def step_strip_tags(root: Path, dry_run: bool, keep_apic: bool = False,
     # Track folders where we've already checked cover extraction (one cover per folder).
     extracted_folders: set[Path] = set()
 
-    for mp3 in sorted(root.rglob("*.mp3")):
+    for mp3 in sorted(audio_files(root, recursive=True)):
+        if mp3.suffix.lower() != ".mp3":
+            continue                 # Opus tag-stripping (Vorbis whitelist) is a follow-up
         try:
             tags = load_id3(mp3)
         except Exception:
@@ -722,36 +728,40 @@ def step_normalize_chars(root: Path, dry_run: bool) -> dict:
     _header(5, "Normalize special characters")
     stats = {"tags": 0, "files": 0}
 
-    for mp3 in sorted(root.rglob("*.mp3")):
-        try:
-            tags = load_id3(mp3)
-        except Exception:
-            continue
+    for mp3 in sorted(audio_files(root, recursive=True)):
+        # Tag-value normalization over all ID3 text frames (MP3 only; Opus
+        # Vorbis-value normalization is a follow-up). Filenames/folders below
+        # are normalized for every format.
+        if mp3.suffix.lower() == ".mp3":
+            try:
+                tags = load_id3(mp3)
+            except Exception:
+                tags = None
+            if tags is not None:
+                tag_changed = False
+                for key in list(tags.keys()):
+                    frame = tags[key]
+                    if not hasattr(frame, "text"):
+                        continue
+                    new_text = []
+                    changed  = False
+                    for t in frame.text:
+                        if isinstance(t, str) and has_special_chars(t):
+                            new_text.append(normalize_string(t))
+                            changed = True
+                        else:
+                            new_text.append(t)
+                    if changed:
+                        old_val = str(frame.text[0])[:60]
+                        new_val = str(new_text[0])[:60]
+                        print(f"  {mp3.name}  {key}: {old_val!r}  ->  {new_val!r}")
+                        frame.text = new_text
+                        tag_changed = True
 
-        tag_changed = False
-        for key in list(tags.keys()):
-            frame = tags[key]
-            if not hasattr(frame, "text"):
-                continue
-            new_text = []
-            changed  = False
-            for t in frame.text:
-                if isinstance(t, str) and has_special_chars(t):
-                    new_text.append(normalize_string(t))
-                    changed = True
-                else:
-                    new_text.append(t)
-            if changed:
-                old_val = str(frame.text[0])[:60]
-                new_val = str(new_text[0])[:60]
-                print(f"  {mp3.name}  {key}: {old_val!r}  ->  {new_val!r}")
-                frame.text = new_text
-                tag_changed = True
-
-        if tag_changed:
-            stats["tags"] += 1
-            if not dry_run:
-                tags.save(mp3, v2_version=3, v1=0)
+                if tag_changed:
+                    stats["tags"] += 1
+                    if not dry_run:
+                        tags.save(mp3, v2_version=3, v1=0)
 
         # Normalize filename
         if has_special_chars(mp3.name):
@@ -789,42 +799,28 @@ def step_replace_title_brackets(root: Path, dry_run: bool) -> dict:
     _header("5a", "Replace [] with () in album and song titles")
     stats = {"files": 0, "fields": 0, "errors": 0}
 
-    for mp3 in sorted(root.rglob("*.mp3")):
-        try:
-            tags = load_id3(mp3)
-        except Exception:
+    for mp3 in sorted(audio_files(root, recursive=True)):
+        a = tagio.open_audio(mp3)
+        if a is None:
             stats["errors"] += 1
             continue
+        c = a.read()
 
-        changed = False
-        for frame_id in ("TALB", "TIT2"):
-            frame = tags.get(frame_id)
-            if not frame or not hasattr(frame, "text"):
-                continue
-            new_text = []
-            frame_changed = False
-            for value in frame.text:
-                if isinstance(value, str):
-                    new_value = _replace_brackets(value)
-                    new_text.append(new_value)
-                    if new_value != value:
-                        frame_changed = True
-                else:
-                    new_text.append(value)
-            if not frame_changed:
-                continue
-            old_val = str(frame.text[0])[:60]
-            new_val = str(new_text[0])[:60]
-            print(f"  {mp3.name}  {frame_id}: {old_val!r}  ->  {new_val!r}")
-            frame.text = new_text
-            changed = True
-            stats["fields"] += 1
+        updates = {}
+        for field, label in (("album", "TALB"), ("title", "TIT2")):
+            value = c[field]
+            if isinstance(value, str):
+                new_value = _replace_brackets(value)
+                if new_value != value:
+                    print(f"  {mp3.name}  {label}: {value[:60]!r}  ->  {new_value[:60]!r}")
+                    updates[field] = new_value
+                    stats["fields"] += 1
 
-        if changed:
+        if updates:
             stats["files"] += 1
             if not dry_run:
                 try:
-                    tags.save(mp3, v2_version=3, v1=0)
+                    a.write(updates)
                 except Exception as e:
                     print(f"    ERROR: {e}")
                     stats["errors"] += 1
@@ -843,7 +839,7 @@ def step_normalize_year(root: Path, dry_run: bool) -> dict:
     _header(6, "Normalize year tags")
     stats = {"fixed": 0}
 
-    for mp3 in sorted(root.rglob("*.mp3")):
+    for mp3 in sorted(audio_files(root, recursive=True)):
         a = tagio.open_audio(mp3)
         if a is None:
             continue
@@ -882,7 +878,7 @@ def step_renumber_tracks(root: Path, dry_run: bool, respect_tpos: bool = False) 
     stats = {"fixed": 0}
 
     for folder in sorted(album_folders(root)):
-        mp3s = sorted(folder.glob("*.mp3"))
+        mp3s = sorted(audio_files(folder))
         if not mp3s:
             continue
 
@@ -957,7 +953,7 @@ def step_pad_tracks(root: Path, dry_run: bool, respect_tpos: bool = False) -> di
     if respect_tpos:
         disc_counts: dict[tuple[Path, str | None], int] = defaultdict(int)
         mp3_disc: dict[Path, str | None] = {}
-        for mp3 in root.rglob("*.mp3"):
+        for mp3 in audio_files(root, recursive=True):
             try:
                 disc = _disc_key(tagio.open_audio(mp3).read()["disc"])
             except Exception:
@@ -970,12 +966,12 @@ def step_pad_tracks(root: Path, dry_run: bool, respect_tpos: bool = False) -> di
         }
     else:
         folder_width: dict[Path, int] = {}
-        for mp3 in root.rglob("*.mp3"):
+        for mp3 in audio_files(root, recursive=True):
             f = mp3.parent
             folder_width[f] = folder_width.get(f, 0) + 1
         folder_width = {f: (3 if n >= 100 else 2) for f, n in folder_width.items()}
 
-    for mp3 in sorted(root.rglob("*.mp3")):
+    for mp3 in sorted(audio_files(root, recursive=True)):
         a = tagio.open_audio(mp3)
         if a is None:
             continue
@@ -1013,7 +1009,7 @@ def step_set_total_tracks(root: Path, dry_run: bool, respect_tpos: bool = False)
     stats = {"fixed": 0}
 
     for folder in sorted(album_folders(root)):
-        mp3s = sorted(folder.glob("*.mp3"))
+        mp3s = sorted(audio_files(folder))
 
         if respect_tpos:
             # Group by disc number; set total per disc rather than per folder.
@@ -1075,7 +1071,7 @@ def step_set_total_tracks(root: Path, dry_run: bool, respect_tpos: bool = False)
 def _album_folder_name(folder: Path) -> str | None:
     """Compute the correct "YEAR - Album" name from folder contents."""
     years, albums = [], []
-    for mp3 in folder.glob("*.mp3"):
+    for mp3 in audio_files(folder):
         try:
             c = tagio.open_audio(mp3).read()
             if c["date"]:
@@ -1138,7 +1134,7 @@ def step_deduplicate_albums(root: Path, dry_run: bool) -> dict:
     stats = {"retagged": 0, "renamed": 0, "errors": 0}
 
     artist_candidates: set[Path] = set()
-    for mp3 in root.rglob("*.mp3"):
+    for mp3 in audio_files(root, recursive=True):
         album = mp3.parent
         artist = album.parent
         if artist != root and album.parent.parent == root:
@@ -1149,7 +1145,7 @@ def step_deduplicate_albums(root: Path, dry_run: bool) -> dict:
         folder_title: dict[Path, str] = {}
         for album_folder in sorted(f for f in artist_folder.iterdir() if f.is_dir()):
             titles = []
-            for mp3 in album_folder.glob("*.mp3"):
+            for mp3 in audio_files(album_folder):
                 try:
                     talb = tagio.open_audio(mp3).read()["album"]
                     if talb:
@@ -1170,7 +1166,7 @@ def step_deduplicate_albums(root: Path, dry_run: bool) -> dict:
             # First folder is canonical; subsequent ones get (2), (3), ...
             for i, folder in enumerate(folders[1:], 2):
                 new_title = f"{title} ({i})"
-                mp3_list = sorted(folder.glob("*.mp3"))
+                mp3_list = sorted(audio_files(folder))
 
                 # Get year from first available MP3
                 year = None
@@ -1238,7 +1234,7 @@ def step_rename_artist_folders(root: Path, dry_run: bool, *, ask_choice=None) ->
     # Album artist folders: direct children of root that do NOT directly contain MP3s
     # but whose children do contain MP3s (standard 3-level structure)
     artist_candidates: set[Path] = set()
-    for mp3 in root.rglob("*.mp3"):
+    for mp3 in audio_files(root, recursive=True):
         album = mp3.parent
         artist = album.parent
         if artist != root and album.parent.parent == root:
@@ -1251,7 +1247,7 @@ def step_rename_artist_folders(root: Path, dry_run: bool, *, ask_choice=None) ->
         # Most common album artist across all MP3s in this subtree.
         # Missing Album Artist is repaired from TPE1 before folder comparisons.
         names: list[str] = []
-        mp3_list = sorted(artist_folder.rglob("*.mp3"))
+        mp3_list = sorted(audio_files(artist_folder, recursive=True))
         for mp3 in mp3_list:
             try:
                 a = tagio.open_audio(mp3)
@@ -1340,7 +1336,7 @@ def step_rename_artist_folders(root: Path, dry_run: bool, *, ask_choice=None) ->
         effective_name = artist_folder.name
         for album_subfolder in sorted(f for f in artist_folder.iterdir() if f.is_dir()):
             album_artists: list[str] = []
-            album_mp3s = sorted(album_subfolder.glob("*.mp3"))
+            album_mp3s = sorted(audio_files(album_subfolder))
             for mp3 in album_mp3s:
                 try:
                     tags = load_id3(mp3)
@@ -1464,12 +1460,12 @@ def step_rename_files(root: Path, dry_run: bool) -> dict:
 
     # Pre-compute width per folder
     folder_width: dict[Path, int] = {}
-    for mp3 in root.rglob("*.mp3"):
+    for mp3 in audio_files(root, recursive=True):
         f = mp3.parent
         folder_width[f] = folder_width.get(f, 0) + 1
     folder_width = {f: (3 if n >= 100 else 2) for f, n in folder_width.items()}
 
-    for mp3 in sorted(root.rglob("*.mp3")):
+    for mp3 in sorted(audio_files(root, recursive=True)):
         a = tagio.open_audio(mp3)
         if a is None:
             continue
@@ -1531,7 +1527,7 @@ def step_enforce_track_artist(root: Path, dry_run: bool) -> dict:
     _header("12a", "Enforce Artist = Album Artist")
     stats = {"fixed": 0, "skipped": 0, "errors": 0}
 
-    for mp3 in sorted(root.rglob("*.mp3")):
+    for mp3 in sorted(audio_files(root, recursive=True)):
         a = tagio.open_audio(mp3)
         if a is None:
             stats["errors"] += 1
@@ -1585,9 +1581,11 @@ def step_clean_files(root: Path, dry_run: bool, cover_art: str = "folder",
 
     for folder in sorted(album_folders(root)):
         all_files = [f for f in folder.iterdir() if f.is_file()]
-        mp3s      = [f for f in all_files if f.suffix.lower() == ".mp3"]
+        # Any recognized audio format counts as content — only non-audio,
+        # non-image files are candidate strays (so .opus isn't deleted as junk).
+        audio     = [f for f in all_files if f.suffix.lower() in AUDIO_EXTENSIONS]
         images    = [f for f in all_files if _is_image(f.name)]
-        others    = [f for f in all_files if f not in mp3s and f not in images]
+        others    = [f for f in all_files if f not in audio and f not in images]
 
         cover_images  = [f for f in images if _cover_stem(f.name)]
         other_images  = [f for f in images if not _cover_stem(f.name)]
@@ -1738,7 +1736,7 @@ def step_embed_cover_art(root: Path, dry_run: bool,
         data, mime = prepared
 
         folder_errors = 0
-        for mp3 in sorted(folder.glob("*.mp3")):
+        for mp3 in sorted(audio_files(folder)):
             try:
                 a = tagio.open_audio(mp3)
                 existing = a.get_cover()
@@ -1778,7 +1776,7 @@ def step_embed_cover_art(root: Path, dry_run: bool,
 # ── Step 15: Fetch missing album art online ───────────────────────────────────
 
 def _all_tracks_have_embedded_art(folder: Path) -> bool:
-    mp3s = sorted(folder.glob("*.mp3"))
+    mp3s = sorted(audio_files(folder))
     if not mp3s:
         return False
     for mp3 in mp3s:
@@ -1805,7 +1803,7 @@ def _album_search_terms(folder: Path) -> tuple[str, str]:
     m = re.match(r"^\d{4}\s*-\s*(.+)$", album)
     if m:
         album = m.group(1)
-    for mp3 in folder.glob("*.mp3"):
+    for mp3 in audio_files(folder):
         try:
             c = tagio.open_audio(mp3).read()
             if c["album_artist"]:
@@ -1843,7 +1841,7 @@ def _apply_art_to_folder(folder: Path, data: bytes, mime: str,
             errors += 1
 
     if cover_art in ("embed", "both"):
-        for mp3 in sorted(folder.glob("*.mp3")):
+        for mp3 in sorted(audio_files(folder)):
             try:
                 tagio.open_audio(mp3).set_cover(data, mime)
                 updated += 1

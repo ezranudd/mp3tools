@@ -63,16 +63,17 @@ def _migrate(library_root: Path) -> None:
         pass
 
 DEFAULTS: dict = {
-    "cover_art":            "folder",  # "folder" | "embed" | "both"
+    "cover_art":            "both",    # "folder" | "embed" | "both" — many DAPs only show embedded art
     "cover_art_embed_size": 500,       # pixels; 0 = no resize
     "enforce_artist_equals_album_artist": False,
     "replace_brackets_with_parentheses":  False,
     "fetch_art_online":     False,     # run step 15 during standardize
-    "preserve_replay_gain": False,    # keep TXXX:REPLAYGAIN_* during step 4
+    "preserve_replay_gain": True,     # keep TXXX:REPLAYGAIN_* during step 4 (Rockbox/Hiby honor it)
     "preserve_tcmp":        False,    # keep/set TCMP=1 (iTunes compilation) during step 4
     "preserve_disc_numbers": False,   # write TPOS on merge; keep per-disc TRCK in steps 4/7/8
-    "preserve_gapless":     False,    # keep iTunSMPB/iTunPGAP gapless tags during step 4
+    "preserve_gapless":     True,     # keep iTunSMPB/iTunPGAP gapless tags during step 4 (unregeneratable)
     "eject_cd_after_import": False,   # eject disc when CD import finishes
+    "flag_mixed_format_albums": False, # audit: info-note when an album mixes formats (.mp3 + .opus)
     "art_sources": {
         "itunes":       True,
         "musicbrainz":  True,
@@ -171,6 +172,8 @@ def load(library_root: Path) -> dict:
                 settings["preserve_gapless"] = data["preserve_gapless"]
             if isinstance(data.get("eject_cd_after_import"), bool):
                 settings["eject_cd_after_import"] = data["eject_cd_after_import"]
+            if isinstance(data.get("flag_mixed_format_albums"), bool):
+                settings["flag_mixed_format_albums"] = data["flag_mixed_format_albums"]
             if isinstance(data.get("art_sources"), dict):
                 for key, value in data["art_sources"].items():
                     if key in _VALID_ART_SOURCES and isinstance(value, bool):

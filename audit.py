@@ -32,6 +32,8 @@ from pathlib import Path
 import settings as settings_mod
 import tagio
 from chars import (
+    AUDIO_EXTENSIONS,
+    audio_files,
     extract_year,
     needs_normalization as has_nonstandard_chars,
     normalize,
@@ -72,6 +74,7 @@ CATEGORY_LABELS: dict[str, str] = {
     "ARTIST_FOLDER": "Album artist folder name mismatch",
     "CD_MERGE":      "CD subfolders need merging",
     "NESTED_MUSIC":  "Unexpected nested music",
+    "MIXED_FORMAT":  "Album mixes audio formats (info)",
 }
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -250,9 +253,11 @@ def audit_cover_and_extras(
     """
     issues: list[Issue] = []
     files = [f for f in folder.iterdir() if f.is_file() and not f.name.startswith(".")]
-    non_mp3 = [f for f in files if f.suffix.lower() != ".mp3"]
-    covers = [f for f in non_mp3 if f.stem.lower() == "cover" and f.suffix.lower() in IMAGE_EXTENSIONS]
-    extras = [f for f in non_mp3 if f not in covers]
+    # Any recognized audio format is legit content — only truly non-audio,
+    # non-cover files are strays. (This is why .opus files aren't flagged.)
+    non_audio = [f for f in files if f.suffix.lower() not in AUDIO_EXTENSIONS]
+    covers = [f for f in non_audio if f.stem.lower() == "cover" and f.suffix.lower() in IMAGE_EXTENSIONS]
+    extras = [f for f in non_audio if f not in covers]
 
     need_folder = cover_art_mode in ("folder", "both")
     need_embed  = cover_art_mode in ("embed", "both")
@@ -318,9 +323,10 @@ def scan(root: Path) -> list[tuple[Path, list[Issue], list[tuple]]]:
     """
     sett = settings_mod.load(root)
     cover_art_mode = sett.get("cover_art", "folder")
+    flag_mixed = sett.get("flag_mixed_format_albums", False)
 
-    # Discover all folders that directly contain at least one MP3
-    leaf_folders: set[Path] = {mp3.parent for mp3 in root.rglob("*.mp3")}
+    # Discover all folders that directly contain at least one audio file
+    leaf_folders: set[Path] = {p.parent for p in audio_files(root, recursive=True)}
 
     # Partition into CD-named leaves and regular leaves
     cd_leaves = {f for f in leaf_folders if CD_PATTERN.match(f.name)}
@@ -346,7 +352,7 @@ def scan(root: Path) -> list[tuple[Path, list[Issue], list[tuple]]]:
         if is_cd_parent:
             cd_dirs = sorted(
                 [d for d in album_folder.iterdir()
-                 if d.is_dir() and CD_PATTERN.match(d.name) and any(d.glob("*.mp3"))],
+                 if d.is_dir() and CD_PATTERN.match(d.name) and audio_files(d)],
                 key=lambda d: int(CD_PATTERN.match(d.name).group(1)),
             )
             if len(cd_dirs) >= 2:
@@ -356,10 +362,10 @@ def scan(root: Path) -> list[tuple[Path, list[Issue], list[tuple]]]:
                 album_issues.append(Issue("CD_MERGE",
                     f"Lone CD subfolder (no siblings to merge with): {cd_dirs[0].name}"))
             for cd_dir in cd_dirs:
-                mp3s.extend(sorted(cd_dir.glob("*.mp3")))
+                mp3s.extend(audio_files(cd_dir))
 
         if has_direct_mp3s:
-            direct = sorted(album_folder.glob("*.mp3"))
+            direct = audio_files(album_folder)
             if is_cd_parent:
                 album_issues.append(Issue("NESTED_MUSIC",
                     "Folder has both direct MP3s and CD subfolders — unexpected mixed structure"))
@@ -371,11 +377,17 @@ def scan(root: Path) -> list[tuple[Path, list[Issue], list[tuple]]]:
             if d.is_dir()
             and not CD_PATTERN.match(d.name)
             and not d.name.startswith(".")
-            and any(d.rglob("*.mp3"))
+            and audio_files(d, recursive=True)
         ]
         if non_cd_music:
             album_issues.append(Issue("NESTED_MUSIC",
                 f"Subfolders with music files: {', '.join(d.name for d in sorted(non_cd_music))}"))
+
+        # ── Mixed-format note (allowed by default; opt-in info flag) ──────────
+        if flag_mixed and len({p.suffix.lower() for p in mp3s}) > 1:
+            exts = ", ".join(sorted({p.suffix.lower() for p in mp3s}))
+            album_issues.append(Issue("MIXED_FORMAT",
+                f"Album mixes audio formats ({exts})"))
 
         # ── Cover + extra files ───────────────────────────────────────────────
         album_issues += audit_cover_and_extras(

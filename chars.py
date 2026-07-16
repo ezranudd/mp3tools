@@ -16,6 +16,21 @@ import unicodedata
 # scattered glob("*.mp3") calls. Order-independent; discovery globs each.
 AUDIO_EXTENSIONS: frozenset[str] = frozenset({".mp3", ".opus"})
 
+
+def is_audio(path) -> bool:
+    """True if *path*'s extension is a recognized audio format."""
+    from pathlib import Path
+    return Path(path).suffix.lower() in AUDIO_EXTENSIONS
+
+
+def audio_files(folder, recursive: bool = False) -> list:
+    """Sorted audio files (AUDIO_EXTENSIONS) directly in *folder*, or recursively.
+    The multi-format replacement for the old sorted(glob("*.mp3")) calls."""
+    from pathlib import Path
+    folder = Path(folder)
+    walk = folder.rglob("*") if recursive else folder.glob("*")
+    return sorted(p for p in walk if p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS)
+
 # Typographic apostrophes → ASCII '  and curly quotes → ASCII "  (U+2018–U+201F).
 CHAR_REPLACEMENTS: dict[str, str] = {
     "‘": "'", "’": "'", "‚": "'", "‛": "'",
