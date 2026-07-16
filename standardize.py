@@ -52,20 +52,22 @@ from mutagen.id3 import (
     TPE2, APIC, TCMP, TPOS,
 )
 
+import tagio
+# ID3 leaf helpers live in tagio (one home); re-export the historical names so
+# standardize's public contract (tested) is unchanged.
+from tagio import (            # noqa: F401  (re-exported API)
+    ALBUM_ARTIST_KEYS,
+    album_artist_value,
+    load_id3,
+    set_album_artist,
+)
+
 
 # ── Shared constants ──────────────────────────────────────────────────────────
 
 KEEP_TAGS = {"TPE1", "TPE2", "TIT2", "TALB", "TYER", "TCON", "TRCK"}
-# TPE2 is the canonical album artist frame. The TXXX variants are legacy —
-# read them for migration but never write them.
-ALBUM_ARTIST_KEYS = (
-    "TPE2",
-    "TXXX:album artist",
-    "TXXX:ALBUMARTIST",
-    "TXXX:ALBUM ARTIST",
-    "TXXX:AlbumArtist",
-    "TXXX:Album Artist",
-)
+# ALBUM_ARTIST_KEYS + album_artist_value/set_album_artist are re-exported from
+# tagio (imported above). TPE2 canonical; legacy TXXX read but never written.
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
 
@@ -114,26 +116,6 @@ def _header(n: int | str, title: str) -> None:
     print("=" * 60)
 
 
-def load_id3(path: Path) -> ID3:
-    """Load raw ID3 frames without mutagen's v2.4 translation layer."""
-    return ID3(path, translate=False)
-
-
-def album_artist_value(tags: ID3) -> str | None:
-    for key in ALBUM_ARTIST_KEYS:
-        frame = tags.get(key)
-        if frame and hasattr(frame, "text") and frame.text:
-            return str(frame.text[0])
-    return None
-
-
-def set_album_artist(tags: ID3, value: str) -> None:
-    for key in ALBUM_ARTIST_KEYS:
-        if key != "TPE2" and key in tags:
-            del tags[key]
-    tags["TPE2"] = TPE2(encoding=1, text=value)
-
-
 # ── Step 1: Merge disc subfolders ─────────────────────────────────────────────
 
 def _subfolder_sort_key(p: Path) -> tuple:
@@ -168,10 +150,9 @@ def _collect_tracks(folder: Path) -> list[tuple[Path, int]]:
     for mp3 in folder.glob("*.mp3"):
         sort_key = 9999
         try:
-            tags = load_id3(mp3)
-            trck = tags.get("TRCK")
+            trck = tagio.open_audio(mp3).read()["track"]
             if trck:
-                n, _ = parse_track(str(trck.text[0]))
+                n, _ = parse_track(str(trck))
                 if n is not None:
                     sort_key = n
         except Exception:
@@ -223,10 +204,9 @@ def _merge_one(album: Path, subfolders: list[Path], dry_run: bool,
     album_titles: list[str] = []
     for mp3, _, _, _, _ in all_mp3s:
         try:
-            tags = load_id3(mp3)
-            talb = tags.get("TALB")
+            talb = tagio.open_audio(mp3).read()["album"]
             if talb:
-                album_titles.append(str(talb.text[0]))
+                album_titles.append(talb)
         except Exception:
             pass
     album_title = Counter(album_titles).most_common(1)[0][0] if album_titles else None
@@ -270,13 +250,12 @@ def _merge_one(album: Path, subfolders: list[Path], dry_run: bool,
         staged: list[tuple[Path, str]] = []   # (temp_path, final_name)
         for idx, (mp3, new_name, trck_val, tpos_val) in enumerate(plan):
             try:
-                tags = load_id3(mp3)
-                tags["TRCK"] = TRCK(encoding=1, text=trck_val)
+                updates = {"track": trck_val}
                 if tpos_val:
-                    tags["TPOS"] = TPOS(encoding=1, text=tpos_val)
+                    updates["disc"] = tpos_val
                 if album_title:
-                    tags["TALB"] = TALB(encoding=1, text=album_title)
-                tags.save(mp3, v2_version=3, v1=0)
+                    updates["album"] = album_title
+                tagio.open_audio(mp3).write(updates)
                 tmp = album / f".mp3tools-merge-{idx:04d}.tmp"
                 mp3.rename(tmp)
                 staged.append((tmp, new_name))
@@ -358,48 +337,45 @@ def step_merge_subfolders(root: Path, dry_run: bool,
 
 # ── Step 2: Fix missing tags ──────────────────────────────────────────────────
 
-def _read_required_tags(mp3: Path) -> dict | None:
-    """Return dict with required tag keys (value or None)."""
-    try:
-        tags = load_id3(mp3)
-    except ID3NoHeaderError:
-        return {k: None for k in REQUIRED_TAG_NAMES}
-    except Exception as e:
-        print(f"  ERROR reading {mp3.name}: {e}")
-        return None
+# Required-tag keys ↔ canonical model keys (the neutral tagio surface).
+_REQ_TO_CANON = {
+    "TPE1": "artist", "ALBUMARTIST": "album_artist", "TIT2": "title",
+    "TALB": "album", "YEAR": "date", "TCON": "genre", "TRCK": "track",
+}
 
+
+def _read_required_tags(mp3: Path) -> dict | None:
+    """Return dict with required tag keys (value or None) via the tag interface.
+    None only on a genuine read error; a tagless file gives an all-None dict."""
+    a = tagio.open_audio(mp3)
+    if a is None:
+        return None
+    c = a.read()
+    d = a.diagnostics()
     result = {}
     for key in REQUIRED_TAG_NAMES:
         if key == "YEAR":
-            tyer = tags.get("TYER")
-            tdrc = tags.get("TDRC")
-            val  = str(tyer.text[0]) if tyer else (str(tdrc.text[0])[:4] if tdrc else None)
-            result["YEAR"] = val
-        elif key == "ALBUMARTIST":
-            result[key] = album_artist_value(tags)
+            # MP3: raw TYER, else TDRC truncated to 4 chars (historical); other
+            # formats: the canonical date.
+            if "tyer" in d:
+                result["YEAR"] = d["tyer"] or (d["tdrc"][:4] if d.get("tdrc") else None)
+            else:
+                result["YEAR"] = c["date"]
         else:
-            frame = tags.get(key)
-            result[key] = str(frame.text[0]) if frame else None
+            result[key] = c[_REQ_TO_CANON[key]]
     return result
 
 
 def _save_tag(mp3: Path, key: str, value: str) -> bool:
+    """Write one required-tag field through the interface (creates the tag on a
+    headerless file). Preserves the historical MP3 mapping (YEAR→TYER, TPE2
+    canonical album artist)."""
+    a = tagio.open_audio(mp3)
+    if a is None:
+        print(f"    ERROR saving {key}: unreadable file")
+        return False
     try:
-        try:
-            tags = load_id3(mp3)
-        except ID3NoHeaderError:
-            tags = ID3()
-        cls_map = {
-            "TPE1": TPE1, "TIT2": TIT2, "TALB": TALB,
-            "YEAR": TYER, "TCON": TCON, "TRCK": TRCK,
-        }
-        if key == "ALBUMARTIST":
-            set_album_artist(tags, value)
-            tags.save(mp3, v2_version=3, v1=0)
-            return True
-        actual = "TYER" if key == "YEAR" else key
-        tags[actual] = cls_map[key](encoding=1, text=value)
-        tags.save(mp3, v2_version=3, v1=0)
+        a.write({_REQ_TO_CANON[key]: value})
         return True
     except Exception as e:
         print(f"    ERROR saving {key}: {e}")
@@ -868,28 +844,21 @@ def step_normalize_year(root: Path, dry_run: bool) -> dict:
     stats = {"fixed": 0}
 
     for mp3 in sorted(root.rglob("*.mp3")):
-        try:
-            tags = load_id3(mp3)
-        except Exception:
+        a = tagio.open_audio(mp3)
+        if a is None:
             continue
-
-        changed = False
-        for frame_id, cls in (("TYER", TYER),):
-            frame = tags.get(frame_id)
-            if not frame:
-                continue
-            current = str(frame.text[0])
-            year    = extract_year(current)
-            if year and current != year:
-                print(f"  {mp3.name}  {frame_id}: {current!r}  ->  {year!r}")
-                if not dry_run:
-                    tags[frame_id] = cls(encoding=1, text=year)
-                changed = True
-
-        if changed:
+        d = a.diagnostics()
+        # MP3 normalizes TYER only (TDRC was converted in step 3); other formats
+        # normalize the canonical date. Both write back via canonical `date`.
+        current = d["tyer"] if "tyer" in d else a.read()["date"]
+        if not current:
+            continue
+        year = extract_year(current)
+        if year and current != year:
+            print(f"  {mp3.name}  year: {current!r}  ->  {year!r}")
             stats["fixed"] += 1
             if not dry_run:
-                tags.save(mp3, v2_version=3, v1=0)
+                a.write({"date": year})
 
     if stats["fixed"] == 0:
         print("  All year tags already normalized.")
@@ -900,11 +869,10 @@ def step_normalize_year(root: Path, dry_run: bool) -> dict:
 
 # ── Step 7: Renumber tracks to close gaps ────────────────────────────────────
 
-def _disc_key(tags: ID3) -> str | None:
-    """Return disc number string from TPOS (e.g. '1' from '1/2'), or None."""
-    tpos = tags.get("TPOS")
-    if tpos and hasattr(tpos, "text") and tpos.text:
-        val = str(tpos.text[0]).split("/")[0].strip()
+def _disc_key(disc: str | None) -> str | None:
+    """Disc-number key from a canonical disc value (e.g. '1' from '1/2'), or None."""
+    if disc and str(disc).strip():
+        val = str(disc).split("/")[0].strip()
         return val or None
     return None
 
@@ -922,14 +890,13 @@ def step_renumber_tracks(root: Path, dry_run: bool, respect_tpos: bool = False) 
             disc_groups: dict[str | None, list[tuple[int, Path]]] = defaultdict(list)
             for mp3 in mp3s:
                 try:
-                    tags = load_id3(mp3)
-                    trck = tags.get("TRCK")
-                    if not trck:
+                    c = tagio.open_audio(mp3).read()
+                    if not c["track"]:
                         continue
-                    num, _ = parse_track(str(trck.text[0]))
+                    num, _ = parse_track(str(c["track"]))
                     if num is None:
                         continue
-                    disc_groups[_disc_key(tags)].append((num, mp3))
+                    disc_groups[_disc_key(c["disc"])].append((num, mp3))
                 except Exception:
                     continue
             groups = list(disc_groups.values())
@@ -937,11 +904,10 @@ def step_renumber_tracks(root: Path, dry_run: bool, respect_tpos: bool = False) 
             group: list[tuple[int, Path]] = []
             for mp3 in mp3s:
                 try:
-                    tags = load_id3(mp3)
-                    trck = tags.get("TRCK")
-                    if not trck:
+                    c = tagio.open_audio(mp3).read()
+                    if not c["track"]:
                         continue
-                    num, _ = parse_track(str(trck.text[0]))
+                    num, _ = parse_track(str(c["track"]))
                     if num is None:
                         continue
                     group.append((num, mp3))
@@ -965,14 +931,13 @@ def step_renumber_tracks(root: Path, dry_run: bool, respect_tpos: bool = False) 
                 if new_num == old_num:
                     continue
                 try:
-                    tags = load_id3(mp3)
-                    original = str(tags["TRCK"].text[0])
+                    a = tagio.open_audio(mp3)
+                    original = str(a.read()["track"])
                     new_val = f"{str(new_num).zfill(width)}/{total}"
                     print(f"  {mp3.name}  TRCK: {original}  ->  {new_val}")
                     stats["fixed"] += 1
                     if not dry_run:
-                        tags["TRCK"] = TRCK(encoding=1, text=new_val)
-                        tags.save(mp3, v2_version=3, v1=0)
+                        a.write({"track": new_val})
                 except Exception as e:
                     print(f"  ERROR ({mp3.name}): {e}")
 
@@ -994,7 +959,7 @@ def step_pad_tracks(root: Path, dry_run: bool, respect_tpos: bool = False) -> di
         mp3_disc: dict[Path, str | None] = {}
         for mp3 in root.rglob("*.mp3"):
             try:
-                disc = _disc_key(load_id3(mp3))
+                disc = _disc_key(tagio.open_audio(mp3).read()["disc"])
             except Exception:
                 disc = None
             mp3_disc[mp3] = disc
@@ -1011,16 +976,14 @@ def step_pad_tracks(root: Path, dry_run: bool, respect_tpos: bool = False) -> di
         folder_width = {f: (3 if n >= 100 else 2) for f, n in folder_width.items()}
 
     for mp3 in sorted(root.rglob("*.mp3")):
-        try:
-            tags = load_id3(mp3)
-        except Exception:
+        a = tagio.open_audio(mp3)
+        if a is None:
             continue
 
-        trck = tags.get("TRCK")
-        if not trck:
+        original = a.read()["track"]
+        if not original:
             continue
 
-        original = str(trck.text[0])
         num, total = parse_track(original)
         if num is None:
             continue
@@ -1034,8 +997,7 @@ def step_pad_tracks(root: Path, dry_run: bool, respect_tpos: bool = False) -> di
             print(f"  {mp3.name}  TRCK: {original}  ->  {new_val}")
             stats["fixed"] += 1
             if not dry_run:
-                tags["TRCK"] = TRCK(encoding=1, text=new_val)
-                tags.save(mp3, v2_version=3, v1=0)
+                a.write({"track": new_val})
 
     if stats["fixed"] == 0:
         print("  All track numbers already padded.")
@@ -1058,7 +1020,7 @@ def step_set_total_tracks(root: Path, dry_run: bool, respect_tpos: bool = False)
             disc_groups: dict[str | None, list[Path]] = defaultdict(list)
             for mp3 in mp3s:
                 try:
-                    disc = _disc_key(load_id3(mp3))
+                    disc = _disc_key(tagio.open_audio(mp3).read()["disc"])
                 except Exception:
                     disc = None
                 disc_groups[disc].append(mp3)
@@ -1066,14 +1028,12 @@ def step_set_total_tracks(root: Path, dry_run: bool, respect_tpos: bool = False)
                 disc_total = len(disc_mp3s)
                 width = 3 if disc_total >= 100 else 2
                 for mp3 in disc_mp3s:
-                    try:
-                        tags = load_id3(mp3)
-                    except Exception:
+                    a = tagio.open_audio(mp3)
+                    if a is None:
                         continue
-                    trck = tags.get("TRCK")
-                    if not trck:
+                    original = a.read()["track"]
+                    if not original:
                         continue
-                    original = str(trck.text[0])
                     num, _ = parse_track(original)
                     if num is None:
                         continue
@@ -1082,20 +1042,17 @@ def step_set_total_tracks(root: Path, dry_run: bool, respect_tpos: bool = False)
                         print(f"  {mp3.name}  TRCK: {original}  ->  {new_val}")
                         stats["fixed"] += 1
                         if not dry_run:
-                            tags["TRCK"] = TRCK(encoding=1, text=new_val)
-                            tags.save(mp3, v2_version=3, v1=0)
+                            a.write({"track": new_val})
         else:
             total = len(mp3s)
             width = 3 if total >= 100 else 2
             for mp3 in mp3s:
-                try:
-                    tags = load_id3(mp3)
-                except Exception:
+                a = tagio.open_audio(mp3)
+                if a is None:
                     continue
-                trck = tags.get("TRCK")
-                if not trck:
+                original = a.read()["track"]
+                if not original:
                     continue
-                original = str(trck.text[0])
                 num, cur_total = parse_track(original)
                 if num is None:
                     continue
@@ -1104,8 +1061,7 @@ def step_set_total_tracks(root: Path, dry_run: bool, respect_tpos: bool = False)
                     print(f"  {mp3.name}  TRCK: {original}  ->  {new_val}")
                     stats["fixed"] += 1
                     if not dry_run:
-                        tags["TRCK"] = TRCK(encoding=1, text=new_val)
-                        tags.save(mp3, v2_version=3, v1=0)
+                        a.write({"track": new_val})
 
     if stats["fixed"] == 0:
         print("  All track totals already correct.")
@@ -1121,17 +1077,13 @@ def _album_folder_name(folder: Path) -> str | None:
     years, albums = [], []
     for mp3 in folder.glob("*.mp3"):
         try:
-            tags = load_id3(mp3)
-            for fid in ("TYER", "TDRC"):
-                frame = tags.get(fid)
-                if frame:
-                    y = extract_year(str(frame.text[0]))
-                    if y:
-                        years.append(y)
-                        break
-            talb = tags.get("TALB")
-            if talb:
-                albums.append(str(talb.text[0]))
+            c = tagio.open_audio(mp3).read()
+            if c["date"]:
+                y = extract_year(str(c["date"]))
+                if y:
+                    years.append(y)
+            if c["album"]:
+                albums.append(c["album"])
         except Exception:
             continue
     year  = Counter(years).most_common(1)[0][0]  if years  else None
@@ -1199,10 +1151,9 @@ def step_deduplicate_albums(root: Path, dry_run: bool) -> dict:
             titles = []
             for mp3 in album_folder.glob("*.mp3"):
                 try:
-                    tags = load_id3(mp3)
-                    talb = tags.get("TALB")
+                    talb = tagio.open_audio(mp3).read()["album"]
                     if talb:
-                        titles.append(str(talb.text[0]))
+                        titles.append(talb)
                 except Exception:
                     pass
             if titles:
@@ -1225,16 +1176,12 @@ def step_deduplicate_albums(root: Path, dry_run: bool) -> dict:
                 year = None
                 for mp3 in mp3_list:
                     try:
-                        tags = load_id3(mp3)
-                        for fid in ("TYER", "TDRC"):
-                            frame = tags.get(fid)
-                            if frame:
-                                y = extract_year(str(frame.text[0]))
-                                if y:
-                                    year = y
-                                    break
-                        if year:
-                            break
+                        date = tagio.open_audio(mp3).read()["date"]
+                        if date:
+                            y = extract_year(str(date))
+                            if y:
+                                year = y
+                                break
                     except Exception:
                         pass
 
@@ -1260,9 +1207,7 @@ def step_deduplicate_albums(root: Path, dry_run: bool) -> dict:
 
                 for mp3 in mp3_list:
                     try:
-                        tags = load_id3(mp3)
-                        tags["TALB"] = TALB(encoding=1, text=new_title)
-                        tags.save(mp3, v2_version=3, v1=0)
+                        tagio.open_audio(mp3).write({"album": new_title})
                         stats["retagged"] += 1
                     except Exception as e:
                         print(f"    ERROR retagging {mp3.name}: {e}")
@@ -1309,15 +1254,14 @@ def step_rename_artist_folders(root: Path, dry_run: bool, *, ask_choice=None) ->
         mp3_list = sorted(artist_folder.rglob("*.mp3"))
         for mp3 in mp3_list:
             try:
-                tags = load_id3(mp3)
-                album_artist = album_artist_value(tags)
-                tpe1 = tags.get("TPE1")
-                if not album_artist and tpe1:
-                    value = normalize_string(str(tpe1.text[0]))
+                a = tagio.open_audio(mp3)
+                c = a.read()
+                album_artist = c["album_artist"]
+                if not album_artist and c["artist"]:
+                    value = normalize_string(str(c["artist"]))
                     names.append(value)
                     if not dry_run:
-                        set_album_artist(tags, value)
-                        tags.save(mp3, v2_version=3, v1=0)
+                        a.write({"album_artist": value})
                         stats["retagged"] += 1
                     continue
                 if album_artist:
@@ -1361,9 +1305,7 @@ def step_rename_artist_folders(root: Path, dry_run: bool, *, ask_choice=None) ->
                     retagged = 0
                     for mp3 in mp3_list:
                         try:
-                            tags = load_id3(mp3)
-                            set_album_artist(tags, folder_artist)
-                            tags.save(mp3, v2_version=3, v1=0)
+                            tagio.open_audio(mp3).write({"album_artist": folder_artist})
                             retagged += 1
                         except Exception as e:
                             print(f"    ERROR retagging {mp3.name}: {e}")
@@ -1444,9 +1386,7 @@ def step_rename_artist_folders(root: Path, dry_run: bool, *, ask_choice=None) ->
                 retagged = 0
                 for mp3 in album_mp3s:
                     try:
-                        tags = load_id3(mp3)
-                        set_album_artist(tags, effective_name)
-                        tags.save(mp3, v2_version=3, v1=0)
+                        tagio.open_audio(mp3).write({"album_artist": effective_name})
                         retagged += 1
                     except Exception as e:
                         print(f"    ERROR retagging {mp3.name}: {e}")
@@ -1486,9 +1426,7 @@ def step_rename_artist_folders(root: Path, dry_run: bool, *, ask_choice=None) ->
                 retagged = 0
                 for mp3 in album_mp3s:
                     try:
-                        tags = load_id3(mp3)
-                        set_album_artist(tags, effective_name)
-                        tags.save(mp3, v2_version=3, v1=0)
+                        tagio.open_audio(mp3).write({"album_artist": effective_name})
                         retagged += 1
                     except Exception as e:
                         print(f"    ERROR retagging {mp3.name}: {e}")
@@ -1532,32 +1470,32 @@ def step_rename_files(root: Path, dry_run: bool) -> dict:
     folder_width = {f: (3 if n >= 100 else 2) for f, n in folder_width.items()}
 
     for mp3 in sorted(root.rglob("*.mp3")):
-        try:
-            tags = load_id3(mp3)
-        except Exception:
+        a = tagio.open_audio(mp3)
+        if a is None:
             continue
+        c = a.read()
 
-        artist = tags.get("TPE1")
-        title  = tags.get("TIT2")
-        trck   = tags.get("TRCK")
+        artist = c["artist"]
+        title  = c["title"]
+        trck   = c["track"]
 
         if not artist or not title or not trck:
-            missing = [n for t, n in [("TPE1", "artist"), ("TIT2", "title"), ("TRCK", "track")]
-                       if not tags.get(t)]
+            missing = [n for v, n in [(artist, "artist"), (title, "title"), (trck, "track")]
+                       if not v]
             print(f"  SKIP {mp3.name} (missing: {', '.join(missing)})")
             stats["skipped"] += 1
             continue
 
-        num, _ = parse_track(str(trck.text[0]))
+        num, _ = parse_track(str(trck))
         if num is None:
             print(f"  SKIP {mp3.name} (invalid track number)")
             stats["skipped"] += 1
             continue
 
         width    = folder_width.get(mp3.parent, 2)
-        a_str    = sanitize_name(str(artist.text[0]))
-        t_str    = sanitize_name(str(title.text[0]))
-        new_name = f"{str(num).zfill(width)}. {a_str} - {t_str}.mp3"
+        a_str    = sanitize_name(str(artist))
+        t_str    = sanitize_name(str(title))
+        new_name = f"{str(num).zfill(width)}. {a_str} - {t_str}{mp3.suffix.lower()}"
 
         if mp3.name == new_name:
             continue
@@ -1594,19 +1532,18 @@ def step_enforce_track_artist(root: Path, dry_run: bool) -> dict:
     stats = {"fixed": 0, "skipped": 0, "errors": 0}
 
     for mp3 in sorted(root.rglob("*.mp3")):
-        try:
-            tags = load_id3(mp3)
-        except Exception:
+        a = tagio.open_audio(mp3)
+        if a is None:
             stats["errors"] += 1
             continue
+        c = a.read()
 
-        album_artist = album_artist_value(tags)
+        album_artist = c["album_artist"]
         if not album_artist:
             stats["skipped"] += 1
             continue
 
-        artist = tags.get("TPE1")
-        artist_value = str(artist.text[0]) if artist and artist.text else ""
+        artist_value = c["artist"] or ""
         if artist_value == album_artist:
             stats["skipped"] += 1
             continue
@@ -1617,8 +1554,7 @@ def step_enforce_track_artist(root: Path, dry_run: bool) -> dict:
         stats["fixed"] += 1
         if not dry_run:
             try:
-                tags["TPE1"] = TPE1(encoding=1, text=album_artist)
-                tags.save(mp3, v2_version=3, v1=0)
+                a.write({"artist": album_artist})
             except Exception as e:
                 print(f"    ERROR: {e}")
                 stats["errors"] += 1
@@ -1804,19 +1740,16 @@ def step_embed_cover_art(root: Path, dry_run: bool,
         folder_errors = 0
         for mp3 in sorted(folder.glob("*.mp3")):
             try:
-                tags = load_id3(mp3)
-                existing = tags.get("APIC:")
-                if existing and existing.data == data:
+                a = tagio.open_audio(mp3)
+                existing = a.get_cover()
+                if existing and existing[0] == data:
                     stats["already_ok"] += 1
                     continue
                 rel = mp3.relative_to(root)
                 print(f"  {rel}")
                 stats["embedded"] += 1
                 if not dry_run:
-                    tags["APIC:"] = APIC(
-                        encoding=3, mime=mime, type=3, desc="", data=data,
-                    )
-                    tags.save(mp3, v2_version=3, v1=0)
+                    a.set_cover(data, mime)
             except Exception as e:
                 print(f"  ERROR ({mp3.name}): {e}")
                 stats["errors"] += 1
@@ -1850,8 +1783,7 @@ def _all_tracks_have_embedded_art(folder: Path) -> bool:
         return False
     for mp3 in mp3s:
         try:
-            tags = load_id3(mp3)
-            if not any(k.startswith("APIC") for k in tags.keys()):
+            if not tagio.open_audio(mp3).has_cover():
                 return False
         except Exception:
             return False
@@ -1875,13 +1807,11 @@ def _album_search_terms(folder: Path) -> tuple[str, str]:
         album = m.group(1)
     for mp3 in folder.glob("*.mp3"):
         try:
-            tags = load_id3(mp3)
-            aa   = album_artist_value(tags)
-            if aa:
-                artist = aa
-            talb = tags.get("TALB")
-            if talb:
-                album = str(talb.text[0])
+            c = tagio.open_audio(mp3).read()
+            if c["album_artist"]:
+                artist = c["album_artist"]
+            if c["album"]:
+                album = c["album"]
         except Exception:
             pass
         break
@@ -1915,9 +1845,7 @@ def _apply_art_to_folder(folder: Path, data: bytes, mime: str,
     if cover_art in ("embed", "both"):
         for mp3 in sorted(folder.glob("*.mp3")):
             try:
-                tags = load_id3(mp3)
-                tags["APIC:"] = APIC(encoding=3, mime=mime, type=3, desc="", data=data)
-                tags.save(mp3, v2_version=3, v1=0)
+                tagio.open_audio(mp3).set_cover(data, mime)
                 updated += 1
             except Exception as e:
                 print(f"  ERROR embedding in {mp3.name}: {e}")

@@ -29,8 +29,8 @@ import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from mutagen.id3 import ID3, ID3NoHeaderError
 import settings as settings_mod
+import tagio
 from chars import (
     extract_year,
     needs_normalization as has_nonstandard_chars,
@@ -38,19 +38,22 @@ from chars import (
     parse_track,
     sanitize,
 )
+# ID3 leaf helpers live in tagio (one home; audit holds no direct mutagen code).
+# Re-export the historical names so audit's public contract is unchanged.
+from tagio import (          # noqa: F401  (re-exported API)
+    ALBUM_ARTIST_KEYS,
+    album_artist_value,
+    has_embedded_art,
+    load_id3,
+)
+
+read_tags = tagio.mp3_read_framekey   # legacy frame-key dict (audit's contract)
+_has_id3v1 = tagio.has_id3v1
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
 CD_PATTERN = re.compile(r"^CD(\d+)$")
-ALBUM_ARTIST_KEYS = (
-    "TPE2",
-    "TXXX:album artist",
-    "TXXX:ALBUMARTIST",
-    "TXXX:ALBUM ARTIST",
-    "TXXX:AlbumArtist",
-    "TXXX:Album Artist",
-)
 
 CATEGORY_LABELS: dict[str, str] = {
     "READ_ERROR":    "Tag read error",
@@ -72,73 +75,15 @@ CATEGORY_LABELS: dict[str, str] = {
 }
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
-
-def _has_id3v1(path: Path) -> bool:
-    """Return True if the file has an ID3v1 tag (last 128 bytes start with b'TAG')."""
-    try:
-        with open(path, "rb") as f:
-            f.seek(-128, 2)
-            return f.read(3) == b"TAG"
-    except OSError:
-        return False
-
-
-def load_id3(path: Path) -> ID3:
-    """Load raw ID3 frames without mutagen's v2.4 translation layer."""
-    return ID3(path, translate=False)
-
-
-def has_embedded_art(path: Path) -> bool:
-    """Return True if the file has at least one APIC (embedded image) frame."""
-    try:
-        tags = load_id3(path)
-        return any(k.startswith("APIC") for k in tags.keys())
-    except Exception:
-        return False
-
-
-def album_artist_value(tags: ID3) -> str | None:
-    for key in ALBUM_ARTIST_KEYS:
-        frame = tags.get(key)
-        if frame and hasattr(frame, "text") and frame.text:
-            return str(frame.text[0])
-    return None
-
-
-def read_tags(path: Path) -> dict | None:
-    """
-    Read ID3 tags from file.
-    Returns dict of tag values (None when tag absent) plus _version tuple,
-    or None on read error.
-    """
-    keys = ("TPE1", "TPE2", "TIT2", "TALB", "TYER", "TDRC", "TCON", "TRCK")
-    try:
-        tags = load_id3(path)
-        result = {
-            k: (str(tags[k].text[0]) if k in tags and hasattr(tags[k], "text") else None)
-            for k in keys
-        }
-        result["ALBUMARTIST"] = album_artist_value(tags)
-        result["_version"] = tags.version
-        result["_legacy_albumartist"] = any(
-            k in tags for k in ALBUM_ARTIST_KEYS if k != "TPE2"
-        )
-        return result
-    except ID3NoHeaderError:
-        result = {k: None for k in keys}
-        result["ALBUMARTIST"] = None
-        result["_version"] = None
-        result["_legacy_albumartist"] = False
-        return result
-    except Exception:
-        return None
+# ID3 leaf helpers (_has_id3v1, load_id3, has_embedded_art, album_artist_value,
+# read_tags) are re-exported from tagio at the top of this module.
 
 
 def year_from_tags(tags: dict) -> str | None:
     return tags.get("TYER") or tags.get("TDRC")
 
 
-def build_expected_filename(tags: dict, width: int) -> str | None:
+def build_expected_filename(tags: dict, width: int, ext: str = ".mp3") -> str | None:
     artist = tags.get("TPE1")
     title = tags.get("TIT2")
     trck = tags.get("TRCK")
@@ -149,7 +94,7 @@ def build_expected_filename(tags: dict, width: int) -> str | None:
         return None
     artist_s = sanitize(artist)
     title_s = sanitize(title)
-    return f"{str(num).zfill(width)}. {artist_s} - {title_s}.mp3"
+    return f"{str(num).zfill(width)}. {artist_s} - {title_s}{ext}"
 
 
 def build_expected_folder(tags_list: list[dict]) -> str | None:
@@ -185,50 +130,71 @@ class Issue:
 # ─── File-level audit ─────────────────────────────────────────────────────────
 
 def audit_file(path: Path, width: int) -> tuple[dict | None, list[Issue]]:
-    """Check a single MP3 file. Returns (tags_or_None, issues)."""
-    issues: list[Issue] = []
-    tags = read_tags(path)
+    """Check a single audio file. Returns (frame-key tags dict | None, issues).
 
-    if tags is None:
+    Issues are derived from the format-agnostic canonical model + diagnostics()
+    (via tagio), so one code path serves every format. MP3-specific structural
+    checks (ID3 version, ID3v1, TDRC relic, raw TPE2) key off diagnostics keys
+    that only the MP3 backend provides — they cleanly vanish for other formats.
+    The returned dict is the legacy frame-key shape scan() aggregates (identical
+    to read_tags on MP3)."""
+    a = tagio.open_audio(path)
+    if a is None:
         return None, [Issue("READ_ERROR", "Cannot read ID3 tags")]
+    c = a.read()
+    d = a.diagnostics()
+    issues: list[Issue] = []
 
-    # 0. ID3 version checks
-    ver = tags.get("_version")
+    # Frame-key view for scan()'s album/folder aggregation (== read_tags on MP3;
+    # for other formats, canonical date lands in the TYER slot so the shared
+    # year/folder helpers keep working).
+    tags = {
+        "TPE1": c["artist"], "TPE2": d.get("tpe2"), "TIT2": c["title"],
+        "TALB": c["album"],
+        "TYER": d["tyer"] if "tyer" in d else c["date"],
+        "TDRC": d.get("tdrc"),
+        "TCON": c["genre"], "TRCK": c["track"],
+        "ALBUMARTIST": c["album_artist"],
+        "_version": d.get("id3_version"),
+        "_legacy_albumartist": d.get("legacy_albumartist", False),
+    }
+
+    # 0. ID3-specific structural checks (present only when the backend reports them)
+    ver = d.get("id3_version")
     if ver is not None and ver[1] != 3:
         issues.append(Issue("ID3_VERSION",
             f"ID3v2.{ver[1]} detected — must be ID3v2.3"))
-    if _has_id3v1(path):
+    if d.get("has_id3v1"):
         issues.append(Issue("ID3_V1", "ID3v1 tag present — run standardize to remove"))
-
-    # TDRC is an ID3v2.4 frame that must not appear in ID3v2.3 files
-    if tags.get("TDRC"):
+    if d.get("tdrc"):
         issues.append(Issue("RELIC_TAG",
-            f"TDRC frame present ({tags['TDRC']!r}) — ID3v2.4 timestamp in a v2.3 file; "
+            f"TDRC frame present ({d['tdrc']!r}) — ID3v2.4 timestamp in a v2.3 file; "
             "run standardize to convert to TYER"))
 
     # 1. Missing required tags
     missing = []
-    if not tags.get("TPE1"): missing.append("Artist")
-    if not tags.get("ALBUMARTIST"): missing.append("Album Artist")
-    if not tags.get("TPE2"): missing.append("TPE2")
-    if not tags.get("TIT2"): missing.append("Title")
-    if not tags.get("TALB"): missing.append("Album")
-    if not tags.get("TYER"): missing.append("Year")
-    if not tags.get("TCON"): missing.append("Genre")
-    if not tags.get("TRCK"): missing.append("Track")
+    if not c["artist"]: missing.append("Artist")
+    if not c["album_artist"]: missing.append("Album Artist")
+    if "tpe2" in d and not d["tpe2"]: missing.append("TPE2")
+    if not c["title"]: missing.append("Title")
+    if not c["album"]: missing.append("Album")
+    year_val = d["tyer"] if "tyer" in d else c["date"]
+    if not year_val: missing.append("Year")
+    if not c["genre"]: missing.append("Genre")
+    if not c["track"]: missing.append("Track")
     if missing:
         issues.append(Issue("MISSING_TAG", "Missing: " + ", ".join(missing)))
 
-    if tags.get("_legacy_albumartist"):
+    if d.get("legacy_albumartist"):
         issues.append(Issue("ALBUM_ARTIST",
             "Legacy TXXX album-artist frame present — run standardize to remove"))
 
     # 2. Non-standard characters in tag values
-    for label, key in [
-        ("Artist", "TPE1"), ("Album Artist", "ALBUMARTIST"), ("TPE2", "TPE2"),
-        ("Title", "TIT2"), ("Album", "TALB"), ("Genre", "TCON")
-    ]:
-        val = tags.get(key)
+    char_fields = [("Artist", c["artist"]), ("Album Artist", c["album_artist"]),
+                   ("Title", c["title"]), ("Album", c["album"]), ("Genre", c["genre"])]
+    if "tpe2" in d:
+        char_fields.insert(2, ("TPE2", d["tpe2"]))
+    for label, val in char_fields:
         if val and has_nonstandard_chars(val):
             issues.append(Issue("CHAR_NORM", f"{label}: {val!r} → {normalize(val)!r}"))
 
@@ -236,17 +202,17 @@ def audit_file(path: Path, width: int) -> tuple[dict | None, list[Issue]]:
     if has_nonstandard_chars(path.name):
         issues.append(Issue("CHAR_NORM", f"Filename: {path.name!r} → {normalize(path.name)!r}"))
 
-    # 3. Date normalization (TYER only — TDRC must not be present, caught above)
-    val = tags.get("TYER")
-    if val:
-        year = extract_year(val)
+    # 3. Date normalization (MP3: raw TYER, TDRC caught above; else canonical date)
+    date_val = d["tyer"] if "tyer" in d else c["date"]
+    if date_val:
+        year = extract_year(date_val)
         if not year:
-            issues.append(Issue("DATE_NORM", f"TYER: unrecognizable value {val!r}"))
-        elif val != year:
-            issues.append(Issue("DATE_NORM", f"TYER: {val!r} → {year!r}"))
+            issues.append(Issue("DATE_NORM", f"TYER: unrecognizable value {date_val!r}"))
+        elif date_val != year:
+            issues.append(Issue("DATE_NORM", f"TYER: {date_val!r} → {year!r}"))
 
     # 4. Track number padding
-    trck = tags.get("TRCK")
+    trck = c["track"]
     if trck:
         num, total = parse_track(trck)
         if num is not None:
@@ -259,7 +225,9 @@ def audit_file(path: Path, width: int) -> tuple[dict | None, list[Issue]]:
             issues.append(Issue("TRACK_PAD", f"TRCK: unparseable value {trck!r}"))
 
     # 6. Filename matches tags
-    exp = build_expected_filename(tags, width)
+    exp = build_expected_filename(
+        {"TPE1": c["artist"], "TIT2": c["title"], "TRCK": c["track"]},
+        width, ext=path.suffix.lower())
     if exp and path.name != exp:
         issues.append(Issue("FILENAME", f"{path.name!r} → {exp!r}"))
 
