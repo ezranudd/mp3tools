@@ -22,6 +22,7 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import encoding
 import settings as settings_mod
 
 _MAX_LOG_LINES = 5000
@@ -56,7 +57,8 @@ class _Prompt:
     options: list[dict] | None = None           # [{key,label}, ...] for choice
     entries: list | None = None                 # serialized rows for preview
     has_lossless: bool = False
-    default_bitrate: int = 320                   # preview: default lossless→MP3 bitrate
+    default_profile: str = encoding.DEFAULT_PROFILE   # preview: default encode profile
+    profiles: list | None = None                # preview: the profile registry for the UI
     event: threading.Event = field(default_factory=threading.Event)
     response: object | None = None
 
@@ -67,7 +69,8 @@ class _Prompt:
             "options": self.options or [],
             "entries": self.entries or [],
             "has_lossless": self.has_lossless,
-            "default_bitrate": self.default_bitrate,
+            "default_profile": self.default_profile,
+            "profiles": self.profiles or [],
         }
 
 
@@ -140,8 +143,10 @@ class Job:
         if self.cancelled:
             return False
         rows = _serialize_entries(entries, getattr(self, "library_root", None))
-        res = self._ask(_Prompt(kind="preview", entries=rows, has_lossless=bool(has_lossless),
-                                default_bitrate=getattr(self, "import_bitrate", 320)))
+        res = self._ask(_Prompt(
+            kind="preview", entries=rows, has_lossless=bool(has_lossless),
+            default_profile=getattr(self, "import_profile", encoding.DEFAULT_PROFILE),
+            profiles=encoding.profiles_json()))
         if not isinstance(res, dict):
             return bool(res)
         _apply_entry_edits(entries, res.get("entries"))
@@ -262,8 +267,8 @@ def _serialize_entries(entries, root=None) -> list[dict]:
 
 def _apply_entry_edits(entries, edited) -> None:
     """Apply browser-edited fields back onto the in-place (Path, tagdict) list.
-    Tags map to ID3 frames; bitrate/art/conflict ride in private (underscore) keys
-    that import_tracks consumes (lossless bitrate, cover choice, conflict add/skip)."""
+    Tags map to ID3 frames; profile/art/conflict ride in private (underscore) keys
+    that import_tracks consumes (encode profile, cover choice, conflict add/skip)."""
     if not edited:
         return
     rows = [row for row in edited if isinstance(row, dict)]
@@ -280,11 +285,8 @@ def _apply_entry_edits(entries, edited) -> None:
         for key, frame in field_map.items():
             if key in row:
                 td[frame] = row[key]
-        if row.get("bitrate"):
-            try:
-                td["_LOSSLESS_BITRATE"] = int(row["bitrate"])
-            except (TypeError, ValueError):
-                pass
+        if row.get("profile") and encoding.is_valid(row["profile"]):
+            td["_ENCODE_PROFILE"] = row["profile"]
         if row.get("art_file"):
             td["_ART_FILE"] = row["art_file"]
         elif row.get("art_none"):
@@ -343,7 +345,8 @@ def _run_standardize(job: Job, params: dict) -> None:
 
     job.set_progress("Convert lossless files", percent=int(done_phases / total_phases * 100))
     job.add_sep("Step 0: Convert lossless files")
-    step_convert_lossless(root, dry_run, ask_choice=ac)
+    step_convert_lossless(root, dry_run, ask_choice=ac,
+                          profile=cfg.get("import_profile", encoding.DEFAULT_PROFILE))
     done_phases += 1
 
     for idx, fn in enumerate(std.STEPS, 1):
@@ -407,9 +410,9 @@ def _run_import(job: Job, params: dict) -> None:
     source = Path(params["source"])
     dry_run = bool(params.get("dry_run", False))
     cfg = settings_mod.load(root)
-    # Used by preview_fn to compute conflicts and the default lossless bitrate.
+    # Used by preview_fn to compute conflicts and the default encode profile.
     job.library_root = root
-    job.import_bitrate = cfg.get("import_bitrate", 320)
+    job.import_profile = cfg.get("import_profile", encoding.DEFAULT_PROFILE)
 
     try:
         import_tracks(
@@ -441,9 +444,9 @@ def _run_rip(job: Job, params: dict) -> None:
     device = params["device"]
     dry_run = bool(params.get("dry_run", False))
     cfg = settings_mod.load(root)
-    # Used by preview_fn to compute conflicts and the default lossless bitrate.
+    # Used by preview_fn to compute conflicts and the default encode profile.
     job.library_root = root
-    job.import_bitrate = cfg.get("import_bitrate", 320)
+    job.import_profile = cfg.get("import_profile", encoding.DEFAULT_PROFILE)
 
     rip_dir = Path(tempfile.mkdtemp(prefix="mp3tools_rip_"))
     ripped = False
@@ -584,6 +587,14 @@ class JobManager:
                 job.state = "error"
             finally:
                 job.set_progress("")
+                # Jobs rewrite tags/files behind browse's back; a mutagen
+                # re-save can slip past the stat signatures (unchanged size +
+                # coarse mtime), so drop the caches wholesale.
+                try:
+                    import browse
+                    browse.invalidate_caches()
+                except Exception:
+                    pass
                 if job.state != "error":
                     job.state = "done"
 

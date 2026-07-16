@@ -587,7 +587,8 @@ def test_import_preview_serializes_new_fields(tmp_path, tmp_path_factory):
 
     def answer(prompt):
         if prompt["kind"] == "preview":
-            seen["default_bitrate"] = prompt.get("default_bitrate")
+            seen["default_profile"] = prompt.get("default_profile")
+            seen["profiles"] = prompt.get("profiles")
             seen["row0"] = prompt["entries"][0]
             return {"proceed": True, "entries": prompt["entries"]}
         if prompt["kind"] == "choice" and prompt["options"]:
@@ -596,7 +597,9 @@ def test_import_preview_serializes_new_fields(tmp_path, tmp_path_factory):
 
     jid = c.post("/api/jobs", json={"kind": "import", "source": str(src)}).json()["job_id"]
     assert _poll(c, jid, answer)["state"] == "done"
-    assert seen["default_bitrate"] == 320
+    assert seen["default_profile"] == "opus-128"
+    assert [p["id"] for p in seen["profiles"]] == [
+        "opus-160", "opus-128", "opus-96", "opus-64", "mp3-v0", "mp3-320"]
     assert seen["row0"]["lossless"] is False
     assert "conflict" in seen["row0"]
 
@@ -634,7 +637,7 @@ def test_import_conflict_skip_and_add(tmp_path, tmp_path_factory):
     assert len(list(dest.glob("*.mp3"))) == 2           # added: appended
 
 
-def test_import_lossless_bitrate_not_dropped(tmp_path, tmp_path_factory):
+def test_import_lossless_profile_not_dropped(tmp_path, tmp_path_factory):
     src = tmp_path_factory.mktemp("flacsrc")
     _make_flac(src / "track.flac", title="Song", artist="Band",
                albumartist="Band", album="FlacAlbum", date="2019", tracknumber="1")
@@ -645,8 +648,9 @@ def test_import_lossless_bitrate_not_dropped(tmp_path, tmp_path_factory):
         if prompt["kind"] == "preview":
             rows = prompt["entries"]
             assert rows[0]["lossless"] is True
+            assert any(p["id"] == "mp3-320" for p in prompt["profiles"])
             for r in rows:
-                r["bitrate"] = 128
+                r["profile"] = "mp3-320"
             return {"proceed": True, "entries": rows}
         if prompt["kind"] == "choice" and prompt["options"]:
             return prompt["options"][0]["key"]
@@ -655,7 +659,7 @@ def test_import_lossless_bitrate_not_dropped(tmp_path, tmp_path_factory):
     jid = c.post("/api/jobs", json={"kind": "import", "source": str(src)}).json()["job_id"]
     assert _poll(c, jid, answer)["state"] == "done"
     imported = list(tmp_path.rglob("*.mp3"))
-    assert imported, "lossless entry must import (not be dropped) when a bitrate is set"
+    assert imported, "lossless entry must import (not be dropped) when a profile is set"
 
 
 def test_import_art_none_writes_placeholder(tmp_path, tmp_path_factory):
@@ -951,3 +955,223 @@ def test_collection_add_many_accumulates(tmp_path):
         assert c.post("/api/collection/add",
                       json={"name": "Mix", "album_path": p}).status_code == 200
     assert len(c.get("/api/collection", params={"name": "Mix"}).json()["albums"]) == 5
+
+
+# ── Gapless album stream: transcoded (codec=mp3) variant ─────────────────────
+
+def test_album_stream_mp3_codec(client):
+    tree = client.get("/api/tree").json()
+    album = tree["artists"][0]["children"][0]["path"]
+
+    r = client.get("/api/album_stream", params={"path": album, "codec": "mp3"})
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "audio/mpeg"
+    assert r.headers.get("accept-ranges") == "none"
+    assert len(r.content) > 1000
+
+    # Mid-stream start point.
+    r2 = client.get("/api/album_stream",
+                    params={"path": album, "codec": "mp3", "t": 0.5})
+    assert r2.status_code == 200 and 0 < len(r2.content) < len(r.content)
+
+    # Bad codec / bitrate are rejected.
+    assert client.get("/api/album_stream",
+                      params={"path": album, "codec": "ogg"}).status_code == 400
+    assert client.get("/api/album_stream",
+                      params={"path": album, "codec": "mp3", "br": 999}).status_code == 400
+
+
+def test_album_stream_opus_codec(client):
+    import album_stream
+    tree = client.get("/api/tree").json()
+    album = tree["artists"][0]["children"][0]["path"]
+
+    r = client.get("/api/album_stream",
+                   params={"path": album, "codec": "opus", "br": 96})
+    if album_stream.has_libopus():
+        assert r.status_code == 200
+        assert r.headers["content-type"] == "audio/ogg"
+        assert r.content[:4] == b"OggS"
+    else:
+        assert r.status_code == 400
+
+    # opus has its own bitrate whitelist (96 valid there, not for mp3).
+    assert client.get("/api/album_stream",
+                      params={"path": album, "codec": "mp3", "br": 96}).status_code == 400
+    assert client.get("/api/album_stream",
+                      params={"path": album, "codec": "opus", "br": 999}).status_code == 400
+
+
+def test_whoami_reports_opus_capability(client):
+    import album_stream
+    who = client.get("/api/whoami").json()
+    assert who["stream_opus"] is album_stream.has_libopus()
+
+
+def test_album_stream_mp3_guest_allowed(client, guest):
+    """Members/LAN guests stream albums read-only; the mp3 variant must be
+    reachable for them like the wav one."""
+    tree = client.get("/api/tree").json()
+    album = tree["artists"][0]["children"][0]["path"]
+    r = guest.get("/api/album_stream", params={"path": album, "codec": "mp3"})
+    assert r.status_code == 200
+
+
+def test_transcode_becomes_bounded_once_cached(client):
+    """Manifest pre-warms the cache; once ready, the transcode is served as a
+    bounded Range-seekable file — iOS lock-screen reliability parity with WAV."""
+    import album_stream
+    tree = client.get("/api/tree").json()
+    album = tree["artists"][0]["children"][0]["path"]
+
+    # Manifest with codec/br reports readiness and kicks the background encode.
+    m = client.get("/api/album_manifest",
+                   params={"path": album, "codec": "mp3", "br": 192}).json()
+    assert m["stream_ready"] is False
+
+    cache_dir = server._stream_cache_dir()
+    deadline = time.time() + 30
+    while time.time() < deadline and not album_stream.cache_ready(
+            cache_dir, Path(album), "mp3", 192):
+        time.sleep(0.05)
+    assert album_stream.cache_ready(cache_dir, Path(album), "mp3", 192)
+
+    m = client.get("/api/album_manifest",
+                   params={"path": album, "codec": "mp3", "br": 192}).json()
+    assert m["stream_ready"] is True
+
+    # Full response now bounded: Content-Length present, ranges accepted.
+    r = client.get("/api/album_stream",
+                   params={"path": album, "codec": "mp3", "br": 192})
+    assert r.status_code == 200
+    assert "content-length" in r.headers
+    assert r.headers.get("accept-ranges") == "bytes"
+    total = int(r.headers["content-length"])
+
+    r206 = client.get("/api/album_stream",
+                      params={"path": album, "codec": "mp3", "br": 192},
+                      headers={"Range": "bytes=0-999"})
+    assert r206.status_code == 206
+    assert len(r206.content) == 1000
+    assert r206.headers["content-range"] == f"bytes 0-999/{total}"
+
+    # A mid-stream t still gets the live (unbounded) variant for recovery.
+    rt = client.get("/api/album_stream",
+                    params={"path": album, "codec": "mp3", "br": 192, "t": 0.5})
+    assert rt.status_code == 200
+    assert rt.headers.get("accept-ranges") == "none"
+
+
+def test_album_stream_aac_and_caf_codecs(client):
+    import album_stream
+    tree = client.get("/api/tree").json()
+    album = tree["artists"][0]["children"][0]["path"]
+
+    # AAC live phase: ADTS with audio/aac.
+    r = client.get("/api/album_stream",
+                   params={"path": album, "codec": "aac", "br": 192})
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "audio/aac"
+    assert r.content[0] == 0xFF
+
+    # CAF live phase: Ogg bytes (same Opus packets) until the cache exists.
+    r = client.get("/api/album_stream",
+                   params={"path": album, "codec": "caf", "br": 96})
+    if album_stream.has_libopus():
+        assert r.status_code == 200
+        assert r.content[:4] == b"OggS"
+        # Once cached, the bounded response is the CAF file.
+        cache_dir = server._stream_cache_dir()
+        deadline = time.time() + 30
+        while time.time() < deadline and not album_stream.cache_ready(
+                cache_dir, Path(album), "caf", 96):
+            time.sleep(0.05)
+        r2 = client.get("/api/album_stream",
+                        params={"path": album, "codec": "caf", "br": 96})
+        assert r2.headers["content-type"] == "audio/x-caf"
+        assert r2.headers.get("accept-ranges") == "bytes"
+        assert r2.content[:4] == b"caff"
+    else:
+        assert r.status_code == 400
+
+    # Per-codec bitrate whitelists hold for the new codecs too.
+    assert client.get("/api/album_stream",
+                      params={"path": album, "codec": "aac", "br": 64}).status_code == 400
+    assert client.get("/api/album_stream",
+                      params={"path": album, "codec": "caf", "br": 256}).status_code == 400
+
+
+# ── Native-app API: library manifest + bearer-token auth ─────────────────────
+
+def test_app_manifest_shape_and_reachable_by_guest(client, guest):
+    m = client.get("/api/app/manifest")
+    assert m.status_code == 200
+    data = m.json()
+    assert data["count"] == 1
+    t = data["tracks"][0]
+    for k in ("rel", "path", "album_rel", "size", "sig", "artist", "album",
+              "title", "track", "year", "genre", "duration", "bitrate"):
+        assert k in t, f"missing {k}"
+    assert t["rel"].endswith("Silent Night.mp3")
+    assert not t["rel"].startswith("/")          # rel is the portable id
+    assert t["title"] == "Silent Night"
+    assert "-" in t["sig"]                         # size-mtime change token
+    # Read-only sync surface — LAN guests reach it too.
+    assert guest.get("/api/app/manifest").status_code == 200
+
+
+def test_app_manifest_sig_changes_on_edit(client):
+    before = client.get("/api/app/manifest").json()["tracks"][0]
+    track = before["path"]
+    assert client.post("/api/tags",
+                       json={"path": track, "updates": {"TIT2": "Changed"}}).status_code == 200
+    after = next(t for t in client.get("/api/app/manifest").json()["tracks"]
+                 if t["path"] == track)
+    assert after["sig"] != before["sig"]          # client re-downloads on change
+    assert after["title"] == "Changed"
+
+
+def _proxied(secret, token=None):
+    """Headers of a request arriving through the trusted reverse proxy, optionally
+    carrying a native-client bearer token."""
+    h = {"x-mp3tools-proxy": secret, "x-forwarded-for": "203.0.113.7"}
+    if token:
+        h["authorization"] = "Bearer " + token
+    return h
+
+
+def test_app_bearer_token_auth_flow(client, monkeypatch):
+    import webauth
+    monkeypatch.setattr(server, "REMOTE_MODE", True)
+    monkeypatch.setattr(server, "PROXY_SECRET", "s3cret")
+    webauth.set_password("hunter2")
+
+    # Login through the proxy → token in the body; a new device is pending.
+    login = client.post("/api/auth/login", headers=_proxied("s3cret"),
+                        json={"password": "hunter2", "cid": "app-dev-1",
+                              "device_name": "iPhone"})
+    assert login.status_code == 200
+    tok = login.json()["token"]
+    assert tok and login.json()["role"] == "pending"
+
+    # A pending device can't read the library yet.
+    assert client.get("/api/app/manifest",
+                      headers=_proxied("s3cret", tok)).status_code == 403
+    # A bogus token is anonymous → login required.
+    assert client.get("/api/app/manifest",
+                      headers=_proxied("s3cret", "nope")).status_code == 401
+
+    # Owner approves the device (loopback + no proxy header = owner).
+    assert client.post("/api/admin/access/approve",
+                       json={"cid": "app-dev-1"}).status_code == 200
+
+    # Now the Bearer token reads the manifest as a member.
+    r = client.get("/api/app/manifest", headers=_proxied("s3cret", tok))
+    assert r.status_code == 200 and r.json()["count"] == 1
+    assert client.get("/api/whoami",
+                      headers=_proxied("s3cret", tok)).json()["role"] == "member"
+
+    # Security invariant: an approved remote member is read-only — never mutates.
+    track = r.json()["tracks"][0]["path"]
+    assert client.post("/api/tags", headers=_proxied("s3cret", tok),
+                       json={"path": track, "updates": {"TIT2": "x"}}).status_code == 403

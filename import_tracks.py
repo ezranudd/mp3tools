@@ -21,9 +21,12 @@ from pathlib import Path
 from mutagen import File as _AudioFile
 
 import settings as settings_mod
+import encoding
+import tagio
 from convert_lossless import (
     LOSSLESS_EXTENSIONS, find_lossless, read_lossless_tags,
-    read_cue_tracks, has_lame_header, _has_lame_binary, _lame_pipe_convert,
+    read_cue_tracks, has_lame_header, _has_lame_binary, _lame_pipe,
+    _opus_convert, _valid_opus, _decode_args,
 )
 from chars import (
     extract_year,
@@ -31,7 +34,7 @@ from chars import (
     parse_track,
     sanitize as sanitize_name,
 )
-from standardize import _is_gapless_key
+from standardize import _is_gapless_key, _is_replay_gain_key
 from mutagen.mp3 import MP3 as _MP3Info
 from mutagen.id3 import (
     ID3, ID3NoHeaderError,
@@ -155,24 +158,39 @@ def _conversion_duration(src: Path, start_time: float | None, end_time: float | 
     return total
 
 
-def convert_to_mp3_progress(src: Path, dst: Path, bitrate: int,
-                            start_time: float | None = None,
-                            end_time: float | None = None,
-                            progress=None) -> bool:
-    """Convert src to MP3 and report progress via callback or CLI progress bar.
+def convert_audio_progress(src: Path, dst: Path, profile: encoding.EncodeProfile,
+                           start_time: float | None = None,
+                           end_time: float | None = None,
+                           progress=None) -> bool:
+    """Encode src to *dst* per EncodeProfile *profile*, reporting progress via
+    callback or CLI progress bar. Tags are re-applied by the caller, so the
+    conversion itself need not preserve them.
 
-    Prefers the reference `lame` encoder (via convert_lossless._lame_pipe_convert)
-    so the output carries a correct gapless Xing/LAME header; ffmpeg's own
-    libmp3lame muxer writes dummy encoder delay/padding. The lame pipe can't emit
-    ffmpeg's -progress stream, so progress is reported as indeterminate. Tags are
-    re-applied by the caller, so the conversion itself need not preserve them.
-    """
+    Opus uses ffmpeg libopus (gapless is inherent to Ogg Opus); progress is
+    indeterminate. MP3 prefers the reference `lame` encoder (correct gapless
+    Xing/LAME header) — also indeterminate, since the pipe can't emit ffmpeg's
+    -progress stream — and falls back to ffmpeg libmp3lame (real progress,
+    non-gapless) when `lame` is absent."""
+    if profile.fmt == "opus":
+        if progress:
+            progress(src.name, None)
+        else:
+            print(f"\r    Converting {_progress_bar(0, 1)}", end="", flush=True)
+        ok = _opus_convert(src, dst, profile.opus_bitrate, start_time, end_time)
+        if progress:
+            progress(src.name, 100, done=True)
+        else:
+            print()
+        if ok and not _valid_opus(dst):
+            print(f"    WARNING: {dst.name} did not probe as valid Opus")
+        return ok
+
     if _has_lame_binary():
         if progress:
             progress(src.name, None)
         else:
             print(f"\r    Converting {_progress_bar(0, 1)}", end="", flush=True)
-        ok = _lame_pipe_convert(src, dst, bitrate, start_time, end_time)
+        ok = _lame_pipe(src, dst, profile.lame_args, start_time, end_time)
         if progress:
             progress(src.name, 100, done=True)
         else:
@@ -184,6 +202,10 @@ def convert_to_mp3_progress(src: Path, dst: Path, bitrate: int,
     # Fallback: no `lame` binary — encode with ffmpeg directly (non-gapless).
     print("    NOTE: `lame` not found — using ffmpeg (gapless header will be "
           "incomplete; install lame for gapless output)")
+    if profile.lame_args and profile.lame_args[0] == "-V":
+        rate_args = ["-q:a", str(profile.lame_args[1])]
+    else:  # ("--cbr", "-b", "N")
+        rate_args = ["-b:a", f"{profile.lame_args[-1]}k"]
     duration = _conversion_duration(src, start_time, end_time)
     try:
         cmd = ["ffmpeg", "-hide_banner", "-nostats", "-i", str(src)]
@@ -193,9 +215,12 @@ def convert_to_mp3_progress(src: Path, dst: Path, bitrate: int,
             cmd += ["-to", f"{end_time:.6f}"]
         cmd += [
             "-c:a", "libmp3lame",
-            "-b:a", f"{bitrate}k",
+            *rate_args,
+            "-compression_level", "0",
             "-map", "0:a",
+            *_decode_args(src),
             "-map_metadata", "0",
+            "-id3v2_version", "3",
             "-f", "mp3",
             "-progress", "pipe:1",
             "-y", str(dst),
@@ -256,6 +281,17 @@ def convert_to_mp3_progress(src: Path, dst: Path, bitrate: int,
     except Exception as e:
         print(f"    ERROR: {e}")
         return False
+
+
+def convert_to_mp3_progress(src: Path, dst: Path, bitrate: int,
+                            start_time: float | None = None,
+                            end_time: float | None = None,
+                            progress=None) -> bool:
+    """Back-compat shim: CBR-MP3 convert with progress at *bitrate* kbps. New code
+    calls convert_audio_progress() with an EncodeProfile."""
+    profile = encoding.EncodeProfile("mp3-cbr", "mp3", ".mp3", "",
+                                     lame_args=("--cbr", "-b", str(bitrate)))
+    return convert_audio_progress(src, dst, profile, start_time, end_time, progress)
 
 
 def album_artist_value(tags: ID3 | None) -> str | None:
@@ -439,10 +475,12 @@ def _try_fetch_art(artist: str, album: str, settings: dict, max_size: int) -> tu
         return None
 
 
-def _headless_preview(entries, has_lossless: bool, default_bitrate: int = 320) -> bool:
+def _headless_preview(entries, has_lossless: bool,
+                      default_profile: str = encoding.DEFAULT_PROFILE) -> bool:
     """Non-interactive preview for the CLI (no curses): print a one-line summary per
-    track, default the lossless→MP3 bitrate so those entries survive the post-preview
-    filter, and always proceed. The web UI uses a graphical preview_fn instead."""
+    track, default the lossless encode profile so those entries survive the
+    post-preview filter, and always proceed. The web UI uses a graphical preview_fn
+    instead."""
     print(f"\nImporting {len(entries)} track(s):")
     for path, td in entries:
         num = td.get("TRCK", "") or "?"
@@ -450,10 +488,10 @@ def _headless_preview(entries, has_lossless: bool, default_bitrate: int = 320) -
         artist = td.get("TPE1", "")
         print(f"  {num:>3}. {artist} - {title}".rstrip(" -"))
         if (has_lossless and Path(path).suffix.lower() in LOSSLESS_EXTENSIONS
-                and td.get("_LOSSLESS_BITRATE") is None):
-            td["_LOSSLESS_BITRATE"] = default_bitrate
+                and td.get("_ENCODE_PROFILE") is None):
+            td["_ENCODE_PROFILE"] = default_profile
     if has_lossless:
-        print(f"  (lossless files convert to MP3 at {default_bitrate} kbps)")
+        print(f"  (lossless files convert to {encoding.get(default_profile).label})")
     return True
 
 
@@ -536,9 +574,9 @@ def import_tracks(source: Path, library: Path, dry_run: bool,
     # The web UI always supplies a graphical preview_fn. The CLI has no UI, so it
     # falls back to a non-interactive summary that defaults the lossless bitrate
     # (otherwise those entries are dropped below) and proceeds.
-    default_bitrate = (settings or {}).get("import_bitrate", 320)
+    default_profile = (settings or {}).get("import_profile", encoding.DEFAULT_PROFILE)
     _preview = preview_fn or (lambda elist, has_loss: _headless_preview(
-        elist, has_loss, default_bitrate))
+        elist, has_loss, default_profile))
     proceed = _preview(entries, bool(all_lossless))
     if not proceed:
         print("\nImport aborted.")
@@ -553,7 +591,7 @@ def import_tracks(source: Path, library: Path, dry_run: bool,
     if all_lossless:
         entries = [(src, td) for src, td in entries
                    if src.suffix.lower() not in LOSSLESS_EXTENSIONS
-                   or td.get("_LOSSLESS_BITRATE") is not None]
+                   or td.get("_ENCODE_PROFILE") is not None]
 
     # Re-normalize in case the user edited tags in the preview
     _normalize_entries(entries)
@@ -696,20 +734,21 @@ def import_tracks(source: Path, library: Path, dry_run: bool,
         # ── Copy new files ─────────────────────────────────────────────────────
         for i, (src, td) in enumerate(group_sorted, offset + 1):
           try:
+            is_lossless = src.suffix.lower() in LOSSLESS_EXTENSIONS
+            profile     = encoding.get(td.get("_ENCODE_PROFILE"))
+            out_ext     = profile.ext if is_lossless else ".mp3"
             artist_safe = sanitize_name(td.get("TPE1") or artist_tag)
             title_safe  = sanitize_name(td.get("TIT2") or src.stem)
-            new_name    = f"{str(i).zfill(width)}. {artist_safe} - {title_safe}.mp3"
+            new_name    = f"{str(i).zfill(width)}. {artist_safe} - {title_safe}{out_ext}"
             dest_path   = dest_folder / new_name
-            is_lossless = src.suffix.lower() in LOSSLESS_EXTENSIONS
 
             if dest_path.exists():
                 print(f"  SKIP (file exists): {new_name}")
                 stats["skipped"] += 1
                 continue
 
-            lossless_bitrate = td.get("_LOSSLESS_BITRATE") or 320
-            lossless_label = (f" [{lossless_bitrate} kbps]" if is_lossless and lossless_bitrate
-                              else (" [lossless → MP3]" if is_lossless else ""))
+            lossless_label = (f" [{profile.label}]" if is_lossless
+                              else "")
             print(f"  {src.parent.name}/{src.name}{lossless_label}")
             print(f"    → {new_name}")
 
@@ -722,9 +761,9 @@ def import_tracks(source: Path, library: Path, dry_run: bool,
                 if is_lossless:
                     cue_start = td.get("_CUE_START")
                     cue_end   = td.get("_CUE_END")
-                    if not convert_to_mp3_progress(src, tmp_path, lossless_bitrate,
-                                                   cue_start, cue_end,
-                                                   progress=_conv):
+                    if not convert_audio_progress(src, tmp_path, profile,
+                                                  cue_start, cue_end,
+                                                  progress=_conv):
                         stats["errors"] += 1
                         if tmp_path.exists():
                             tmp_path.unlink()
@@ -732,33 +771,63 @@ def import_tracks(source: Path, library: Path, dry_run: bool,
                 else:
                     shutil.copy2(src, tmp_path)
 
-                try:
-                    dtags = load_id3(tmp_path)
-                except ID3NoHeaderError:
-                    dtags = ID3()
+                if out_ext == ".mp3":
+                    try:
+                        dtags = load_id3(tmp_path)
+                    except ID3NoHeaderError:
+                        dtags = ID3()
 
-                keep_gapless = bool(settings and settings.get("preserve_gapless"))
-                for key in list(dtags.keys()):
-                    if key[:4] not in KEEP_TAGS and not (keep_gapless and _is_gapless_key(key)):
-                        del dtags[key]
+                    # Honor the same preserve_* library settings as standardize
+                    # step 4, so an import doesn't strip tags the owner chose to keep.
+                    keep_gapless     = bool(settings and settings.get("preserve_gapless"))
+                    keep_replay_gain = bool(settings and settings.get("preserve_replay_gain"))
+                    keep_tcmp        = bool(settings and settings.get("preserve_tcmp"))
+                    keep_tpos        = bool(settings and settings.get("preserve_disc_numbers"))
+                    keep = KEEP_TAGS | ({"TPOS"} if keep_tpos else set())
+                    for key in list(dtags.keys()):
+                        if (key[:4] not in keep
+                                and not (keep_gapless and _is_gapless_key(key))
+                                and not (keep_replay_gain and _is_replay_gain_key(key))
+                                and not (keep_tcmp and key == "TCMP")):
+                            del dtags[key]
 
-                dtags["TPE1"] = TPE1(encoding=1, text=td.get("TPE1") or artist_tag)
-                set_album_artist(dtags, td.get("ALBUMARTIST") or album_artist_tag)
-                dtags["TIT2"] = TIT2(encoding=1, text=td.get("TIT2") or src.stem)
-                dtags["TALB"] = TALB(encoding=1, text=album_tag)
-                dtags["TYER"] = TYER(encoding=1, text=year_tag)
-                dtags["TRCK"] = TRCK(encoding=1,
-                    text=f"{str(i).zfill(width)}/{total}")
-                if td.get("TCON"):
-                    dtags["TCON"] = TCON(encoding=1, text=td["TCON"])
-                if cover_apic_data:
-                    apic_data, apic_mime = cover_apic_data
-                    dtags["APIC:"] = APIC(
-                        encoding=3, mime=apic_mime, type=3, desc="", data=apic_data,
-                    )
+                    dtags["TPE1"] = TPE1(encoding=1, text=td.get("TPE1") or artist_tag)
+                    set_album_artist(dtags, td.get("ALBUMARTIST") or album_artist_tag)
+                    dtags["TIT2"] = TIT2(encoding=1, text=td.get("TIT2") or src.stem)
+                    dtags["TALB"] = TALB(encoding=1, text=album_tag)
+                    dtags["TYER"] = TYER(encoding=1, text=year_tag)
+                    dtags["TRCK"] = TRCK(encoding=1,
+                        text=f"{str(i).zfill(width)}/{total}")
+                    if td.get("TCON"):
+                        dtags["TCON"] = TCON(encoding=1, text=td["TCON"])
+                    if cover_apic_data:
+                        apic_data, apic_mime = cover_apic_data
+                        dtags["APIC:"] = APIC(
+                            encoding=3, mime=apic_mime, type=3, desc="", data=apic_data,
+                        )
 
-                dtags.save(tmp_path, v2_version=3, v1=0)
-                tmp_path.rename(dest_path)
+                    dtags.save(tmp_path, v2_version=3, v1=0)
+                    tmp_path.rename(dest_path)
+                else:
+                    # Non-MP3 output (Opus): tags/cover go through the
+                    # format-agnostic tagio interface. The freshly-encoded file is
+                    # tagless (the converter doesn't copy source tags), so there is
+                    # no preserve_* step — the tags below are authoritative. Rename
+                    # first so tagio dispatches on the real .opus extension.
+                    tmp_path.rename(dest_path)
+                    audio = tagio.open_audio(dest_path)
+                    audio.write({
+                        "artist":       td.get("TPE1") or artist_tag,
+                        "album_artist": td.get("ALBUMARTIST") or album_artist_tag,
+                        "title":        td.get("TIT2") or src.stem,
+                        "album":        album_tag,
+                        "date":         year_tag,
+                        "genre":        td.get("TCON") or None,
+                        "track":        f"{str(i).zfill(width)}/{total}",
+                    })
+                    if cover_apic_data:
+                        apic_data, apic_mime = cover_apic_data
+                        audio.set_cover(apic_data, apic_mime)
                 stats["copied"] += 1
 
             except BaseException as e:

@@ -377,7 +377,8 @@ def _opus_convert(src: Path, dst: Path, bitrate: int,
         if end_time is not None:
             cmd += ["-to", f"{end_time:.6f}"]
         cmd += ["-map", "0:a", "-c:a", "libopus",
-                "-b:a", f"{bitrate}k", "-vbr", "on", "-y", str(dst)]
+                "-b:a", f"{bitrate}k", "-vbr", "on",
+                "-f", "opus", "-y", str(dst)]  # force the muxer: dst may be *.part
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
             print(f"    ffmpeg error: {result.stderr[-300:].strip()}")
@@ -555,10 +556,16 @@ def read_cue_tracks(flac_path: Path) -> list[tuple[Path, dict]] | None:
     return result
 
 
-def step_convert_lossless(root: Path, dry_run: bool, *, ask_choice=None) -> dict:
+def step_convert_lossless(root: Path, dry_run: bool, *,
+                          ask_choice=None, profile=None) -> dict:
     """
-    Step 0 for standardize: find FLAC/ALAC files in root, prompt for bitrate,
-    convert each to MP3 in-place, and delete the original.
+    Step 0 for standardize: find FLAC/ALAC files in root, convert each to the
+    chosen encoding profile in-place, and delete the original.
+
+    *profile* (a profile id or EncodeProfile) is the non-interactive choice used
+    by the web/job flow, which passes the library's import_profile — so a
+    standardize run can produce Opus. With no profile the CLI prompts for an MP3
+    bitrate (prompt_bitrate), preserving the historical interactive behaviour.
     """
     print(f"\n{'=' * 60}")
     print("Step 0: Convert lossless files (FLAC/ALAC)")
@@ -579,7 +586,7 @@ def step_convert_lossless(root: Path, dry_run: bool, *, ask_choice=None) -> dict
     print()
 
     if dry_run:
-        print("  (dry run) Would prompt to convert at 192 / 256 / 320 kbps.")
+        print("  (dry run) Would convert the lossless files to the chosen profile.")
         return {"converted": len(lossless), "errors": 0}
 
     if not _has_ffmpeg():
@@ -587,20 +594,25 @@ def step_convert_lossless(root: Path, dry_run: bool, *, ask_choice=None) -> dict
         print("  Skipping lossless conversion.")
         return {"converted": 0, "errors": len(lossless)}
 
-    bitrate = prompt_bitrate(ask_choice=ask_choice)
-    if bitrate is None:
-        print("  Skipped.")
-        return {"converted": 0, "errors": 0}
+    if profile is not None:
+        prof = encoding.get(profile) if isinstance(profile, str) else profile
+    else:
+        bitrate = prompt_bitrate(ask_choice=ask_choice)
+        if bitrate is None:
+            print("  Skipped.")
+            return {"converted": 0, "errors": 0}
+        prof = EncodeProfile("mp3-cbr", "mp3", ".mp3", "",
+                             lame_args=("--cbr", "-b", str(bitrate)))
 
     stats = {"converted": 0, "errors": 0}
     for src in lossless:
-        dst = src.with_suffix(".mp3")
+        dst = src.with_suffix(prof.ext)
         if dst.exists():
             print(f"  SKIP {src.name} — {dst.name} already exists")
             stats["errors"] += 1
             continue
-        print(f"  {src.name}  ->  {dst.name}  [{bitrate} kbps]")
-        if convert_to_mp3(src, dst, bitrate):
+        print(f"  {src.name}  ->  {dst.name}  [{prof.label or prof.fmt}]")
+        if convert_audio(src, dst, prof):
             src.unlink()
             stats["converted"] += 1
         else:
