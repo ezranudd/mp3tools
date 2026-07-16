@@ -222,6 +222,21 @@ def test_settings_roundtrip(client):
     assert client.get("/api/settings").json()["cover_art"] == "both"
 
 
+def test_settings_exposes_encoding_profiles(client):
+    cfg = client.get("/api/settings").json()
+    assert cfg["import_profile"] == "opus-128"                 # fresh-install default
+    assert [p["id"] for p in cfg["encoding_profiles"]] == [
+        "opus-160", "opus-128", "opus-96", "opus-64", "mp3-v0", "mp3-320"]
+
+
+def test_settings_import_profile_roundtrip(client):
+    client.post("/api/settings", json={"import_profile": "mp3-320"})
+    assert client.get("/api/settings").json()["import_profile"] == "mp3-320"
+    # An invalid profile falls back to the default on load.
+    client.post("/api/settings", json={"import_profile": "bogus"})
+    assert client.get("/api/settings").json()["import_profile"] == "opus-128"
+
+
 def test_theme_accent_setting(client):
     assert client.get("/api/settings").json()["theme_accent_from_art"] is False
     client.post("/api/settings", json={"theme_accent_from_art": True})

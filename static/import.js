@@ -4,7 +4,26 @@ import { startJob, mountJobPane, setPreviewRenderer, disableWhileBusy, isBusy } 
 import { toast, escapeHtml, escapeAttr, openModal, closeModal, enableRowDrag } from "./util.js";
 
 const CONFIDENT_SCORE = 140;                 // mirrors fetch_art.CONFIDENT_MATCH_SCORE
-const BITRATES = [128, 160, 192, 256, 320];
+// The encode-profile registry, delivered in the import preview payload
+// (p.profiles). Set when the preview renders; used to build the grouped picker.
+let PROFILES = [];
+const FMT_GROUP = { opus: "Opus", mp3: "MP3" };
+
+// Build a <select data-profile> grouped by format (Opus group, then MP3),
+// preselecting `selected`.
+function profileSelect(selected) {
+  const groups = [];
+  for (const p of PROFILES) {
+    let g = groups.find(x => x.fmt === p.fmt);
+    if (!g) { g = { fmt: p.fmt, items: [] }; groups.push(g); }
+    g.items.push(p);
+  }
+  const opts = groups.map(g =>
+    `<optgroup label="${FMT_GROUP[g.fmt] || g.fmt}">${g.items.map(p =>
+      `<option value="${p.id}" ${p.id === selected ? "selected" : ""}>${escapeHtml(p.label)}</option>`
+    ).join("")}</optgroup>`).join("");
+  return `<select data-profile>${opts}</select>`;
+}
 const REQUIRED_ALBUM = ["album", "albumartist", "year"];
 
 const AUDIO_EXTS = [".mp3", ".flac", ".m4a", ".alac"];
@@ -25,7 +44,7 @@ export function show(el) {
   el.innerHTML = `<div class="page">
     <h2>Import</h2>
     <p class="muted">Drop music folders below (or use a server path). You'll review and
-      edit every album graphically — tags, cover art, and lossless bitrate — before
+      edit every album graphically — tags, cover art, and encode profile — before
       anything is copied.</p>
 
     <div id="dropZone" class="dropzone">
@@ -180,7 +199,7 @@ function readAllEntries(reader) {
 // Registered with jobs.js: render the preview prompt inline in the Import view.
 // Returns {proceed, entries} | {proceed:false}, or null to fall back to the modal
 // (e.g. when no host view is currently mounted). Fully graphical: tags, cover art
-// (auto-searched in the background), and lossless bitrate are all edited here.
+// (auto-searched in the background), and encode profile are all edited here.
 // The host is whichever mounted view (Import or Rip) carries an #importPreview div;
 // it is looked up document-wide so the same renderer drives both views.
 export function renderImportPreview(p) {
@@ -199,13 +218,14 @@ export function renderImportPreview(p) {
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(e);
   }
+  PROFILES = p.profiles || [];
   const albums = [...groups.values()].map((rows, idx) => {
     rows.sort((a, b) => a.i - b.i);   // preserve server discovery order
     return ({
     idx, folder: rows[0].src.slice(0, rows[0].src.lastIndexOf("/")), rows,
     hasLossless: rows.some(r => r.lossless),
     hasConflict: rows.some(r => r.conflict),
-    bitrate: p.default_bitrate || 320,
+    profile: p.default_profile || "opus-128",
     conflict: "add",
     // art.mode: "source" (keep folder cover) | "url" (chosen/found) | "none" (placeholder)
     art: { mode: "source", url: null, results: null, state: "init" },
@@ -214,7 +234,7 @@ export function renderImportPreview(p) {
 
   host.innerHTML = `<div class="importpreview">
     <h3>Review import — ${albums.length} album${albums.length === 1 ? "" : "s"}</h3>
-    <p class="muted">Edit tags, cover art and bitrate. Track order sets the numbering.</p>
+    <p class="muted">Edit tags, cover art and encode profile. Track order sets the numbering.</p>
     ${albums.map(renderSection).join("")}
     <div class="previewactions">
       <button class="btn" data-cancel>Cancel</button>
@@ -246,9 +266,8 @@ function renderSection(album) {
       <td><input class="tag" data-f="artist" value="${escapeAttr(e.artist)}"></td>
     </tr>`).join("");
   const bitrate = album.hasLossless ? `
-    <label class="muted" style="display:flex;align-items:center;gap:6px">Bitrate
-      <select data-bitrate>${BITRATES.map(b =>
-        `<option value="${b}" ${b === album.bitrate ? "selected" : ""}>${b} kbps</option>`).join("")}</select>
+    <label class="muted" style="display:flex;align-items:center;gap:6px">Encode
+      ${profileSelect(album.profile)}
     </label>` : "";
   const conflict = album.hasConflict ? `
     <label class="warn" style="display:flex;align-items:center;gap:6px" title="This album already exists in the library">
@@ -315,8 +334,8 @@ function wireSection(host, album) {
   enableRowDrag(tbody, () => {
     tbody.querySelectorAll("tr .num").forEach((s, n) => s.textContent = n + 1);
   });
-  const br = sec.querySelector("[data-bitrate]");
-  if (br) br.onchange = () => { album.bitrate = parseInt(br.value, 10); };
+  const pr = sec.querySelector("[data-profile]");
+  if (pr) pr.onchange = () => { album.profile = pr.value; };
   const cf = sec.querySelector("[data-conflict]");
   if (cf) cf.onchange = () => { album.conflict = cf.value; };
 
@@ -476,7 +495,7 @@ function collectEntries(host, albums) {
         i: Number(tr.dataset.i),
         album: alb.album, albumartist: alb.albumartist, year: alb.year, genre: alb.genre,
         conflict: album.hasConflict ? album.conflict : undefined,
-        ...(album.hasLossless ? { bitrate: album.bitrate } : {}),
+        ...(album.hasLossless ? { profile: album.profile } : {}),
         ...art,
       };
       tr.querySelectorAll("input[data-f]").forEach(inp => row[inp.dataset.f] = inp.value);

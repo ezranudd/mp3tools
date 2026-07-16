@@ -45,6 +45,24 @@ function checkbox(key, label, checked) {
     <input type="checkbox" class="toggle" data-bool="${escapeAttr(key)}" ${checked ? "checked" : ""}></div>`;
 }
 
+const FMT_GROUP = { opus: "Opus", mp3: "MP3" };
+
+// <select id="import_profile"> grouped by format (Opus, then MP3), from the
+// server-provided registry (cfg.encoding_profiles), preselecting `selected`.
+function profileSelect(profiles, selected) {
+  const groups = [];
+  for (const p of profiles) {
+    let g = groups.find(x => x.fmt === p.fmt);
+    if (!g) { g = { fmt: p.fmt, items: [] }; groups.push(g); }
+    g.items.push(p);
+  }
+  const opts = groups.map(g =>
+    `<optgroup label="${FMT_GROUP[g.fmt] || g.fmt}">${g.items.map(p =>
+      `<option value="${p.id}" ${p.id === selected ? "selected" : ""}>${escapeHtml(p.label)}</option>`
+    ).join("")}</optgroup>`).join("");
+  return `<select id="import_profile" style="width:280px">${opts}</select>`;
+}
+
 // Accent-color picker: preset swatches + a native custom-color swatch.
 function accentSwatches() {
   const cur = selectedAccent.toLowerCase();
@@ -100,6 +118,8 @@ function render() {
 
     <div class="card"><h4>Standardize / Import</h4>
       ${BOOLS.map(([k, l]) => checkbox(k, l, cfg[k])).join("")}
+      <div class="field"><label>Import encode profile (lossless → …)</label>
+        ${profileSelect(cfg.encoding_profiles || [], cfg.import_profile || "opus-128")}</div>
     </div>
 
     <div class="card"><h4>Artwork sources</h4>
@@ -209,6 +229,7 @@ async function save() {
     background_fit: container.querySelector("#bg_fit").value,
     background_readable: container.querySelector("#bg_readable").checked,
     theme_accent_color: selectedAccent,
+    import_profile: container.querySelector("#import_profile").value,
   };
   container.querySelectorAll("[data-bool]").forEach(c => body[c.dataset.bool] = c.checked);
   container.querySelectorAll("[data-src]").forEach(c => body.art_sources[c.dataset.src] = c.checked);

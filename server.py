@@ -35,6 +35,7 @@ import audit
 import browse
 import fetch_art
 import rip_cd
+import encoding
 import settings as settings_mod
 import sync_library as sync
 import webauth
@@ -433,6 +434,25 @@ def _real_client_ip(request: Request) -> str:
     return client.host if client is not None else "local"
 
 
+def _bearer_token(request: Request) -> str | None:
+    """The token from an `Authorization: Bearer <token>` header, if present.
+    Native clients (the iOS app) carry the session token this way instead of the
+    browser cookie; it resolves through the same webauth session table + device
+    whitelist, so a token only ever elevates to member/pending (never owner) and
+    only on a trusted-proxied request — identical trust to the cookie."""
+    auth = request.headers.get("authorization", "")
+    if auth[:7].lower() == "bearer ":
+        tok = auth[7:].strip()
+        return tok or None
+    return None
+
+
+def _session_token(request: Request) -> str | None:
+    """The session token for this request from either transport: the bearer
+    header (native app) or the cookie (browser)."""
+    return _bearer_token(request) or request.cookies.get(webauth.COOKIE_NAME)
+
+
 def _role(request: Request) -> str:
     """'owner' | 'member' | 'pending' | 'blocked' | 'lan' | 'anonymous'.
     Library/UI gating keys off this. When REMOTE_MODE is off there are no proxied
@@ -440,7 +460,7 @@ def _role(request: Request) -> str:
     if _is_owner(request):
         return "owner"
     if _via_proxy(request):
-        return webauth.resolve(request.cookies.get(webauth.COOKIE_NAME))
+        return webauth.resolve(_session_token(request))
     return "lan"                         # direct non-loopback client (LAN guest)
 
 
@@ -500,7 +520,7 @@ _GUEST_GET_PATHS = frozenset({
     "/api/collections", "/api/collection",
     "/api/track", "/api/album_stream", "/api/album_manifest",
     "/api/cover", "/api/background", "/api/settings",
-    "/api/whoami",
+    "/api/whoami", "/api/app/manifest",
 })
 
 
@@ -627,6 +647,10 @@ def api_whoami(request: Request, cid: str = Query(None)) -> JSONResponse:
         # Only meaningful in remote mode; lets the login screen warn if the owner
         # enabled --remote but never set a password.
         "password_set": webauth.password_set() if REMOTE_MODE else False,
+        # Server capability: whether the transcoded album stream can use Opus.
+        # The client resolves its stream codec from this + canPlayType, so the
+        # player's encoding indicator always reflects what's actually served.
+        "stream_opus": album_stream.has_libopus(),
     })
 
 
@@ -661,7 +685,10 @@ def api_login(request: Request, body: dict) -> JSONResponse:
     state = webauth.register_pending(cid, ip, name)   # unknown → pending
     token = webauth.create_session(cid, ip)
     role = "member" if state == "approved" else "pending"
-    resp = JSONResponse({"role": role})
+    # Return the token in the body for native clients (the iOS app stores it in
+    # the Keychain and sends it as a Bearer header). Browsers ignore this field
+    # and rely on the HttpOnly cookie below — the cookie is never exposed to JS.
+    resp = JSONResponse({"role": role, "token": token})
     resp.set_cookie(webauth.COOKIE_NAME, token, max_age=webauth.SESSION_TTL,
                     httponly=True, secure=True, samesite="strict", path="/")
     return resp
@@ -669,7 +696,7 @@ def api_login(request: Request, body: dict) -> JSONResponse:
 
 @app.post("/api/auth/logout")
 def api_logout(request: Request) -> JSONResponse:
-    webauth.destroy_session(request.cookies.get(webauth.COOKIE_NAME))
+    webauth.destroy_session(_session_token(request))
     resp = JSONResponse({"ok": True})
     resp.delete_cookie(webauth.COOKIE_NAME, path="/")
     return resp
@@ -682,6 +709,16 @@ def api_tree() -> JSONResponse:
         "root": str(ROOT),
         "artists": [_node_json(a) for a in artists],
     })
+
+
+@app.get("/api/app/manifest")
+def api_app_manifest() -> JSONResponse:
+    """Whole-library manifest for the native client's offline-first sync: one
+    entry per track with a change signature + tags (see browse.library_manifest).
+    Read-only; reachable by LAN guests and approved remote members. A large
+    library yields a multi-MB payload — this is a periodic sync call, not a
+    per-navigation one."""
+    return JSONResponse(browse.library_manifest(ROOT))
 
 
 # ── Album / tracks ────────────────────────────────────────────────────────────
@@ -810,26 +847,97 @@ def _album_dir(path: str) -> Path:
     return album
 
 
+# codec -> (bitrate whitelist, live-stream mime, cached-file mime). The two
+# mimes differ where the live pipe and the cache use different containers:
+# aac pipes raw ADTS but caches .m4a; caf can't pipe (variable packet table
+# needs a seekable output) so its live phase streams the same Opus in Ogg.
+_STREAM_CODECS = {
+    "mp3":  (frozenset((128, 160, 192, 256, 320)), "audio/mpeg", "audio/mpeg"),
+    "opus": (frozenset((64, 96, 128, 160, 192)), "audio/ogg", "audio/ogg"),
+    "aac":  (frozenset((96, 128, 160, 192, 256)), "audio/aac", "audio/mp4"),
+    "caf":  (frozenset((64, 96, 128, 160, 192)), "audio/ogg", "audio/x-caf"),
+}
+
+
+def _stream_cache_dir() -> Path:
+    return settings_mod.settings_dir(ROOT) / "stream_cache"
+
+
+def _valid_transcode(codec: str, br: int) -> tuple[str, str]:
+    """Validate a transcode request; returns (live mime, cached-file mime)."""
+    bitrates, live_mime, file_mime = _STREAM_CODECS[codec]
+    if br not in bitrates:
+        raise HTTPException(status_code=400, detail="bad bitrate")
+    if codec in ("opus", "caf") and not album_stream.has_libopus():
+        raise HTTPException(status_code=400, detail="opus not available")
+    return live_mime, file_mime
+
+
 @app.get("/api/album_manifest")
-def api_album_manifest(path: str = Query(...)) -> JSONResponse:
+def api_album_manifest(path: str = Query(...), codec: str = Query("wav"),
+                       br: int = Query(0)) -> JSONResponse:
     """Per-track time offsets within the gapless stream — the client shim uses
-    these to fake per-track seek/next/prev/metadata over the single resource."""
-    return JSONResponse(album_stream.manifest(_album_dir(path)))
+    these to fake per-track seek/next/prev/metadata over the single resource.
+
+    With codec=opus|mp3 (+br) it also reports stream_ready — whether the cached
+    bounded transcode exists — and pre-warms the cache when it doesn't, so the
+    reliable Range-seekable variant is available as early as possible."""
+    album = _album_dir(path)
+    data = album_stream.manifest(album)
+    if codec in _STREAM_CODECS:
+        _valid_transcode(codec, br)
+        ready = album_stream.cache_ready(_stream_cache_dir(), album, codec, br)
+        if not ready:
+            album_stream.start_cache_encode(_stream_cache_dir(), album, codec, br)
+        data["stream_ready"] = ready
+    return JSONResponse(data)
 
 
 @app.get("/api/album_stream")
 def api_album_stream(request: Request, path: str = Query(...),
-                     cid: str = Query(None)) -> StreamingResponse:
-    """The whole album as one continuous, gapless WAV (PCM) stream for the
-    mobile player's 'stream mode'. Range-seekable (PCM is constant-rate, so byte
-    ↔ time is linear); we serve ranges ourselves since StreamingResponse, unlike
-    FileResponse, doesn't."""
+                     cid: str = Query(None), codec: str = Query("wav"),
+                     t: float = Query(0.0),
+                     br: int = Query(192)) -> StreamingResponse:
+    """The whole album as one continuous, gapless stream for the mobile
+    player's 'stream mode'.
+
+    codec=wav (default): PCM/WAV, Range-seekable (constant-rate, so byte ↔ time
+    is linear); we serve ranges ourselves since StreamingResponse, unlike
+    FileResponse, doesn't. codec=opus|mp3: the same gapless PCM re-encoded at
+    *br* kbps — a fraction of the bandwidth for remote/cellular clients. Once
+    the background cache encode has finished, the transcode is served as a
+    bounded Range-seekable file (FileResponse), which is what iOS needs for
+    reliable locked-screen playback + lock-screen duration/scrubbing; before
+    that it streams live from the encoder starting at second *t* (the client
+    seeks that unbounded variant by reopening at a new t). The client picks the
+    codec from its own playback support plus whoami's stream_opus capability
+    flag, so opus-without-libopus is a 400, not a silent fallback."""
     album = _album_dir(path)
     lay = album_stream.layout(album)
     total = lay["content_length"]
     if total <= album_stream._WAV_HEADER_SIZE:
         raise HTTPException(status_code=404, detail="album has no playable tracks")
     _touch_presence(request, cid, track_path=str(album))
+
+    if codec in _STREAM_CODECS:
+        live_mime, file_mime = _valid_transcode(codec, br)
+        cache_dir = _stream_cache_dir()
+        cached = album_stream.cache_path(cache_dir, album, codec, br)
+        if cached.is_file() and t <= 0:
+            try:
+                os.utime(cached)                 # LRU touch for prune_cache
+            except OSError:
+                pass
+            return FileResponse(cached, media_type=file_mime,
+                                headers={"Cache-Control": "no-store"})
+        album_stream.start_cache_encode(cache_dir, album, codec, br)
+        return StreamingResponse(
+            album_stream.iter_encoded(album, max(0.0, t), codec, br),
+            media_type=live_mime,
+            headers={"Accept-Ranges": "none", "Cache-Control": "no-store"},
+        )
+    if codec != "wav":
+        raise HTTPException(status_code=400, detail="bad codec")
 
     rng = request.headers.get("range")
     start, end, status = 0, total - 1, 200
@@ -1337,6 +1445,9 @@ def _settings_response() -> dict:
     bg = _bg_file()
     cfg["background_present"] = bg.is_file()
     cfg["background_version"] = int(bg.stat().st_mtime) if bg.is_file() else 0
+    # The encode-profile registry for the settings UI (read-only; not persisted —
+    # save() only writes keys present in settings.DEFAULTS).
+    cfg["encoding_profiles"] = encoding.profiles_json()
     return cfg
 
 
