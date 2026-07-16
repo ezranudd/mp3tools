@@ -99,8 +99,6 @@ DEFAULTS: dict = {
 
 _HEX_RE = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
 
-_VALID_BITRATES = frozenset((128, 160, 192, 256, 320))
-
 _VALID_COVER_ART = frozenset(("folder", "embed", "both"))
 _VALID_ART_SOURCES = frozenset(ART_SOURCE_ORDER)
 _VALID_BACKGROUND_FIT = frozenset(("cover", "contain", "tile"))

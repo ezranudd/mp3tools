@@ -64,7 +64,14 @@ The left nav switches between views:
 
 - **Browse** — the library by **Artists**, **Genres**, or **Albums**, with a
   built-in gapless player (plus an opt-in gapless streaming mode for phones,
-  under the header gear). Flip the header toggle to **Edit** mode to change
+  under the header gear, with a per-device stream-quality choice: lossless WAV,
+  a high-quality tier (Opus 160k / AAC 192k on Apple devices), a low-data tier
+  (Opus 96k / AAC 128k), or MP3 256k — the player bar always shows what's
+  actually streaming, and an experimental toggle serves Opus in Apple's CAF
+  container instead of AAC. Transcodes are cached server-side — pre-warmed the
+  moment you open an album — and served as seekable files once ready, so
+  locked-screen playback, lock-screen duration, and scrubbing work like the
+  WAV stream; until then the stream plays as WAV). Flip the header toggle to **Edit** mode to change
   anything in place: track titles/artists and album title/artist/year/genre
   auto-save as you edit, drag tracks to reorder (files are renumbered on disk),
   delete tracks or whole albums, and click the cover to search online sources,
@@ -74,11 +81,11 @@ The left nav switches between views:
 - **Access** — owner-only (remote mode): set the shared access password and
   approve, rename, or block the devices that have logged in.
 - **Audit** — read-only compliance scan, grouped by album with category labels.
-- **Standardize** — runs the full pipeline using your saved Settings. Interactive
-  steps (fill missing tags, confirm deletions, choose lossless bitrate) prompt
-  right in the browser.
+- **Standardize** — runs the full pipeline using your saved Settings, converting
+  any lossless files to the library's default [encoding profile](#encoding-profiles).
+  Interactive steps (fill missing tags, confirm deletions) prompt right in the browser.
 - **Import** — copy tracks from a dragged-in folder (or a server-side path) into
-  the library; review an editable preview (tags, cover art, lossless bitrate),
+  the library; review an editable preview (tags, cover art, [encode profile](#encoding-profiles)),
   then import.
 - **Import CD** — rip the disc in the server's optical drive to FLAC, look up
   metadata (MusicBrainz → gnudb → CD-Text), then review the same editable import
@@ -147,7 +154,7 @@ Runs up to 15 sequential fix steps. The core 13 steps always run; optional steps
 
 | Step | Name | Notes |
 |------|------|-------|
-| 0    | Convert lossless files | FLAC/ALAC → gapless MP3 (ffmpeg decode → lame encode; falls back to ffmpeg if lame is missing) |
+| 0    | Convert lossless files | FLAC/ALAC → the chosen [encoding profile](#encoding-profiles) (Opus, or gapless MP3 via ffmpeg decode → lame encode) |
 | 1    | Merge disc subfolders | Flattens CD1/CD2/… into the album folder, renumbers tracks |
 | 2    | Fix missing tags | Auto-fills Year from folder name; prompts for Album, Genre, Title |
 | 3    | Enforce ID3v2.3 | Strips ID3v1, downgrades ID3v2.4, converts TDRC→TYER |
@@ -180,9 +187,34 @@ Copies tracks from a source directory into the library:
 
 - Reads existing tags or infers them from filenames
 - Normalizes and sanitizes all tag values
-- Optionally converts FLAC/ALAC source files to gapless MP3 (ffmpeg decode → lame encode)
-- In the browser, shows an editable preview (tags, cover art, lossless bitrate)
+- Optionally converts FLAC/ALAC source files to the chosen [encoding profile](#encoding-profiles)
+  (Opus, or gapless MP3); lossy sources are copied as-is, never re-encoded
+- In the browser, shows an editable preview (tags, cover art, encode profile)
   before writing; on the CLI, prints a summary and proceeds non-interactively
+
+### Encoding profiles
+
+New lossless→lossy encodes (import and standardize step 0) are driven by named
+**encoding profiles** in `encoding.py`, chosen per album in the import preview or
+set as the library default in Settings (default **Opus 128**):
+
+| Profile | Format | Encoder | Use |
+|---------|--------|---------|-----|
+| Opus 160 | Opus | libopus VBR 160k | paranoid transparent |
+| Opus 128 | Opus | libopus VBR 128k | transparent (default) |
+| Opus 96  | Opus | libopus VBR 96k  | space saving (music) |
+| Opus 64  | Opus | libopus VBR 64k  | recordings / spoken word |
+| MP3 V0   | MP3  | lame `-V 0`      | transparent (default MP3) |
+| MP3 320  | MP3  | lame `--cbr -b 320` | maximum compatibility |
+
+Opus is the default because it is the best quality-per-byte at these sizes on
+modern players and Rockbox targets, and its Ogg container makes gapless inherent
+(pre-skip/end-trim are part of the format). The MP3 profiles remain for
+maximum-compatibility targets — encoded through the reference `lame` pipe so the
+LAME/Xing header carries real encoder delay/padding for gapless playback (V0 as
+well as CBR). Encode sources are always lossless (FLAC/ALAC/WAV); there is no
+lossy→lossy path. Because new imports default to Opus, libraries become mixed
+`.mp3`/`.opus` over time — audit and standardize treat both as first-class.
 
 ### CD Ripping (`rip_cd.py`)
 
@@ -226,6 +258,11 @@ Mirrors selected artist folders to a target device path. Auto-detects mounted
 devices, builds a copy/delete plan against the device, and applies it. Driven
 from the **Sync** view.
 
+> **Scope:** sync targets players that read a plain folder tree from mass
+> storage — Hiby and similar DAPs, Rockbox'd iPods, SD cards, USB drives.
+> Stock-firmware iPods are *not* supported: they ignore the file tree and
+> require an iTunesDB written by iTunes/gtkpod.
+
 ## Library Standard
 
 All files are required to comply with the rules in `standard.md`, which covers:
@@ -260,7 +297,8 @@ All files are required to comply with the rules in `standard.md`, which covers:
 | `sync_library.py`    | Device detection, sync planning, and mirroring               |
 | `fetch_art.py`       | Multi-source artwork search and download                     |
 | `rip_cd.py`          | CD ripping, disc ID, and metadata lookup                     |
-| `convert_lossless.py`| FLAC/ALAC → gapless MP3 (ffmpeg decode → lame encode)        |
+| `encoding.py`        | Named encode-profile registry (Opus + MP3); the single source of truth for lossless→lossy encodes |
+| `convert_lossless.py`| FLAC/ALAC → the chosen encode profile (Opus via libopus; gapless MP3 via ffmpeg decode → lame encode) |
 | `settings.py`        | Per-library settings (JSON stored as `{root}/.mp3tools`)     |
 | `chars.py`           | Shared character-normalization table                         |
 
