@@ -22,13 +22,18 @@ YEAR = "2024"
 
 def clean_album(root, artist=ARTIST, album=ALBUM, year=YEAR, n=2, cover=True,
                 folder_name=None):
-    """A fully standard-compliant album; returns its folder."""
+    """A fully standard-compliant album; returns its folder.
+
+    The default cover mode is "both", so compliance means a cover.jpg file
+    plus an embedded APIC frame in every track."""
     folder = root / artist / (folder_name or f"{year} - {album}")
     titles = [f"Song {i}" for i in range(1, n + 1)]
     for i, title in enumerate(titles, 1):
-        make_mp3(folder / f"{i:02d}. {artist} - {title}.mp3",
-                 TIT2=title, TPE1=artist, TPE2=artist, TALB=album,
+        mp3 = folder / f"{i:02d}. {artist} - {title}.mp3"
+        make_mp3(mp3, TIT2=title, TPE1=artist, TPE2=artist, TALB=album,
                  TYER=year, TRCK=f"{i:02d}/{n}", TCON="Rock")
+        if cover:
+            embed_art(mp3)
     if cover:
         (folder / "cover.jpg").write_bytes(TINY_PNG)
     return folder
@@ -186,9 +191,10 @@ def test_artist_folder_mismatch(tmp_path):
 def test_cd_subfolders_flagged_for_merge(tmp_path):
     parent = tmp_path / ARTIST / f"{YEAR} - {ALBUM}"
     for disc in (1, 2):
-        make_mp3(parent / f"CD{disc}" / f"01. {ARTIST} - Song {disc}.mp3",
-                 TIT2=f"Song {disc}", TPE1=ARTIST, TPE2=ARTIST, TALB=ALBUM,
+        mp3 = parent / f"CD{disc}" / f"01. {ARTIST} - Song {disc}.mp3"
+        make_mp3(mp3, TIT2=f"Song {disc}", TPE1=ARTIST, TPE2=ARTIST, TALB=ALBUM,
                  TYER=YEAR, TRCK="01/1", TCON="Rock")
+        embed_art(mp3)
     (parent / "cover.jpg").write_bytes(TINY_PNG)
     assert scan_cats(tmp_path) == {"CD_MERGE"}
 

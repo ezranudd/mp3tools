@@ -158,3 +158,90 @@ def test_parse_cue(tmp_path):
 
 def test_parse_cue_missing_file(tmp_path):
     assert parse_cue(tmp_path / "absent.cue") == []
+
+
+# ── _decode_args: channel/rate/bit-depth guards for the encode pipe ──────────
+
+def _lavfi_flac(path, cl="stereo", rate=44100, extra=()):
+    """A FLAC straight from ffmpeg with a chosen channel layout / rate."""
+    import subprocess
+    path.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+         "-f", "lavfi", "-i", f"anullsrc=r={rate}:cl={cl}",
+         "-t", "0.5", *extra, str(path)],
+        check=True,
+    )
+
+
+@pytest.mark.ffmpeg
+def test_decode_args_plain_stereo_is_empty(tmp_path):
+    from convert_lossless import _decode_args
+    src = tmp_path / "t.flac"
+    make_flac(src)
+    assert _decode_args(src) == []
+
+
+@pytest.mark.ffmpeg
+def test_decode_args_downmixes_multichannel(tmp_path):
+    from convert_lossless import _decode_args
+    src = tmp_path / "t51.flac"
+    _lavfi_flac(src, cl="5.1")
+    args = _decode_args(src)
+    assert args[args.index("-ac") + 1] == "2"
+
+
+@pytest.mark.ffmpeg
+def test_decode_args_clamps_high_rates(tmp_path):
+    from convert_lossless import _decode_args
+    src96 = tmp_path / "t96.flac"
+    _lavfi_flac(src96, rate=96000)
+    args = " ".join(_decode_args(src96))
+    assert "48000" in args
+
+    src882 = tmp_path / "t882.flac"
+    _lavfi_flac(src882, rate=88200)
+    args = " ".join(_decode_args(src882))
+    assert "44100" in args               # 88.2k family → 44.1k, not 48k
+
+
+@pytest.mark.ffmpeg
+def test_decode_args_dithers_24bit(tmp_path):
+    from mutagen.flac import FLAC
+    from convert_lossless import _decode_args
+    src = tmp_path / "t24.flac"
+    _lavfi_flac(src, extra=("-sample_fmt", "s32"))
+    assert FLAC(src).info.bits_per_sample > 16, "fixture must be >16-bit"
+    args = " ".join(_decode_args(src))
+    assert "dither_method" in args and "osf=s16" in args
+
+
+@pytest.mark.ffmpeg
+@pytest.mark.lame
+def test_convert_downmixes_51_to_stereo(tmp_path):
+    from mutagen.mp3 import MP3
+    from convert_lossless import convert_to_mp3
+    src = tmp_path / "t51.flac"
+    _lavfi_flac(src, cl="5.1")
+    dst = tmp_path / "t51.mp3"
+    assert convert_to_mp3(src, dst, 192) is True   # lame can't take 5.1 raw
+    assert MP3(dst).info.channels == 2
+
+
+# ── ffmpeg fallback path: no v2.4 relics ─────────────────────────────────────
+
+@pytest.mark.ffmpeg
+def test_ffmpeg_fallback_leaves_no_tdrc(tmp_path, monkeypatch):
+    """Without lame, the ffmpeg muxer tags the file itself; the re-tag pass
+    must not let a TDRC (ID3v2.4 timestamp) survive in the v2.3 output."""
+    import convert_lossless as cl
+    from mutagen.id3 import ID3
+    monkeypatch.setattr(cl, "_has_lame_binary", lambda: False)
+    src = tmp_path / "t.flac"
+    make_flac(src, title="Song", artist="Band", date="2019-06-01")
+    dst = tmp_path / "t.mp3"
+    assert cl.convert_to_mp3(src, dst, 192) is True
+    t = ID3(dst, translate=False)
+    assert "TDRC" not in t
+    assert str(t["TYER"]) == "2019"
+    assert t.version[1] == 3

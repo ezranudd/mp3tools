@@ -73,7 +73,10 @@ def _set_album_artist(tags: ID3, value: str) -> None:
     for key in _ALBUM_ARTIST_KEYS:
         if key != "TPE2" and key in tags:
             del tags[key]
-    tags["TPE2"] = _TPE2(encoding=3, text=value)
+    # encoding=1 (UTF-16): the only non-latin1 encoding valid in ID3v2.3, and
+    # what standardize/import write. (mutagen would downgrade 3→1 on save, but
+    # write the v2.3-native value directly.)
+    tags["TPE2"] = _TPE2(encoding=1, text=value)
 
 
 # ── Node model ────────────────────────────────────────────────────────────────
@@ -110,7 +113,80 @@ def _subdirs(path: Path) -> list[Path]:
 
 
 def _make_tracks(mp3s: list[Path], parent: Node) -> list[Node]:
+    """Track nodes for *mp3s* under *parent* (also used by server._apply_album_art)."""
     return [Node(TRACK, mp3.name, mp3, parent=parent) for mp3 in mp3s]
+
+
+# root(str) -> (signature, snapshot). The tree's shape (folders + track
+# filenames) can only change by changing some directory's contents, which bumps
+# that directory's mtime — so a dir-level mtime signature is a complete
+# invalidation key (same pattern as album_stream._CACHE). File *content* edits
+# don't need to invalidate: the tree stores names, not tags.
+_TREE_CACHE: dict[str, tuple[tuple, list]] = {}
+
+
+def _tree_signature(root: Path) -> tuple:
+    """(name, mtime_ns) for root and its first two directory levels — the
+    levels whose listings build_tree reads. Empty tuple = unstat-able (no
+    caching)."""
+    sig: list[tuple[str, int]] = []
+    try:
+        sig.append(("", root.stat().st_mtime_ns))
+        for d1 in root.iterdir():
+            if d1.is_dir() and not d1.name.startswith("."):
+                sig.append((d1.name, d1.stat().st_mtime_ns))
+                for d2 in d1.iterdir():
+                    if d2.is_dir() and not d2.name.startswith("."):
+                        sig.append((f"{d1.name}/{d2.name}", d2.stat().st_mtime_ns))
+    except OSError:
+        return ()
+    return tuple(sorted(sig))
+
+
+def _scan_tree(root: Path) -> list:
+    """Walk the filesystem once, returning the tree as plain data:
+    [(artist_label, artist_path, [(album_label, album_path, [mp3 names])])]."""
+    def albums_of(parent: Path) -> list:
+        out = []
+        for album_dir in _subdirs(parent):
+            mp3s = _mp3s(album_dir)
+            if mp3s:
+                out.append((album_dir.name, str(album_dir),
+                            [p.name for p in mp3s]))
+        return out
+
+    direct = _mp3s(root)
+    if direct:
+        return [(root.name, str(root),
+                 [(root.name, str(root), [p.name for p in direct])])]
+
+    child_dirs = _subdirs(root)
+    if any(_mp3s(d) for d in child_dirs):
+        albums = albums_of(root)
+        return [(root.name, str(root), albums)] if albums else []
+
+    artists = []
+    for artist_dir in child_dirs:
+        albums = albums_of(artist_dir)
+        if albums:
+            artists.append((artist_dir.name, str(artist_dir), albums))
+    return artists
+
+
+def _nodes_from(snapshot: list) -> list[Node]:
+    """Fresh Node objects from a snapshot — callers mutate nodes (labels, tags,
+    expanded), so cached snapshots must never share Node instances."""
+    artists: list[Node] = []
+    for a_label, a_path, albums in snapshot:
+        artist = Node(ARTIST, a_label, Path(a_path))
+        for al_label, al_path, names in albums:
+            album_dir = Path(al_path)
+            album = Node(ALBUM, al_label, album_dir, parent=artist)
+            album.children = [Node(TRACK, name, album_dir / name, parent=album)
+                              for name in names]
+            artist.children.append(album)
+        artists.append(artist)
+    return artists
 
 
 def build_tree(root: Path) -> list[Node]:
@@ -120,41 +196,19 @@ def build_tree(root: Path) -> list[Node]:
     Library root  root/Album Artist/Album/mp3   → 3-level tree
     Album artist dir root/Album/mp3             → 2-level tree
     Album dir     root/mp3                      → 1-level
+
+    The filesystem walk is cached per root behind a dir-mtime signature, so
+    repeated calls (every Browse/search/genre request) don't re-walk an
+    unchanged library.
     """
-    child_dirs = _subdirs(root)
-
-    direct = _mp3s(root)
-    if direct:
-        artist = Node(ARTIST, root.name, root)
-        album  = Node(ALBUM,  root.name, root, parent=artist)
-        album.children = _make_tracks(direct, album)
-        artist.children = [album]
-        return [artist]
-
-    if any(_mp3s(d) for d in child_dirs):
-        artist = Node(ARTIST, root.name, root)
-        for album_dir in child_dirs:
-            mp3s = _mp3s(album_dir)
-            if not mp3s:
-                continue
-            album = Node(ALBUM, album_dir.name, album_dir, parent=artist)
-            album.children = _make_tracks(mp3s, album)
-            artist.children.append(album)
-        return [artist] if artist.children else []
-
-    artists: list[Node] = []
-    for artist_dir in child_dirs:
-        artist = Node(ARTIST, artist_dir.name, artist_dir)
-        for album_dir in _subdirs(artist_dir):
-            mp3s = _mp3s(album_dir)
-            if not mp3s:
-                continue
-            album = Node(ALBUM, album_dir.name, album_dir, parent=artist)
-            album.children = _make_tracks(mp3s, album)
-            artist.children.append(album)
-        if artist.children:
-            artists.append(artist)
-    return artists
+    key = str(root)
+    sig = _tree_signature(root)
+    cached = _TREE_CACHE.get(key)
+    if not (sig and cached and cached[0] == sig):
+        cached = (sig, _scan_tree(root))
+        if sig:
+            _TREE_CACHE[key] = cached
+    return _nodes_from(cached[1])
 
 
 # ── Tag I/O ───────────────────────────────────────────────────────────────────
@@ -166,7 +220,28 @@ def _fmt_dur(seconds: float | None) -> str:
     return f"{s // 60}:{s % 60:02d}"
 
 
+# path(str) -> ((mtime_ns, size), tags). Tag reads dominate the album-grid and
+# genre endpoints (first track of every album per request); a stat-signature
+# cache turns repeat visits into one stat() per file.
+_TAG_CACHE: dict[str, tuple[tuple[int, int], dict[str, str]]] = {}
+
+
 def _read_tags(path: Path) -> dict[str, str]:
+    try:
+        st = path.stat()
+    except OSError:
+        return {}
+    sig = (st.st_mtime_ns, st.st_size)
+    cached = _TAG_CACHE.get(str(path))
+    if cached and cached[0] == sig:
+        return dict(cached[1])          # copy: callers may mutate
+    tags = _read_tags_uncached(path)
+    if tags:
+        _TAG_CACHE[str(path)] = (sig, dict(tags))
+    return tags
+
+
+def _read_tags_uncached(path: Path) -> dict[str, str]:
     try:
         audio = MP3(path, ID3=lambda *a, **kw: ID3(*a, translate=False, **kw))
         t = _load_id3(path)
@@ -224,8 +299,11 @@ def _write_tags(path: Path, updates: dict[str, str]) -> None:
             continue
         cls = _CLS.get(frame_id)
         if cls:
-            tags[frame_id] = cls(encoding=3, text=value)
+            tags[frame_id] = cls(encoding=1, text=value)
     tags.save(path, v2_version=3, v1=0)
+    # A mutagen re-save can leave size AND (at coarse fs granularity) mtime
+    # unchanged, so the stat signature alone may miss this write.
+    _TAG_CACHE.pop(str(path), None)
 
 
 # ── Public API (stable surface for non-curses consumers, e.g. server.py) ──────
@@ -725,6 +803,47 @@ def all_genres(root: Path) -> list[dict]:
             for g, n in sorted(counts.items(), key=lambda kv: kv[0].lower())]
 
 
+def library_manifest(root: Path) -> dict:
+    """Flat manifest of every track, for an offline-first native client.
+
+    One entry per mp3 carrying: a stable relative-path id (`rel`), the absolute
+    path (`path`, for the existing /api/track and /api/cover routes), a cheap
+    change token (`sig` = size + mtime, opaque to the client), and the tags
+    needed to build the whole library UI without a per-album round trip. The
+    client diffs `sig` against its last download to sync only what changed —
+    the same signal `sync_library` trusts for device mirroring.
+
+    Built on the cached build_tree + read_tags, so a repeat call after the first
+    walk is cheap. `album_rel` groups tracks into albums client-side."""
+    tracks: list[dict] = []
+    for artist in build_tree(root):
+        for album in artist.children:
+            for tnode in album.children:
+                p = tnode.path
+                try:
+                    st = p.stat()
+                except OSError:
+                    continue
+                tags = read_tags(p)
+                tracks.append({
+                    "rel":         str(p.relative_to(root)),
+                    "path":        str(p),
+                    "album_rel":   str(album.path.relative_to(root)),
+                    "size":        st.st_size,
+                    "sig":         f"{st.st_size}-{st.st_mtime_ns}",
+                    "artist":      tags.get("artist", ""),
+                    "albumartist": tags.get("albumartist", ""),
+                    "album":       tags.get("album", ""),
+                    "title":       tags.get("title", "") or p.stem,
+                    "track":       tags.get("track", ""),
+                    "year":        tags.get("year", ""),
+                    "genre":       tags.get("genre", ""),
+                    "duration":    tags.get("length_sec", 0),
+                    "bitrate":     tags.get("bitrate", ""),
+                })
+    return {"root": str(root), "count": len(tracks), "tracks": tracks}
+
+
 # ── Collections (owner-curated album groups) ──────────────────────────────────
 # Collections live in settings ({root}/.mp3tools/mp3tools.conf) as a list of
 # {"name", "albums": [ref, ...]}; each ref is {"path", "artist", "album", "year"}
@@ -942,9 +1061,20 @@ def build_edit(root: Path, node_path: Path, op: str, value: str) -> "PendingEdit
     return builder(node, value)
 
 
+def invalidate_caches() -> None:
+    """Drop the tree/tag caches. The mtime signatures already invalidate on any
+    filesystem change; this is a belt-and-braces hook for the app's own mutation
+    paths so an edit is never masked by timestamp granularity."""
+    _TREE_CACHE.clear()
+    _TAG_CACHE.clear()
+
+
 def apply_edits(edits: "list[PendingEdit]") -> tuple[bool, str]:
     """Apply a list of PendingEdits to disk. Returns (ok, error_string)."""
-    return _apply_pending(edits)
+    try:
+        return _apply_pending(edits)
+    finally:
+        invalidate_caches()
 
 
 def reorder_album(album_dir: Path, ordered_paths: "list[Path]") -> tuple[bool, str]:
@@ -986,6 +1116,8 @@ def reorder_album(album_dir: Path, ordered_paths: "list[Path]") -> tuple[bool, s
                 tmp.rename(final)
     except Exception as exc:
         errors.append(f"rename: {exc}")
+    finally:
+        invalidate_caches()
 
     return (not errors), "  |  ".join(errors)
 

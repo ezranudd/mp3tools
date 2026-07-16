@@ -165,10 +165,10 @@ async function boot() {
   if (role === "blocked")   return showBlocked();
   hideAuthGate();
   TRUSTED = role === "owner";
-  initApp();
+  initApp(who);
 }
 
-function initApp() {
+function initApp(who = {}) {
   if (APP_STARTED) return;   // already wired (e.g. boot() re-ran after login)
   APP_STARTED = true;
   document.body.classList.toggle("guest", !TRUSTED);   // drives mobile guest CSS
@@ -178,7 +178,7 @@ function initApp() {
   else buildThemeToggle();
   initBackground();
   if (TRUSTED) buildJobIndicator();   // jobs are owner-only operations
-  initPlayer(revealPlaying);
+  initPlayer(revealPlaying, { streamOpus: !!who.stream_opus });
   initSearch(name => { closeSearch(); activate(name); });
   initMobileControls();
   accent.initAccent();
@@ -216,7 +216,7 @@ function showLogin(who) {
     <p class="muted">This music library is private. Enter the access password.</p>
     ${warn}
     <input id="authpw" type="password" autocomplete="current-password" placeholder="Access password" style="width:100%">
-    <input id="authname" type="text" placeholder="Device name (optional, e.g. “Ezra’s phone”)" style="width:100%;margin-top:8px">
+    <input id="authname" type="text" placeholder="Device name (optional, e.g. “My phone”)" style="width:100%;margin-top:8px">
     <div id="autherr" class="err" style="min-height:1.2em;margin:6px 0"></div>
     <button id="authbtn" class="btn primary" style="width:100%">Sign in</button>
   </div>`;
@@ -306,6 +306,12 @@ function closeSearch() { document.body.classList.remove("search-open"); }
 // The pref is read at playAlbum time, so a change applies to the next album.
 function openPlaybackPrefs() {
   const on = getPref("gapless_stream") === "1";
+  const q = getPref("stream_quality") || "wav";
+  const radio = (val, label, desc) => `
+     <label class="field" style="display:flex;align-items:baseline;gap:10px;cursor:pointer">
+       <input type="radio" name="pp_quality" value="${val}" ${q === val ? "checked" : ""}>
+       <span>${label} <span class="muted" style="font-size:12px">— ${desc}</span></span>
+     </label>`;
   openModal(
     `<h3>Playback (this device)</h3>
      <label class="field" style="display:flex;align-items:center;gap:10px;cursor:pointer">
@@ -313,12 +319,33 @@ function openPlaybackPrefs() {
        <span>Gapless album streaming</span>
      </label>
      <p class="muted">Play a whole album as one continuous stream so tracks run
-       together with no gap. Uses more data, and seeking / track-skip is a little
-       less snappy. Applies from the next album you play. Saved on this device only.</p>
+       together with no gap. Seeking / track-skip is a little less snappy.
+       Applies from the next album you play. Saved on this device only.</p>
+     <div class="field"><strong>Stream quality</strong></div>
+     ${radio("wav", "Original (WAV)", "lossless, most data")}
+     ${radio("opus_high", "High quality (160–192 kbps)", "near-transparent, big data savings")}
+     ${radio("opus_low", "Low data (96–128 kbps)", "data saver")}
+     ${radio("mp3", "MP3 256 kbps", "most compatible fallback")}
+     <p class="muted">Only applies when gapless album streaming is on. The
+       quality tiers use Opus where supported and AAC on Apple devices (whose
+       Ogg playback is unreliable) — the player bar always shows what's actually
+       streaming.</p>
+     <label class="field" style="display:flex;align-items:center;gap:10px;cursor:pointer">
+       <input type="checkbox" id="pp_caf" ${getPref("stream_caf") === "1" ? "checked" : ""}>
+       <span>Experimental: Opus (CAF) on Apple devices</span>
+     </label>
+     <p class="muted">Use Opus in Apple's CAF container instead of AAC for the
+       quality tiers. If playback stays solid on your iPhone (lock screen,
+       seeking), keep it — otherwise turn it off.</p>
      <div class="row"><button class="btn primary" data-close>Done</button></div>`,
     (box, close) => {
       box.querySelector("#pp_gapless").onchange =
         (e) => setPref("gapless_stream", e.target.checked ? "1" : "0");
+      for (const r of box.querySelectorAll('input[name="pp_quality"]')) {
+        r.onchange = (e) => { if (e.target.checked) setPref("stream_quality", e.target.value); };
+      }
+      box.querySelector("#pp_caf").onchange =
+        (e) => setPref("stream_caf", e.target.checked ? "1" : "0");
       box.querySelector("[data-close]").onclick = close;
     });
 }

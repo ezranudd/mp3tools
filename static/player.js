@@ -12,10 +12,13 @@
 //     plays through the media channel, supports MediaSession, and streams via Range
 //     (no full in-memory decode). Per-track mode reloads .src each track, so there
 //     is a small boundary gap. Stream mode (opt-in, mStreamOn) instead points the
-//     element at /api/album_stream — the whole album as one gapless WAV — and fakes
-//     per-track seek/next/prev/metadata over it via the manifest offsets, so there
-//     is no gap at all. The queue/transport/UI below is shared; only the sound
-//     backend differs, branched at startPlayback/toggle/seek/elapsed.
+//     element at /api/album_stream — the whole album as one gapless stream: WAV,
+//     or (quality pref) a server-cached transcode (Opus/AAC/CAF/MP3), playing WAV
+//     until that cache is ready — and fakes per-track seek/next/prev/metadata over
+//     it via the manifest offsets, so there is no gap at all. Only bounded
+//     Range-seekable resources are ever played (iOS mishandles unbounded ones).
+//     The queue/transport/UI below is shared; only the sound backend differs,
+//     branched at startPlayback/toggle/seek/elapsed.
 import { toast, clientId, jget, getPref } from "./util.js";
 
 // Stream URL for a track, carrying our stable client id so the server's Devices
@@ -23,9 +26,16 @@ import { toast, clientId, jget, getPref } from "./util.js";
 function trackUrl(path) {
   return "/api/track?path=" + encodeURIComponent(path) + "&cid=" + encodeURIComponent(clientId());
 }
-// Whole-album gapless stream (one continuous WAV) for stream mode.
-function streamUrl(albumPath) {
-  return "/api/album_stream?path=" + encodeURIComponent(albumPath) + "&cid=" + encodeURIComponent(clientId());
+// Whole-album gapless stream for stream mode: one continuous WAV, or (stream-
+// quality pref) the same gapless audio as a server-cached bounded transcode.
+// The client only ever plays bounded Range-seekable resources — iOS handles
+// unbounded streams badly (restarts instead of resuming when the locked
+// connection drops, no duration) — so until the transcode cache is ready the
+// stream plays as WAV and swaps over once the manifest reports stream_ready.
+function streamUrl(albumPath, opts = {}) {
+  let u = "/api/album_stream?path=" + encodeURIComponent(albumPath) + "&cid=" + encodeURIComponent(clientId());
+  if (opts.codec && opts.codec !== "wav") u += "&codec=" + opts.codec + "&br=" + opts.br;
+  return u;
 }
 
 // Phones/tablets: touch, no hover. These get the <audio> backend.
@@ -33,6 +43,23 @@ const IS_MOBILE = window.matchMedia("(hover: none) and (pointer: coarse)").match
 // Per-device opt-in (Settings → Playback): on mobile, play whole albums as one
 // gapless stream instead of reloading per track. Read fresh at each playAlbum.
 const GAPLESS_PREF = "gapless_stream";
+// Stream-quality companion pref: "wav" (default, lossless PCM), "opus_high"
+// (160k), "opus_low" (96k), or "mp3" (256k, the most-compatible transcode).
+// The Opus tiers resolve per platform: Apple devices get AAC in MP4 (Safari's
+// Ogg demuxer seeks/durations unreliably; MP4 has a real sample table) — or,
+// with the experimental CAF pref, the same Opus packets in Apple's CAF
+// container. Everything else gets true Opus in Ogg, with the tier's MP3
+// bitrate as the no-Opus fallback.
+const QUALITY_PREF = "stream_quality";
+const CAF_PREF = "stream_caf";           // experimental: Opus-in-CAF on Apple
+const QUALITY_TIERS = {
+  opus_high: { opus: 160, aac: 192, mp3: 256 },
+  opus_low:  { opus: 96,  aac: 128, mp3: 160 },
+  mp3:       { mp3: 256 },
+};
+// Apple's media stack (all iOS browsers + Safari on Mac share it).
+const IS_APPLE = /iP(hone|ad|od)/.test(navigator.userAgent)
+  || (navigator.vendor || "").indexOf("Apple") === 0;
 let mAudio = null;             // HTMLAudioElement (mobile backend only)
 let mWantPos = 0;              // position (s) to restore to after a reload
 let mRetries = 0;              // reloads attempted for the current track
@@ -43,6 +70,45 @@ const M_MAX_RETRIES = 3;
 let mStreamOn = false;         // this queue is playing as one gapless album stream
 let mManifest = [];            // [{ start_sec, dur_sec, title, artist, ... }] per track
 let mStreamAlbum = null;       // album path the loaded stream/manifest is for
+let mStreamCodec = "wav";      // desired codec ("wav" | "opus" | "aac" | "caf" | "mp3")
+let mStreamBr = 0;             // desired transcode bitrate (kbps); 0 for wav
+let mStreamWant = "wav@0";     // desired codec@br the loaded stream was chosen for
+let mStreamSrcCodec = "wav";   // codec actually loaded (wav until the cache is ready)
+let mStreamReady = false;      // manifest said the cached bounded transcode exists
+let mStreamPoll = 0;           // timer polling the manifest until stream_ready
+let serverOpus = false;        // whoami capability: server ffmpeg has libopus
+
+// Album position (s). Every stream we play is bounded, so element time is it.
+function mPos() { return mAudio && mAudio.currentTime || 0; }
+
+// Resolve the stream-quality pref to a concrete {codec, br} for this device +
+// server. Apple: AAC (or Opus-in-CAF when the experimental pref is on and the
+// server can encode Opus); elsewhere: Opus in Ogg when both ends support it;
+// the tier's MP3 bitrate as the universal fallback.
+function resolveStreamQuality() {
+  const tier = QUALITY_TIERS[getPref(QUALITY_PREF)];
+  if (!tier) return { codec: "wav", br: 0 };
+  if (tier.opus && IS_APPLE) {
+    if (serverOpus && getPref(CAF_PREF) === "1") return { codec: "caf", br: tier.opus };
+    return { codec: "aac", br: tier.aac };
+  }
+  const canOpus = tier.opus && serverOpus && mAudio
+    && !!mAudio.canPlayType('audio/ogg; codecs="opus"');
+  return canOpus ? { codec: "opus", br: tier.opus }
+                 : { codec: "mp3", br: tier.mp3 };
+}
+
+// Pre-warm the transcode cache for an album the user is looking at, so that
+// pressing play starts directly on the cached bounded stream instead of the
+// WAV interim. Fire-and-forget: the manifest endpoint kicks the server-side
+// encode; errors don't matter (playback falls back to the interim as usual).
+export function prewarmStream(albumPath) {
+  if (!IS_MOBILE || !albumPath || getPref(GAPLESS_PREF) !== "1") return;
+  const q = resolveStreamQuality();
+  if (q.codec === "wav") return;
+  jget("/api/album_manifest?path=" + encodeURIComponent(albumPath)
+       + "&codec=" + q.codec + "&br=" + q.br).catch(() => {});
+}
 
 let bar = null;
 let queue = [];          // [{ path, title, artist, track }]
@@ -86,8 +152,9 @@ export function getCurrentAlbumPath() {
 export function subscribe(fn) { subs.add(fn); fn(getCurrentPath()); return () => subs.delete(fn); }
 function notify() { const p = getCurrentPath(); for (const fn of subs) fn(p); }
 
-export function initPlayer(revealFn = null) {
+export function initPlayer(revealFn = null, caps = {}) {
   reveal = revealFn;
+  serverOpus = !!caps.streamOpus;
   bar = document.getElementById("player");
 
   bar.innerHTML = `
@@ -227,11 +294,12 @@ function mRecover() {
     return;
   }
   mRetries += 1;
-  // Stream mode: reopen the album stream on a fresh connection and restore the
-  // global position (the WAV is Range-seekable, so currentTime survives a reload).
+  // Stream mode: reopen the album stream on a fresh connection and Range-seek
+  // back to where we were (every stream we play is bounded). mSetStreamSrc
+  // also silently upgrades WAV → transcode if the cache finished meanwhile.
   if (mStreamOn) {
-    const pos = mAudio.currentTime || 0;
-    mAudio.src = streamUrl(currentAlbumPath) + "&_r=" + mRetries;
+    const pos = mPos() || 0;
+    mSetStreamSrc(mRetries);
     mStreamSeekTo(pos);
     mAudio.play().catch(() => {});
     return;
@@ -314,10 +382,16 @@ function mStreamStart(i, offset) {
   bar.classList.add("show");
   els.play.innerHTML = ICON.pause;
   mRetries = 0;
-  if (mStreamAlbum !== currentAlbumPath) {
+  const want = mStreamCodec + "@" + mStreamBr;
+  if (mStreamAlbum !== currentAlbumPath || mStreamWant !== want) {
     mManifest = [];
+    mStreamReady = false;
     mStreamAlbum = currentAlbumPath;
-    mAudio.src = streamUrl(currentAlbumPath);
+    mStreamWant = want;
+    // Readiness is unknown on a fresh album, so mSetStreamSrc starts on WAV
+    // (bounded, reliable); the manifest below swaps to the transcode if the
+    // cache already exists, else the poll swaps once it does.
+    mSetStreamSrc();
   }
   reflectTrack();
   const p = mAudio.play();
@@ -329,7 +403,13 @@ function mStreamStart(i, offset) {
   ensureManifest().then(() => {
     if (!mStreamOn) return;
     const t = mManifest[i];
-    if (t) mStreamSeekTo(t.start_sec + (offset || 0));
+    const target = t ? t.start_sec + (offset || 0) : 0;
+    if (mStreamReady && mStreamSrcCodec !== mStreamCodec) {
+      mSwapToTranscode(Math.max(target, mPos()));
+    } else if (t && (target > 0.05 || mPos() > 0.5)) {
+      mStreamSeekTo(target);      // skip the no-op seek on a fresh top-of-album play
+    }
+    if (mStreamCodec !== "wav" && mStreamSrcCodec !== mStreamCodec) mStartStreamPoll();
     reflectTrack();
   });
 }
@@ -337,14 +417,70 @@ function mStreamStart(i, offset) {
 async function ensureManifest() {
   if (mManifest.length && mStreamAlbum === currentAlbumPath) return;
   try {
-    const m = await jget("/api/album_manifest?path=" + encodeURIComponent(currentAlbumPath));
+    const m = await jget(mManifestUrl());
     mManifest = m.tracks || [];
+    mStreamReady = !!m.stream_ready;
     mStreamAlbum = currentAlbumPath;
   } catch { mManifest = []; }
 }
 
-// Seek the single stream to an absolute second offset, waiting for metadata if
-// the element hasn't loaded enough to accept a currentTime yet.
+function mManifestUrl() {
+  let u = "/api/album_manifest?path=" + encodeURIComponent(currentAlbumPath);
+  if (mStreamCodec !== "wav") u += "&codec=" + mStreamCodec + "&br=" + mStreamBr;
+  return u;
+}
+
+// Point the element at the best bounded stream currently available: the cached
+// transcode when the server has it, else WAV. Never the live encoder stream —
+// iOS restarts unbounded resources from byte 0 when a locked connection drops.
+function mSetStreamSrc(bust = 0) {
+  const useTc = mStreamCodec !== "wav" && mStreamReady;
+  mStreamSrcCodec = useTc ? mStreamCodec : "wav";
+  let src = useTc ? streamUrl(currentAlbumPath, { codec: mStreamCodec, br: mStreamBr })
+                  : streamUrl(currentAlbumPath);
+  if (bust) src += "&_r=" + bust;
+  mAudio.src = src;
+}
+
+// Swap the element from the interim WAV onto the cached bounded transcode at
+// absolute second `pos` (a one-time, sub-second reload early in the album).
+function mSwapToTranscode(pos) {
+  stopStreamPoll();
+  mSetStreamSrc();
+  mStreamSeekTo(pos);
+  if (playing) mAudio.play().catch(() => {});
+  reflectTrack();                 // encoding indicator: WAV → transcode
+}
+
+// While playing the interim WAV, poll the manifest until the transcode cache
+// is ready, then swap. Polling also re-kicks the server-side encode if it
+// died. Deferred while the screen is locked/hidden — .play() can be rejected
+// there, and the WAV stream is already reliable; the swap happens on return.
+function mStartStreamPoll() {
+  stopStreamPoll();
+  let tries = 0;
+  mStreamPoll = setInterval(() => {
+    if (!mStreamOn || mStreamSrcCodec === mStreamCodec || ++tries > 80) {
+      stopStreamPoll();
+      return;
+    }
+    if (document.hidden) return;
+    jget(mManifestUrl()).then(m => {
+      if (m.stream_ready && mStreamOn && mStreamSrcCodec !== mStreamCodec) {
+        mStreamReady = true;
+        mSwapToTranscode(mPos());
+      }
+    }).catch(() => { /* keep polling */ });
+  }, 5000);
+}
+
+function stopStreamPoll() {
+  if (mStreamPoll) { clearInterval(mStreamPoll); mStreamPoll = 0; }
+}
+
+// Seek the single stream to an absolute second offset via currentTime (every
+// stream we serve is Range-seekable), waiting for metadata if the element
+// hasn't loaded enough to accept a currentTime yet.
 function mStreamSeekTo(sec) {
   if (mAudio.readyState >= 1) { try { mAudio.currentTime = sec; } catch { /* ignore */ } }
   else mAudio.addEventListener("loadedmetadata",
@@ -355,7 +491,7 @@ function mStreamSeekTo(sec) {
 // both natural progression and seeks). Fired from the element's timeupdate.
 function mStreamSync() {
   if (!mStreamOn || index < 0 || !mManifest.length) return;
-  const t = mAudio.currentTime;
+  const t = mPos();
   let i = index;
   while (i + 1 < mManifest.length && t >= mManifest[i + 1].start_sec) i++;
   while (i > 0 && t < mManifest[i].start_sec) i--;
@@ -400,6 +536,9 @@ export function playAlbum(tracks, startIndex = 0, albumPath = null) {
   // Stream mode needs a real album dir (the stream is per-album); fall back to the
   // per-track backend for loose/search playback or when the pref is off.
   mStreamOn = IS_MOBILE && !!albumPath && getPref(GAPLESS_PREF) === "1";
+  const q = mStreamOn ? resolveStreamQuality() : { codec: "wav", br: 0 };
+  mStreamCodec = q.codec;
+  mStreamBr = q.br;
   startPlayback(startIndex, 0);
 }
 
@@ -620,7 +759,7 @@ function seek(frac) {
     if (mStreamOn) {
       const t = mManifest[index];
       if (t) {
-        mAudio.currentTime = t.start_sec + Math.max(0, Math.min(1, frac)) * t.dur_sec;
+        mStreamSeekTo(t.start_sec + Math.max(0, Math.min(1, frac)) * t.dur_sec);
         updateProgress();
       }
       return;
@@ -661,7 +800,7 @@ function elapsed() {
     // Stream mode: position WITHIN the current track (playhead − track start).
     if (mStreamOn) {
       const t = mManifest[index];
-      return t ? Math.max(0, Math.min(t.dur_sec, mAudio.currentTime - t.start_sec)) : 0;
+      return t ? Math.max(0, Math.min(t.dur_sec, mPos() - t.start_sec)) : 0;
     }
     return mAudio.currentTime || 0;
   }
@@ -714,7 +853,7 @@ function reflectTrack() {
     const num = t.track ? t.track.padStart(2, "0") + ". " : "";
     els.title.textContent = num + t.title + (t.artist ? " — " + t.artist : "");
   }
-  els.bitrate.textContent = t.bitrate ? t.bitrate + " kbps" : "";
+  els.bitrate.textContent = encodingLabel(t);
   if (currentAlbumPath) {
     els.album.src = "/api/cover?path=" + encodeURIComponent(currentAlbumPath);
     els.album.classList.remove("noart");
@@ -730,4 +869,21 @@ function fmt(s) {
   s = Math.max(0, Math.floor(s || 0));
   const m = Math.floor(s / 60);
   return m + ":" + String(s % 60).padStart(2, "0");
+}
+
+// What's actually reaching this device, e.g. "320 kbps" (original file served
+// untouched), "320 kbps MP3 → WAV (lossless)", "320 kbps MP3 → 160k Opus", or
+// "320 kbps MP3 → 256k MP3" (Opus-unsupported fallback).
+function encodingLabel(t) {
+  const src = t.bitrate ? t.bitrate + " kbps" : "";
+  if (!(IS_MOBILE && mStreamOn)) return src;      // original bytes, no re-encode
+  const from = src ? src + " MP3 " : "MP3 ";
+  const NAME = { opus: "Opus", caf: "Opus (CAF)", aac: "AAC", mp3: "MP3" };
+  if (mStreamSrcCodec !== "wav") {
+    return from + "→ " + mStreamBr + "k " + NAME[mStreamSrcCodec];
+  }
+  if (mStreamCodec !== "wav") {   // interim: WAV while the transcode caches
+    return from + "→ WAV (" + mStreamBr + "k " + NAME[mStreamCodec] + " soon)";
+  }
+  return from + "→ WAV (lossless)";
 }

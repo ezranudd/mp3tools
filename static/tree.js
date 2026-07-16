@@ -5,7 +5,7 @@ import { jget, jpost, toast, escapeHtml, escapeAttr, enableRowDrag, fmtDurationL
          setPlaceholder, openModal, closeModal } from "./util.js";
 import { isEdit, onModeChange } from "./mode.js";
 import { isBusy, subscribeJob } from "./jobs.js";
-import { playAlbum, subscribe as subscribePlayer, getCurrentPath } from "./player.js";
+import { playAlbum, prewarmStream, subscribe as subscribePlayer, getCurrentPath } from "./player.js";
 import * as edit from "./edit.js";
 
 let CURRENT = null;   // selected artist: { kind: "artist", path }
@@ -329,6 +329,9 @@ function artistEl(artist) {
 async function fetchAlbumState(path) {
   try {
     const data = await jget("/api/album?path=" + encodeURIComponent(path));
+    // Opening an album is strong play intent — start the transcode cache now
+    // so playback begins on the bounded stream (no WAV interim).
+    prewarmStream(path);
     const first = data.tracks[0] || {};
     return {
       path,

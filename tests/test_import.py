@@ -145,3 +145,57 @@ def test_prepare_cover_data_resizes_large_image(tmp_path):
 
 def test_prepare_cover_data_unreadable_returns_none(tmp_path):
     assert _prepare_cover_data(tmp_path / "absent.png", 500) is None
+
+
+# ── Full import run: preserve_* settings parity with standardize step 4 ──────
+
+def _src_track_with_extras(tmp_path):
+    """A source album whose track carries every preserve-guarded tag plus junk."""
+    from mutagen.id3 import COMM, TCMP, TPOS, TXXX
+    from conftest import make_mp3
+    src_dir = tmp_path / "src" / "2020 - Rec"
+    mp3 = src_dir / "01. Band - Song.mp3"
+    make_mp3(mp3, TIT2="Song", TPE1="Band", TPE2="Band",
+             TALB="Rec", TYER="2020", TRCK="01/1")
+    t = ID3(mp3, translate=False)
+    t.add(TXXX(encoding=1, desc="replaygain_track_gain", text="-3.20 dB"))
+    t.add(TXXX(encoding=1, desc="iTunSMPB", text=" 00000000 00000210 00000AD4"))
+    t.add(TPOS(encoding=1, text="1/2"))
+    t.add(TCMP(encoding=1, text="1"))
+    t.add(COMM(encoding=1, lang="eng", desc="", text="ripper junk"))
+    t.save(mp3, v2_version=3, v1=0)
+    return src_dir
+
+
+def _run_import(tmp_path, settings):
+    from import_tracks import import_tracks
+    src_dir = _src_track_with_extras(tmp_path)
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    import_tracks(src_dir, lib, dry_run=False, settings=settings)
+    out = list(lib.rglob("*.mp3"))
+    assert len(out) == 1, "expected exactly one imported track"
+    return set(ID3(out[0], translate=False).keys())
+
+
+@pytest.mark.ffmpeg
+def test_import_honors_preserve_settings(tmp_path):
+    keys = _run_import(tmp_path, {
+        "preserve_replay_gain": True, "preserve_tcmp": True,
+        "preserve_disc_numbers": True, "preserve_gapless": True,
+    })
+    assert "TXXX:replaygain_track_gain" in keys
+    assert "TXXX:iTunSMPB" in keys
+    assert "TPOS" in keys
+    assert "TCMP" in keys
+    assert not any(k.startswith("COMM") for k in keys), "junk must still go"
+
+
+@pytest.mark.ffmpeg
+def test_import_strips_when_preserve_off(tmp_path):
+    keys = _run_import(tmp_path, {
+        "preserve_replay_gain": False, "preserve_tcmp": False,
+        "preserve_disc_numbers": False, "preserve_gapless": False,
+    })
+    assert not any(k.startswith("TXXX") for k in keys)
+    assert "TPOS" not in keys and "TCMP" not in keys
