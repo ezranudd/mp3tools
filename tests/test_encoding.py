@@ -18,8 +18,8 @@ from conftest import make_flac
 # ── Registry (pure) ───────────────────────────────────────────────────────────
 
 def test_registry_profiles_in_order():
-    assert list(PROFILES) == ["opus-192", "opus-160", "opus-128", "opus-96",
-                              "opus-64", "mp3-v0", "mp3-320"]
+    assert list(PROFILES) == ["opus-192", "opus-160", "opus-128",
+                              "mp3-v0", "mp3-320"]
 
 
 def test_default_is_opus_128():
@@ -111,7 +111,7 @@ def test_mp3_320_byte_identical_to_legacy_path(tmp_path):
 # ── Opus profiles ─────────────────────────────────────────────────────────────
 
 @pytest.mark.opus
-@pytest.mark.parametrize("pid", ["opus-192", "opus-160", "opus-128", "opus-96", "opus-64"])
+@pytest.mark.parametrize("pid", ["opus-192", "opus-160", "opus-128"])
 def test_opus_profiles_encode_valid(tmp_path, pid):
     from convert_lossless import _valid_opus, convert_audio
     src = tmp_path / "a.flac"
@@ -152,12 +152,12 @@ def test_opus_command_pins_quality_knobs(monkeypatch):
 
 
 @pytest.mark.opus
-def test_opus_64_preserves_mono(tmp_path):
+def test_opus_preserves_mono(tmp_path):
     from convert_lossless import convert_audio
     src = tmp_path / "mono.flac"
     _mono_flac(src)
     dst = tmp_path / "mono.opus"
-    assert convert_audio(src, dst, PROFILES["opus-64"]) is True
+    assert convert_audio(src, dst, PROFILES["opus-128"]) is True
     assert _channels(dst) == 1
 
 

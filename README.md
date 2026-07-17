@@ -201,10 +201,8 @@ set as the library default in Settings (default **Opus 128**):
 | Profile | Format | Encoder | Use |
 |---------|--------|---------|-----|
 | Opus 192 | Opus | libopus VBR 192k | archival |
-| Opus 160 | Opus | libopus VBR 160k | paranoid transparent |
+| Opus 160 | Opus | libopus VBR 160k | transparent + |
 | Opus 128 | Opus | libopus VBR 128k | transparent (default) |
-| Opus 96  | Opus | libopus VBR 96k  | space saving (music) |
-| Opus 64  | Opus | libopus VBR 64k  | recordings / spoken word |
 | MP3 V0   | MP3  | lame `-V 0`      | transparent (default MP3) |
 | MP3 320  | MP3  | lame `--cbr -b 320` | maximum compatibility |
 

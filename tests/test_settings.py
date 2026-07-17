@@ -38,8 +38,8 @@ def test_import_profile_default_is_opus_128(tmp_path):
 
 
 def test_import_profile_valid_respected(tmp_path):
-    _write_conf(tmp_path, {"import_profile": "opus-96"})
-    assert settings_mod.load(tmp_path)["import_profile"] == "opus-96"
+    _write_conf(tmp_path, {"import_profile": "opus-160"})
+    assert settings_mod.load(tmp_path)["import_profile"] == "opus-160"
 
 
 def test_import_profile_invalid_falls_back(tmp_path):

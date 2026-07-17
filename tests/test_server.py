@@ -226,7 +226,7 @@ def test_settings_exposes_encoding_profiles(client):
     cfg = client.get("/api/settings").json()
     assert cfg["import_profile"] == "opus-128"                 # fresh-install default
     assert [p["id"] for p in cfg["encoding_profiles"]] == [
-        "opus-192", "opus-160", "opus-128", "opus-96", "opus-64", "mp3-v0", "mp3-320"]
+        "opus-192", "opus-160", "opus-128", "mp3-v0", "mp3-320"]
 
 
 def test_settings_import_profile_roundtrip(client):
@@ -614,7 +614,7 @@ def test_import_preview_serializes_new_fields(tmp_path, tmp_path_factory):
     assert _poll(c, jid, answer)["state"] == "done"
     assert seen["default_profile"] == "opus-128"
     assert [p["id"] for p in seen["profiles"]] == [
-        "opus-192", "opus-160", "opus-128", "opus-96", "opus-64", "mp3-v0", "mp3-320"]
+        "opus-192", "opus-160", "opus-128", "mp3-v0", "mp3-320"]
     assert seen["row0"]["lossless"] is False
     assert "conflict" in seen["row0"]
 
